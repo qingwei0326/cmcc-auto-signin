@@ -1,5 +1,4 @@
 requests>=2.28.0
-cryptography>=41.0.0
 pycryptodome>=3.20.0
 
 # 打包桌面版 exe 时才需要（仅 Windows）

@@ -516,17 +516,6 @@ def do_action(body: dict):
         return {"ok": RUNNER.start("消消乐", cmd)}
 
     # ---- token 管理 ----
-    if act == "sms_start":
-        phone = str(body.get("phone", "")).strip()
-        if not re.fullmatch(r"1\d{10}", phone):
-            return {"ok": False, "err": "手机号格式不对"}
-        return {"ok": RUNNER.start(f"短信登录 · 发送验证码 {phone}", py("pull_token_sms.py", "start", phone))}
-    if act == "sms_captcha":
-        return {"ok": RUNNER.start("获取图形验证码", py("pull_token_sms.py", "captcha"))}
-    if act == "sms_send":
-        return {"ok": RUNNER.start("带图形码重发短信", py("pull_token_sms.py", "send", body.get("code", "")))}
-    if act == "sms_login":
-        return {"ok": RUNNER.start("短信验证码登录", py("pull_token_sms.py", "login", body.get("code", "")))}
     if act == "har_import":
         try:
             import har_import as HI
@@ -644,8 +633,6 @@ def build_state():
         "eff": efficiency(),
         "task": {"running": RUNNER.running, "label": RUNNER.label},
         "bass_files": [str(f.relative_to(BASE)) for f in sorted((BASE / "configs_fj").glob("*.json"))] if (BASE / "configs_fj").exists() else [],
-        "has_captcha": (BASE / "captcha.png").exists(),
-        "captcha_mtime": (BASE / "captcha.png").stat().st_mtime if (BASE / "captcha.png").exists() else 0,
         "flowbank": _load_json_safe(DATA / "flowbank_state.json"),
         "daily": _load_json_safe(DATA / "daily_state.json"),
         "luck": _load_json_safe(DATA / "luck_state.json"),
@@ -685,12 +672,6 @@ class Handler(BaseHTTPRequestHandler):
             since = int((q.get("since") or ["0"])[0])
             lines = [l for l in RUNNER.logs if l["seq"] > since]
             self._json({"lines": lines, "running": RUNNER.running, "label": RUNNER.label})
-        elif u.path == "/api/captcha":
-            p = BASE / "captcha.png"
-            if p.exists():
-                self._send(200, "image/png", p.read_bytes())
-            else:
-                self._json({"err": "no captcha"}, 404)
         elif u.path == "/api/bass_cfg":
             rel = (q.get("file") or [""])[0]
             f = BASE / rel if rel else BASE / "__none__"
@@ -856,7 +837,6 @@ select.inp{cursor:pointer}
 .chk input{accent-color:var(--acc)}
 .warnbox{background:rgba(211,162,68,.08);border:1px solid rgba(211,162,68,.3);color:var(--warn);font-size:12.5px;padding:10px 14px;border-radius:8px;margin:10px 0;line-height:1.7}
 .infobox{background:rgba(91,141,217,.07);border:1px solid rgba(91,141,217,.25);color:#a8c3ff;font-size:12.5px;padding:10px 14px;border-radius:8px;margin:10px 0;line-height:1.8}
-#captchaImg{border:1px solid var(--line);border-radius:6px;height:48px;display:none;background:#fff}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 /* ===== 日志 ===== */
 .console{background:#0a0c10;border:1px solid var(--line);border-radius:8px;padding:14px 16px;height:420px;overflow-y:auto;font-family:Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.65}
@@ -1320,7 +1300,6 @@ function importHar(){
   fr.onerror=()=>toast('读取文件失败');
   fr.readAsText(f);
 }
-function loadCaptcha(){const img=$('captchaImg');if(!img)return;img.src='/api/captcha?t='+Date.now();img.style.display='inline-block';}
 function runAll(platform){
   // 消消乐只跟随「一键签到」；只跑单个平台时不带，避免误消耗游戏次数
   const xxl=(platform==='all'&&$('dashXxl')&&$('dashXxl').checked)?1:0;

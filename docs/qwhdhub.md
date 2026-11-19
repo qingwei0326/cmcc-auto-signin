@@ -47,13 +47,27 @@ JSESSIONID=<uuid>; UID=<32位hex>; Comment=SessionServer-unity; Path=/;HTTPOnly;
 
 ## 获取凭证
 
-三条路线：
+两条路线：
 
 1. **HAR 导入**（通用）：抓包找 `appTokenLogin` 请求，body 里的 `token` 就是 `app_token`；
    手机号在 `userCheckId` 字段（十六进制编码的十进制号码），由 `har_import.py` 自动反解归位。
-2. **短信登录**（电脑端，免抓包）：`login.10086.cn` 官方链路，
-   `pull_token_sms.py start <手机号>` → 图形验证码 → 短信验证码 → `login <验证码>`。
-3. **手机一键登录**：见 [bass.md](bass.md) 的 Termux 方案，两者鉴权体系不同但取号逻辑相近。
+2. **手机一键登录**（只适用 BASS）：见 [bass.md](bass.md) 的 Termux 方案，
+   换出的是 BASS 凭证，**不能用于 qwhdhub**。
+
+> 短信验证码登录（`login.10086.cn` H5 链路）曾实现过，但该页面在 2026-05 改版后
+> 加入了设备指纹校验，`sendRandomCodeAction.action` 稳定返回 `6`、
+> `loadSendflag.htm` 返回空，已不可用，故移除相关代码。
+
+### jwt 续期（重要）
+
+`appTokenLogin` 的请求体里 `jwtToken` **优先于** `token`：
+
+- jwt 是**账号级长期凭证**，服务端校验通过即签发会话，且不受 App 内切换登录影响
+- 因此脚本优先用本地缓存的 jwt 免票据续期，`app_token` 只在 jwt 缺失/失效时作引导兜底
+- 每次登录响应都会重签 jwt，脚本总是回写缓存（`.cmcc_jwt_cache_<尾号>.json`）
+
+**实测 jwt 存活约 2.5~3.5 小时**。只要在它失效前跑一次脚本，凭证链就能无限延长；
+一旦断了（如关机超过数小时），只能重新抓包。
 
 ## 注意事项
 

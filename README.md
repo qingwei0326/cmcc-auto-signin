@@ -244,14 +244,7 @@ python pull_token_phone.py --save     # Termux
 原理 `pageInit → getMobile → getSign → getToken → validateToken`，走「本机号码一键登录」。
 `getMobile` 必须蜂窝网，PC 会返回 `网关未插入手机号`。iPhone 用 `pull_token_iphone.js`。
 
-### qwhdhub 短信登录（电脑端）
-
-```bash
-python pull_token_sms.py start 13800138000
-python pull_token_sms.py login <验证码>
-```
-
-走 `login.10086.cn` 官方链路，不经第三方。需要图形验证码时先 `captcha` 再 `send <字符>`。
+> 这条链路换出的是 BASS 平台凭证，**不能用于 qwhdhub**（两者鉴权体系不同）。
 
 ---
 
@@ -275,7 +268,6 @@ python pull_token_sms.py login <验证码>
 ├── app_desktop.py          桌面版入口（pywebview 原生窗口）
 ├── pull_token_phone.py     手机一键登录换 BASS token（免抓包）
 ├── pull_token_iphone.js    同上，iPhone Scriptable 版
-├── pull_token_sms.py       电脑端短信登录换 qwhdhub token
 ├── probe_fj.py             只读探测 BASS 接口
 ├── config.example.json     qwhdhub 配置模板
 ├── config_fj.example.json  BASS 配置模板

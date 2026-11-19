@@ -372,7 +372,8 @@ def notify(cfg: Config, title: str, detail: str):
 
 # ---------------------------------------------------------------- 主流程
 
-def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: bool = False) -> int:
+def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: bool = False,
+        login_only: bool = False) -> int:
     today = datetime.now().strftime("%Y%m%d")
 
     # 重建会话的兜底：第一次失败若是会话问题，重建后再试一次
@@ -393,6 +394,12 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
         for d in status_data.get("markstatus") or []
     )
     log.info("当前累计签到 %s 天，今日%s", acc, "已签" if signed_today else "未签")
+
+    # 仅登录模式：会话已建立成功，jwt 已由 exchange_session 重签并回写缓存。
+    # 用于定时保活——只要在 jwt 失效前跑一次，凭证链就能无限延长。
+    if login_only:
+        log.info("仅登录模式：会话正常，jwt 已续期（不执行签到与后续动作）")
+        return 0
 
     lines = []
     if signed_today:
@@ -476,6 +483,9 @@ def main() -> int:
     parser.add_argument("--games", action="store_true",
                         help="跑拓展活动：周六游戏中心/追剧/抽话费页的打卡+任务+抽奖（需 cmcc_extra.py）")
     parser.add_argument("--delay", type=int, default=0, metavar="N", help="启动前随机延迟 0~N 秒")
+    parser.add_argument("--login-only", action="store_true",
+                        help="只建立会话并续期 jwt，不签到（用于定时保活）")
+    parser.add_argument("--debug", action="store_true", help="失败时打印完整调用栈")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -496,9 +506,13 @@ def main() -> int:
 
     try:
         return run(cfg, dry_run=args.dry_run, claim=args.claim,
-                   tasks=args.tasks, games=args.games)
+                   tasks=args.tasks, games=args.games, login_only=args.login_only)
     except Exception as e:
-        log.exception("执行失败: %s", e)
+        # 默认只打一行人话，不刷一屏 traceback；--debug 才输出完整调用栈
+        if args.debug:
+            log.exception("执行失败: %s", e)
+        else:
+            log.error("执行失败: %s", e)
         notify(cfg, "移动签到异常", f"{e}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
         return 1
 

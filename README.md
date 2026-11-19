@@ -110,6 +110,7 @@ dist\签到控制台.exe → 复制到项目根目录
 |---|---|---|---|
 | `MobileSignIn` | 每天 **08:30** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐 |
 | `MobileDailyReward` | 每天 **06:03 起每小时**，共 17 次 | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 |
+| `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
 
 **为什么需要第二个任务**
 
@@ -122,9 +123,20 @@ dist\签到控制台.exe → 复制到项目根目录
 
 起始时间定在 06:03 而不是 06:00，是为了避开整点时的数据刷新边界。
 
+**为什么需要第三个任务（会话保活）**
+
+qwhdhub 的 `appTokenLogin` 请求里 `jwtToken` 优先于 `token`：jwt 是**账号级长期凭证**，
+服务端校验通过即签发会话。每次登录都会重签 jwt 并回写本地缓存，所以
+
+> **只要在 jwt 失效前跑一次脚本，凭证链就能无限延长，永远不用重复抓包。**
+
+实测 jwt 存活约 **2.5~3.5 小时**。保活任务每 90 分钟续一次，留了 1 小时冗余。
+唯一例外：**电脑连续关机超过几小时，链还是会断**，那时才需要重新抓一次包。
+
 ```bat
 python cmcc_fj.py --config configs_fj/fj1.json --daily-only   # 单号
 python run_all.py --daily-only                                 # 所有 BASS 账号
+python run_all.py --keepalive                                  # 只续 jwt，不签到
 ```
 
 注册方式：
@@ -140,6 +152,12 @@ $a2 = New-ScheduledTaskAction -Execute "<项目目录>\run_daily_reward.bat" -Wo
 $t2 = New-ScheduledTaskTrigger -Daily -At 06:03
 $t2.Repetition = (New-ScheduledTaskTrigger -Once -At 06:03 -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Hours 17)).Repetition
 Register-ScheduledTask -TaskName "MobileDailyReward" -Action $a2 -Trigger $t2 -Force
+
+# 会话保活任务（每 90 分钟，全天覆盖）
+$a3 = New-ScheduledTaskAction -Execute "<项目目录>\run_jwt_keepalive.bat" -WorkingDirectory "<项目目录>"
+$t3 = New-ScheduledTaskTrigger -Daily -At 00:00
+$t3.Repetition = (New-ScheduledTaskTrigger -Once -At 00:00 -RepetitionInterval (New-TimeSpan -Minutes 90) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
+Register-ScheduledTask -TaskName "MobileJwtKeepAlive" -Action $a3 -Trigger $t3 -Force
 ```
 
 控制台「定时任务」页也能直接查状态、改时间、注销。
@@ -229,6 +247,11 @@ GET /bass-preferentialAreaServer/luck/join               → 抽奖
 
 > **App 内切号会让另一个号的 app_token 失效**，两个号尽量分设备登录。
 
+**关于抓包频率**：`app_token` 只有约 30 分钟寿命，但脚本会用缓存的 **jwt** 免票据续期，
+jwt 实测能活 2.5~3.5 小时且**每次续期都会重签并回写**。所以只要装了
+`MobileJwtKeepAlive` 保活任务（每 90 分钟跑一次），凭证链就能一直续下去，
+**平时根本不需要抓包**。只有电脑连续关机超过几小时、链彻底断了，才需要重新抓一次。
+
 ### 刷新 BASS
 
 抓包找任意 `wap.fj.10086.cn` 请求的 `Authorization: Bearer <36位UUID>`，
@@ -256,6 +279,7 @@ python pull_token_phone.py --save     # Termux
 ├── run_gui.bat             无 exe 时用浏览器打开控制台
 ├── run_scheduled.bat       定时签到用
 ├── run_daily_reward.bat    定时领每日奖励用
+├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
 ├── common.py               共用基础设施：原子写、通知、会话、接口调用
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
 ├── cmcc_sign.py            qwhdhub 签到（全国）

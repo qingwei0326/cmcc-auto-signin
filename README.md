@@ -80,6 +80,7 @@ python run_all.py --dry-run
 | **Token 管理** | ① HAR 导入（一份 HAR 同时更新 qwhdhub + BASS）② 优惠专区抽奖 |
 | **BASS 任务** | 领奖/骰子/喂养/只读；**每日奖励 & 福袋**面板；**流量银行任务周期**面板 |
 | **消消乐** | 关卡/星级/局数/间隔，支持 dry-run 与自动探测关卡 |
+| **秒杀抢券** | 签到有礼「每周秒杀」每天 12:00 抢 1 元话费券；显示各号会话是否已备好 |
 | **定时任务** | 查询/注册/注销计划任务 |
 | **日志** | 实时彩色日志 |
 
@@ -111,6 +112,7 @@ dist\签到控制台.exe → 复制到项目根目录
 | `MobileSignIn` | 每天 **08:30** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐 |
 | `MobileDailyReward` | 每天 **06:03 起每小时**，共 17 次 | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 |
 | `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
+| `MobileSeckill` | 每天 **11:30** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券 |
 
 **为什么需要第二个任务**
 
@@ -165,9 +167,41 @@ $a3 = New-ScheduledTaskAction -Execute "<项目目录>\run_jwt_keepalive.bat" -W
 $t3 = New-ScheduledTaskTrigger -Daily -At 00:00
 $t3.Repetition = (New-ScheduledTaskTrigger -Once -At 00:00 -RepetitionInterval (New-TimeSpan -Minutes 90) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
 Register-ScheduledTask -TaskName "MobileJwtKeepAlive" -Action $a3 -Trigger $t3 -Force
+
+# 秒杀抢券任务（11:30 启动，脚本内部等到 12:00）
+$a4 = New-ScheduledTaskAction -Execute "<项目目录>\run_seckill.bat" -WorkingDirectory "<项目目录>"
+$t4 = New-ScheduledTaskTrigger -Daily -At 11:30
+Register-ScheduledTask -TaskName "MobileSeckill" -Action $a4 -Trigger $t4 -Force
 ```
 
 控制台「定时任务」页也能直接查状态、改时间、注销。
+
+---
+
+## 秒杀抢券（每天 12:00 抢 1 元话费券）
+
+签到页面里的「每周秒杀」，**每天 12:00 ~ 13:00 开抢**，奖品 1 元话费券，限抢 1 次。
+实现见 `cmcc_seckill.py`，接口细节见 [docs/seckill.md](docs/seckill.md)。
+
+```bash
+python cmcc_seckill.py --config configs/3239.json --dry-run   # 只查场次与资格
+python cmcc_seckill.py --config configs/3239.json --once      # 立即打一次看响应
+python cmcc_seckill.py --config configs/3239.json             # 等下一场自动抢
+```
+
+**关键机制：会话 cookie 可脱离 app_token 复用。**
+实测只要注入 `QWHD_SESSION_TOKEN` cookie，不需要 app_token、不需要重新登录，
+就能调用全部秒杀接口（含 `redeem`）。所以：
+
+- 每次 qwhdhub 签到成功后自动保存该号的会话到 `gui_data/seckill_session_<尾号>.json`
+- 秒杀脚本启动时优先读已保存会话（探活失败才回落到 app_token 重新登录）
+- **早上签到一次，12 点就能直接抢**，不受 app_token 30 分钟寿命限制
+
+服务器时间比本机快约 1 秒，脚本用 `markSeckill/sysTime` 校准后**提前 0.4 秒**出手；
+被拒后每 2 秒核对一次库存，库存为 0 立刻停手（避免对着空库存狂打触发风控）。
+
+> 限制：真正的开抢时刻尚未实测（每天只有 12:00 一次机会）；
+> 资格要求当日已签到（脚本会自动补签）；库存通常只有 1 份，抢不抢得到看手速与运气。
 
 ---
 
@@ -287,6 +321,7 @@ python pull_token_phone.py --save     # Termux
 ├── run_scheduled.bat       定时签到用
 ├── run_daily_reward.bat    定时领每日奖励用
 ├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
+├── run_seckill.bat         定时秒杀抢券（11:30 启动，等到 12:00）
 ├── common.py               共用基础设施：原子写、通知、会话、接口调用
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
 ├── cmcc_sign.py            qwhdhub 签到（全国）
@@ -294,6 +329,7 @@ python pull_token_phone.py --save     # Termux
 ├── cmcc_fj.py              BASS 签到 + 喂养 + 每日奖励 + 流量银行 + 福袋
 ├── cmcc_xiaoxiaole.py      消消乐
 ├── cmcc_luck.py            优惠专区转盘抽奖
+├── cmcc_seckill.py         签到有礼每周秒杀（12:00 抢话费券）
 ├── har_import.py           从 HAR 提取 qwhdhub + BASS 凭证并写配置
 ├── dashboard.py            图形控制台后端 + 内嵌页面
 ├── app_desktop.py          桌面版入口（pywebview 原生窗口）
@@ -302,7 +338,7 @@ python pull_token_phone.py --save     # Termux
 ├── probe_fj.py             只读探测 BASS 接口
 ├── config.example.json     qwhdhub 配置模板
 ├── config_fj.example.json  BASS 配置模板
-├── docs/                   接口文档（qwhdhub / BASS 活动接口与实测结论）
+├── docs/                   接口文档（qwhdhub / 秒杀 / 周三充值日 / BASS）
 ├── configs/                真实 qwhdhub 配置（不入库）
 ├── configs_fj/             真实 BASS 配置（不入库）
 ├── gui_data/               运行状态与统计（不入库）
@@ -376,8 +412,12 @@ python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 - BASS 签到在凌晨会返回 `1502 未到可签到时间`，属正常
 - 每日奖励三档之间必须间隔 60 分钟，靠 `MobileDailyReward` 每小时轮询领取；不装这个任务就只领得到第一档
 - 福建以外省份的 BASS 活动未适配（`wap.fj.10086.cn` 为福建站）
-- **周三充值日、限时秒杀尚未实现**：接口已在 `docs/wedrecharge.md` 归档，
+- **周三充值日尚未实现**：接口已在 `docs/wedrecharge.md` 归档，
   但抽奖与领券的实际请求还没抓到
+- **秒杀的真正开抢时刻尚未实测**：每天只有 12:00 ~ 13:00 一次机会，
+  库存通常只有 1 份，抢不抢得到看运气
+- qwhdhub 签到**必须**有有效 app_token；秒杀虽可用已保存的会话 cookie 兜底，
+  但会话本身也是靠签到时建立的，app_token 全断后仍需重新抓包
 
 ---
 

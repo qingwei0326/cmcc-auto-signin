@@ -283,10 +283,62 @@ def run_xxl(dry_run: bool, times: int) -> list:
 
 # ---------------------------------------------------------------- 主流程
 
+def run_seckill(dry_run: bool, at: str = "") -> list:
+    """跑签到有礼「每周秒杀」：每个 configs 配置一个号，等到 12:00 自动抢。"""
+    script = BASE / "cmcc_seckill.py"
+    d = BASE / "configs"
+    results = []
+    if not script.exists():
+        print("缺少 cmcc_seckill.py，跳过秒杀")
+        return results
+    confs = sorted(d.glob("*.json")) if d.exists() else []
+    if not confs:
+        print("configs 下没有配置，跳过秒杀")
+        return results
+
+    print("\n" + "=" * 66)
+    print(f" 秒杀抢券   {len(confs)} 个账号")
+    print("=" * 66)
+
+    def one(conf):
+        cmd = [sys.executable, str(script), "--config", str(conf)]
+        if dry_run:
+            cmd.append("--dry-run")
+        elif at:
+            cmd += ["--at", at]
+        t0 = time.time()
+        ok = False
+        buf = []
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True,
+                                 encoding="utf-8", errors="ignore", timeout=900)
+            out = (res.stdout or "").strip()
+            err = (res.stderr or "").strip()
+            if out:
+                buf.append(out[-1500:])
+            ok = res.returncode == 0
+            if not ok:
+                msg = brief_error(err) or brief_error(out)
+                if msg:
+                    buf.append(f"  ↑ 失败原因：{msg}")
+        except subprocess.TimeoutExpired:
+            buf.append("超时，跳过")
+        except Exception as e:
+            buf.append(f"异常：{e}")
+        return label_of(conf, "phone"), ok, round(time.time() - t0, 1), "\n".join(buf)
+
+    for i, conf in enumerate(confs, 1):
+        name, ok, sec, text = one(conf)
+        if text:
+            print(text)
+        results.append(("seckill", name, ok, sec))
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--platform", choices=["qwhd", "bass", "all"], default="all")
+    ap.add_argument("--platform", choices=["qwhd", "bass", "all", "none"], default="all")
     ap.add_argument("--delay", type=int, default=0)
     ap.add_argument("--extra", default="", help="传给 BASS 脚本的额外参数，如 --roll")
     ap.add_argument("--xxl", action="store_true", help="签完之后接着跑消消乐")
@@ -297,6 +349,11 @@ def main():
     ap.add_argument("--no-notify", action="store_true", help="不推送失败告警")
     ap.add_argument("--keepalive", action="store_true",
                     help="只做 qwhdhub 会话保活（续期 jwt，不签到、不推送），用于定时任务")
+    ap.add_argument("--seckill", action="store_true",
+                    help="签完之后接着跑签到秒杀（12:00 抢话费券）")
+    ap.add_argument("--seckill-only", action="store_true",
+                    help="只跑秒杀，不跑签到（用于秒杀专用计划任务）")
+    ap.add_argument("--seckill-at", default="", help="秒杀开抢时刻，默认按 secConfig 自动选场次")
     args = ap.parse_args()
 
     # 只领每日奖励：只跑 BASS，且把 --daily-only 透传给 cmcc_fj.py
@@ -304,6 +361,12 @@ def main():
         args.platform = "bass"
         args.xxl = False
         args.extra = (args.extra + " --daily-only").strip()
+
+    # 只跑秒杀：不签到（资格由秒杀脚本自己补签），也不跑别的平台
+    if args.seckill_only:
+        args.seckill = True
+        args.xxl = False
+        args.platform = "none"
 
     # 保活：只登录续 jwt，不签到；失败也不推送（保活失败由每日签到去告警）
     if args.keepalive:
@@ -316,7 +379,8 @@ def main():
     log = RotatingLog(args.log)
     if log.enabled:
         sys.stdout = Tee(log)
-    keys = ["qwhd", "bass"] if args.platform == "all" else [args.platform]
+    keys = ["qwhd", "bass"] if args.platform == "all" else (
+        [] if args.platform == "none" else [args.platform])
     results = []
 
     for key in keys:
@@ -339,6 +403,9 @@ def main():
 
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))
+
+    if args.seckill:
+        results.extend(run_seckill(args.dry_run, args.seckill_at))
 
     if not results:
         print("\n没有任何账号被执行。")

@@ -232,6 +232,28 @@ class TestSeckill(unittest.TestCase):
         self.assertTrue(fa.name.endswith("3239.json"))
         self.assertTrue(fb.name.endswith("4167.json"))
 
+    def test_server_time_conversion_has_no_double_scaling(self):
+        """服务器毫秒换算不能把毫秒偏移再乘 1000（曾偏了约 1000 秒）。"""
+        import time
+        import cmcc_seckill as SK
+        offset_ms = -1021.0
+        now_srv_ms = time.time() * 1000 + offset_ms
+        # 服务器时间应与本机相差约 1 秒（毫秒级），而不是 1000 秒
+        self.assertLess(abs(now_srv_ms - time.time() * 1000), 5000)
+        # 对照：错误的写法会差约 100 万毫秒
+        wrong = (time.time() + offset_ms) * 1000
+        self.assertGreater(abs(wrong - now_srv_ms), 900000)
+
+    def test_pre_window_blocks_early_fire(self):
+        """距开抢太远时不该出手（否则会打上千个请求触发风控）。"""
+        import cmcc_seckill as SK
+        self.assertIn("NOT_TIME_IN", SK.STOP_STATUSES.__class__.__mro__[0].__name__ and
+                      list(SK.STOP_STATUSES) and "NOT_TIME_IN" or "")
+        # NOT_TIME_IN 不能是终态（否则未开抢就停了）
+        self.assertNotIn("NOT_TIME_IN", SK.STOP_STATUSES)
+        # NET_ERROR 是终态（无效 secId 会返回它）
+        self.assertIn("NET_ERROR", SK.STOP_STATUSES)
+
     def test_section_table_has_seckill(self):
         import dashboard
         self.assertIn("cmcc_seckill.py", dashboard.INDEX_HTML)

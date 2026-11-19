@@ -29,6 +29,20 @@ UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
 sys.stdout.reconfigure(encoding="utf-8")
 
 
+def setup_utf8():
+    """把 stdout / stderr 都固定成 UTF-8。
+
+    Windows 上 stderr 在被管道捕获时默认用 GBK，父进程按 UTF-8 解码就会乱码
+    （表现为「ִʧ: appTokenLogin ʧ: FAILED APP¼״̬...」）。
+    必须在 logging.basicConfig 之前调用，handler 才会拿到新编码的流。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------- 基础
 
 def now_ms():

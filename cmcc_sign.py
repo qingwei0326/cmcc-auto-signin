@@ -48,7 +48,7 @@ from urllib.parse import urlsplit
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import atomic_write_json
+from common import atomic_write_json, setup_utf8
 
 # ---------------------------------------------------------------- 常量
 
@@ -181,8 +181,11 @@ def load_jwt_cache(cfg: Config) -> tuple[str, float] | None:
 
 
 def save_jwt_cache(cfg: Config, jwt: str | None):
-    """回写最新 jwt。first_seen 记录凭证链起点（首次引导时间）并跨重签保持，
-    用于在 jwt 最终失效时计算整条凭证链的实际存活时长。"""
+    """回写最新 jwt。first_seen 记录凭证链起点（首次引导时间）并跨次保持，
+    用于统计这条凭证链从第一次建立到现在存活了多久。
+
+    注意：jwt 只是登录时的附带产物，实测无法单独用于登录（见 exchange_session）。
+    """
     if not jwt:
         return
     try:
@@ -205,11 +208,22 @@ def exchange_session(cfg: Config) -> tuple[requests.Session, str]:
 
     返回 (session, referer)。referer 是带 token 的活动页地址，后续 API 都要带。
 
-    凭证策略（实测结论）：
-    - jwt 是账号级长期凭证：appTokenLogin 请求里 jwtToken 优先于 token 字段，
-      服务端校验通过 jwt 即签发会话（token 可为空/伪造），且不受 App 内切换登录影响；
-    - 因此优先用缓存 jwt 免票据续期，app_token 仅在 jwt 缺失/失效时作引导兜底；
-    - 每次登录响应都会重签 jwt，总是回写缓存保持最新。
+    凭证策略（2026-11-20 实测复核，结论已修正）：
+
+    - App 的 appTokenLogin 请求体里 `jwtToken` 与 `token` **总是同时出现**，
+      App 端两个值都是现成的。
+    - **实测：只传 `jwtToken`（token 留空或伪造）一律返回「APP登录状态已过期」**。
+      对照实验（同一份 jwt）：
+        A. jwt + token=""        → FAILED
+        B. jwt + 伪造 token       → FAILED
+        C. jwt + 真实 app_token   → SUCCESS
+      说明服务端真正校验的是 `token`（App 票据），`jwtToken` 单独用通不过。
+    - 因此「用缓存 jwt 免票据续期」这条路**当前不成立**。第②步保留仅作兜底，
+      万一服务端以后放开策略就能自动受益；它失败时立即回落到第③步。
+    - 登录成功后服务端会下发新的 jwt 与 QWHD_SESSION_TOKEN，jwt 仍写回缓存备用
+      （它可能用于 App 的其它接口，HAR 里没有直接使用的痕迹）。
+    - 净效果：**登录依赖 app_token**，其寿命约 30 分钟；靠定时重跑只能延后失效，
+      不能真正续命。
     """
     s = requests.Session()
     # 直连：绕过系统/环境变量代理，避免本机抓包工具的 MITM 证书干扰 SSL 验证
@@ -234,7 +248,7 @@ def exchange_session(cfg: Config) -> tuple[requests.Session, str]:
         "took": random.randint(120, 900),
     }
 
-    # ② 优先用缓存 jwt 免票据续期
+    # ② 尝试用缓存 jwt 免票据续期（实测当前不成立，仅作兜底：万一服务端放开策略）
     resp = None
     cached = load_jwt_cache(cfg)
     if cached:
@@ -395,7 +409,7 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
     )
     log.info("当前累计签到 %s 天，今日%s", acc, "已签" if signed_today else "未签")
 
-    # 仅登录模式：会话已建立成功，jwt 已由 exchange_session 重签并回写缓存。
+    # 仅登录模式：会话已建立成功，jwt 已由 exchange_session 写回缓存。
     # 用于定时保活——只要在 jwt 失效前跑一次，凭证链就能无限延长。
     if login_only:
         log.info("仅登录模式：会话正常，jwt 已续期（不执行签到与后续动作）")
@@ -488,6 +502,7 @@ def main() -> int:
     parser.add_argument("--debug", action="store_true", help="失败时打印完整调用栈")
     args = parser.parse_args()
 
+    setup_utf8()  # 必须在 basicConfig 之前，保证 stderr 用 UTF-8 输出
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",

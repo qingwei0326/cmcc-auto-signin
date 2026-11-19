@@ -187,6 +187,22 @@ GET /bass-commonAreaServer/H5Api/hmxb/treasure/open
 
 掷骰子会消耗次数，属游戏内正常消耗。
 
+### 补充接口（2026-11-20 抓包新增）
+
+| 端点 | 说明 |
+|---|---|
+| `POST /bass-commonAreaServer/H5Api/hmxb/prize/list` | 奖品列表 |
+| `POST /bass-commonAreaServer/H5Api/hmxb/activity/status` | 活动状态 |
+| `POST /bass-commonAreaServer/H5Api/hmxb/marquee/list` | 跑马灯（滚动公告） |
+
+### 其他子服务
+
+| 端点 | 说明 |
+|---|---|
+| `POST /bass-unifyDocsConfigServer/client/getDocsConfig` | 统一文档配置（新发现，未实现） |
+| `POST /bass-scatteredAdsServer/H5Api/scatteredAds/advertise/space/detail/lis` | 广告位详情（新发现） |
+| `GET /bass-activityH5/pages/nationalDay2026/index` | **国庆活动页**（2026 新活动，未实现） |
+
 ---
 
 ## 手机一键登录（免抓包）

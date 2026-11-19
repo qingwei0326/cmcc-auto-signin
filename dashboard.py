@@ -455,8 +455,13 @@ def do_action(body: dict):
             cmd.append("--xxl")
             if body.get("xxl_times"):
                 cmd += ["--xxl-times", str(body["xxl_times"])]
-        label = "一键签到（%s%s%s）" % (plat, "，dry-run" if body.get("dry") else "",
-                                     "，含消消乐" if body.get("xxl") else "")
+        if body.get("seckill"):
+            cmd.append("--seckill")
+            if body.get("seckill_at"):
+                cmd += ["--seckill-at", body["seckill_at"]]
+        label = "一键签到（%s%s%s%s）" % (plat, "，dry-run" if body.get("dry") else "",
+                                     "，含消消乐" if body.get("xxl") else "",
+                                     "，含秒杀" if body.get("seckill") else "")
         return {"ok": RUNNER.start(label, cmd)}
 
     if act == "qwhd_run":
@@ -503,6 +508,17 @@ def do_action(body: dict):
         if body.get("max"):
             cmd += ["--max", str(body["max"])]
         return {"ok": RUNNER.start("优惠专区抽奖", cmd)}
+
+    if act == "seckill_run":
+        cfg = body.get("file") or "configs/3239.json"
+        cmd = py("cmcc_seckill.py", "--config", cfg)
+        if body.get("dry"):
+            cmd.append("--dry-run")
+        elif body.get("once"):
+            cmd.append("--once")
+        elif body.get("at"):
+            cmd += ["--at", body["at"]]
+        return {"ok": RUNNER.start(f"签到秒杀 · {cfg}", cmd)}
 
     if act == "xxl_run":
         cmd = py("cmcc_xiaoxiaole.py", "--config", body.get("file", "configs_fj/fj1.json"))
@@ -570,7 +586,7 @@ def do_action(body: dict):
 
     # ---- 定时任务 ----
     if act == "sched_query":
-        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive'){"
+        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill'){"
               "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
               "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
               "Write-Host ($n+'  状态='+$t.State+'  下次='+$i.NextRunTime+'  上次结果='+$i.LastTaskResult)}"
@@ -601,6 +617,14 @@ def do_action(body: dict):
                   f"$tr.Repetition=$r;"
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每 90 分钟一次（全天覆盖）'")
+        elif kind == "seckill":
+            # 秒杀抢券：11:30 启动，脚本内部等到 12:00 再出手（app_token 那时仍有效）
+            name, bat = "MobileSeckill", "run_seckill.bat"
+            d = str(BASE)
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"Write-Host '{name} 已注册，每天 {t} 运行（脚本内部等到 12:00 开抢）'")
         else:
             name, bat = "MobileSignIn", "run_scheduled.bat"
             d = str(BASE)
@@ -611,7 +635,7 @@ def do_action(body: dict):
         return {"ok": RUNNER.start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
     if act == "sched_unreg":
         name = body.get("name", "")
-        if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive"):
+        if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive", "MobileSeckill"):
             return {"ok": False, "err": "非法任务名"}
         ps = f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false; Write-Host '{name} 已注销'"
         return {"ok": RUNNER.start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
@@ -647,7 +671,27 @@ def build_state():
         "flowbank": _load_json_safe(DATA / "flowbank_state.json"),
         "daily": _load_json_safe(DATA / "daily_state.json"),
         "luck": _load_json_safe(DATA / "luck_state.json"),
+        "seckill_sessions": _list_seckill_sessions(),
     }
+
+
+def _list_seckill_sessions() -> list:
+    """列出已保存的活动会话（按账号），供控制台展示秒杀就绪状态。"""
+    out = []
+    d = DATA / "seckill_sessions"
+    src = DATA
+    for f in sorted(src.glob("seckill_session_*.json")):
+        try:
+            o = load_json(f) or {}
+            out.append({
+                "file": f.name,
+                "phone": o.get("phone") or "",
+                "at": o.get("at") or "",
+                "keys": list((o.get("cookie") or {}).keys()),
+            })
+        except Exception:
+            pass
+    return out
 
 
 def _load_json_safe(p: Path):
@@ -869,6 +913,7 @@ select.inp{cursor:pointer}
       <button data-p="token" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 19 4m-3.5 0H19v3.5"/></svg>Token 管理</button>
       <button data-p="bass" onclick="nav(this)"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>BASS 任务</button>
       <button data-p="xxl" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>消消乐</button>
+      <button data-p="seckill" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>秒杀抢券</button>
       <button data-p="sched" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>定时任务</button>
       <button data-p="logs" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m5 0h5"/></svg>日志</button>
     </nav>
@@ -995,6 +1040,33 @@ select.inp{cursor:pointer}
         </div>
       </div>
 
+      <!-- 秒杀抢券 -->
+      <div class="page" id="p-seckill">
+        <div class="phead"><div><h2>秒杀抢券</h2><div class="desc">cmcc_seckill.py · 签到有礼「每周秒杀」每天 12:00 抢 1 元话费券</div></div></div>
+        <div class="panel">
+          <h3>执行秒杀</h3>
+          <div class="frow"><label>账号</label><select class="inp" id="skFile"></select></div>
+          <div class="frow"><label>开抢时刻</label><input class="inp" id="skAt" value="11:59:50" style="min-width:100px">
+            <span style="font-size:12px;color:var(--sub)">留空则由脚本按 secConfig 自动选场次</span></div>
+          <div class="frow">
+            <button class="btn pri" onclick="runSeckill()">等到点自动抢</button>
+            <button class="btn" onclick="act({action:'seckill_run',file:V('skFile'),dry:1})">dry-run 查场次</button>
+            <button class="btn" onclick="act({action:'seckill_run',file:V('skFile'),once:1})">立即打一次（验证）</button>
+          </div>
+          <div class="infobox">流程：校服务器时间 → 拉场次 → 查当日签到资格 → 等到点 → 密集重试 <code>redeem</code>。
+            开抢时会<b>提前 0.4 秒</b>出手以抵消网络延迟，被拒后每 2 秒核对一次库存，没货立刻停手。
+            抢到的券进 App「我的奖品」核销，脚本会推送到手机。</div>
+          <div class="warnbox">前提是 <b>app_token 在开抢时仍然有效</b>（约 30 分钟寿命）。
+            脚本会在等待期间每 8 分钟发一次心跳续会话，但若电脑关机超过半小时，
+            12 点时登录已失效，需要重新抓包。这项无法完全自动化。</div>
+          <div class="frow"><label>会话就绪</label><span style="font-size:13px" id="skSess">加载中…</span></div>
+          <div class="infobox">每次 qwhdhub 签到成功后，会自动保存该账号的活动会话 cookie
+            （<code>gui_data/seckill_session_&lt;尾号&gt;.json</code>）。实测<b>仅凭该 cookie 就能调用秒杀接口，
+            完全不需要 app_token</b>，所以早上签到一次，12 点就能直接抢。
+            下面显示的就是各号已备好的会话。</div>
+        </div>
+      </div>
+
       <!-- 定时任务 -->
       <div class="page" id="p-sched">
         <div class="phead"><div><h2>定时任务</h2><div class="desc">Windows 计划任务注册 / 注销（PowerShell Register-ScheduledTask）</div></div></div>
@@ -1012,6 +1084,10 @@ select.inp{cursor:pointer}
             <input class="inp" id="tKeep" value="00:00" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'keepalive',time:V('tKeep')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileJwtKeepAlive？',()=>act({action:'sched_unreg',name:'MobileJwtKeepAlive'}))">注销</button></div>
+          <div class="frow"><label>秒杀抢券任务</label><span style="font-size:13px">MobileSeckill → run_seckill.bat，脚本内等到 12:00</span>
+            <input class="inp" id="tSeckill" value="11:30" style="min-width:80px">
+            <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'seckill',time:V('tSeckill')})">注册/更新</button>
+            <button class="btn sm danger" onclick="cf('注销 MobileSeckill？',()=>act({action:'sched_unreg',name:'MobileSeckill'}))">注销</button></div>
           <div class="infobox">每日奖励三档（150/250/350）之间必须间隔 60 分钟，一次跑只能领一档。
             这个任务从设定时间起每小时检查一次、共 17 次，能领就领，领完自动空转。<br>
             <b>会话保活</b>：qwhdhub 的 jwt 实测只能活 2.5~3.5 小时，每 90 分钟续一次就能让凭证链一直不断，
@@ -1037,7 +1113,7 @@ select.inp{cursor:pointer}
 <script>
 const $=id=>document.getElementById(id), V=id=>$(id).value.trim();
 let logSeq=0, STATE=null;
-const TITLES={dash:'总览',token:'Token 管理',bass:'BASS 任务',xxl:'消消乐',sched:'定时任务',logs:'日志'};
+const TITLES={dash:'总览',token:'Token 管理',bass:'BASS 任务',xxl:'消消乐',seckill:'秒杀抢券',sched:'定时任务',logs:'日志'};
 function nav(b){document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));$('p-'+b.dataset.p).classList.add('on');
   $('pageTitle').textContent='签到控制台 / '+(TITLES[b.dataset.p]||'');
@@ -1160,6 +1236,15 @@ function render(){
   const bk=STATE.bass_files;
   fillSel('bassFile',bk); fillSel('xxlFile',bk);
   fillSel('bassRunKey',accts.filter(a=>a.plat==='BASS').map(a=>a.key));
+  // 秒杀只作用于 qwhdhub（签到有礼活动）
+  fillSel('skFile',accts.filter(a=>a.plat==='qwhdhub').map(a=>a.file));
+  // 秒杀会话就绪状态
+  const skS=$('skSess');
+  if(skS){
+    const ss=(STATE.seckill_sessions||[]);
+    if(!ss.length){skS.innerHTML='<span style="color:var(--warn)">暂无会话 —— 请先跑一次 qwhdhub 签到</span>';}
+    else{skS.innerHTML=ss.map(x=>`<span class="pill" style="margin-right:6px">${x.phone?mask(x.phone):x.file} · ${x.at.replace('T',' ').slice(5,16)}</span>`).join('');}
+  }
   // HAR 导入的账号兜底下拉（BASS token 无法自证归属时用）
   const hk=$('harKey');
   if(hk&&!hk.dataset.done){
@@ -1299,6 +1384,9 @@ function runBass(){
        feed:parseInt($('bFeed').value||0),tasks:$('bTasks').checked?1:0,fb:$('bFb').checked?1:0});}
 function runXxl(){if(!confirm('消消乐属于伪造游戏通关成绩，中奖靠服务端概率，确定要跑吗？'))return;
   act({action:'xxl_run',file:V('xxlFile'),level:V('xLevel'),star:V('xStar'),times:V('xTimes'),gap:V('xGap')});}
+function runSeckill(){
+  const at=V('skAt').trim();
+  act({action:'seckill_run',file:V('skFile'),at:at||''});}
 function afterHar(r){
   const el=$('harOut'); if(!el)return;
   const rep=(r&&r.report)||[];

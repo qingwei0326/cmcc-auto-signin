@@ -5,6 +5,8 @@
 | 文档 | 平台 | 域名 |
 |---|---|---|
 | [qwhdhub.md](qwhdhub.md) | 全国签到 | `wx.10086.cn` |
+| [seckill.md](seckill.md) | 签到有礼每周秒杀（12:00 抢话费券） | `wx.10086.cn` |
+| [wedrecharge.md](wedrecharge.md) | 周三充值日 | `wx.10086.cn` |
 | [bass.md](bass.md) | 福建站活动 | `wap.fj.10086.cn` |
 | [wedrecharge.md](wedrecharge.md) | 周三充值日（独立活动） | `wx.10086.cn` |
 

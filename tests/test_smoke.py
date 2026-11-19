@@ -186,3 +186,54 @@ class TestRunAll(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSeckill(unittest.TestCase):
+    """秒杀相关的纯逻辑（选场次、状态判定、会话路径隔离）。"""
+
+    def test_pick_zone_prefers_active(self):
+        from cmcc_seckill import pick_zone
+        zones = [
+            {"id": 1, "startTime": "1000", "endTime": "2000"},
+            {"id": 2, "startTime": "3000", "endTime": "4000"},
+            {"id": 3, "startTime": "5000", "endTime": "6000"},
+        ]
+        z, active = pick_zone(zones, 1500)
+        self.assertEqual(z["id"], 1)
+        self.assertTrue(active)
+        # 不在任何场次内 → 取下一个未开始的
+        z, active = pick_zone(zones, 2500)
+        self.assertEqual(z["id"], 2)
+        self.assertFalse(active)
+        # 全部结束 → None
+        z, active = pick_zone(zones, 99999)
+        self.assertIsNone(z)
+
+    def test_stop_statuses_cover_terminal_cases(self):
+        from cmcc_seckill import STOP_STATUSES
+        for s in ("PRIZE_NO_STOCK", "ZONE_TODAY_COMPLETE", "PRIZE_LIMIT_DAY",
+                  "PRIZE_LIMIT_MONTH", "PRIZE_RESTRIC_LIMIT",
+                  "WORK_ORDER_RESTRIC_LIMIT", "PARAM_ERROR"):
+            self.assertIn(s, STOP_STATUSES)
+        # 明确不能停的两种
+        self.assertNotIn("NOT_TIME_IN", STOP_STATUSES)
+        self.assertNotIn("SUCCESS", STOP_STATUSES)
+
+    def test_session_file_is_per_account(self):
+        """会话必须按账号隔离，否则 4167 会误用 3239 的会话抢券。"""
+        import cmcc_sign
+        cfg_a = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg_a.phone = "18405963239"
+        cfg_b = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg_b.phone = "17359634167"
+        fa = cmcc_sign.activity_session_file(cfg_a)
+        fb = cmcc_sign.activity_session_file(cfg_b)
+        self.assertNotEqual(fa, fb)
+        self.assertTrue(fa.name.endswith("3239.json"))
+        self.assertTrue(fb.name.endswith("4167.json"))
+
+    def test_section_table_has_seckill(self):
+        import dashboard
+        self.assertIn("cmcc_seckill.py", dashboard.INDEX_HTML)
+        self.assertIn("seckill_run", dashboard.INDEX_HTML)
+        self.assertIn("runSeckill", dashboard.INDEX_HTML)

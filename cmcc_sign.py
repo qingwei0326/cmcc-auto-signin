@@ -356,6 +356,40 @@ def parse_prize(mark_result: dict) -> str:
     return " ".join(p for p in parts if p)
 
 
+# ---------------------------------------------------------------- 会话持久化
+
+def activity_session_file(cfg: Config) -> Path:
+    """按账号隔离会话文件——不同号的券各记各的，不能共用。"""
+    tag = (cfg.phone or cfg.activity_id or "default")[-4:]
+    return Path(__file__).resolve().parent / "gui_data" / f"seckill_session_{tag}.json"
+
+
+def save_activity_session(s: requests.Session, referer: str, cfg: Config = None) -> None:
+    """把活动会话 cookie 存到磁盘。
+
+    实测（2026-11-20）：仅注入 QWHD_SESSION_TOKEN cookie、不带 app_token、
+    也不重新登录，就能正常调用 markSeckill 全部接口（含 redeem）。
+    因此把这个 cookie 留到 12 点用，秒杀就完全不依赖 app_token 的 30 分钟寿命。
+
+    注意：会话按账号隔离存文件，否则 4167 会误用 3239 的会话去抢券。
+    """
+    try:
+        cks = {c.name: c.value for c in s.cookies if c.name.endswith("SESSION_TOKEN")}
+        if not cks:
+            return
+        path = activity_session_file(cfg) if cfg else (
+            Path(__file__).resolve().parent / "gui_data" / "seckill_session.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(
+            {"cookie": cks, "referer": referer,
+             "phone": (cfg.phone if cfg else ""),
+             "at": datetime.now().isoformat(timespec="seconds")},
+            ensure_ascii=False, indent=1), encoding="utf-8")
+        log.info("活动会话已保存（%s），供 12 点秒杀复用", path.name)
+    except Exception as e:
+        log.warning("保存活动会话失败: %s", e)
+
+
 # ---------------------------------------------------------------- 通知
 
 def notify(cfg: Config, title: str, detail: str):
@@ -408,6 +442,10 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
         for d in status_data.get("markstatus") or []
     )
     log.info("当前累计签到 %s 天，今日%s", acc, "已签" if signed_today else "未签")
+
+    # 保存活动会话 cookie：实测仅凭该 cookie 即可调用 markSeckill 接口，
+    # 不依赖 app_token。有了它，12 点秒杀不必重新登录。
+    save_activity_session(s, referer, cfg)
 
     # 仅登录模式：会话已建立成功，jwt 已由 exchange_session 写回缓存。
     # 用于定时保活——只要在 jwt 失效前跑一次，凭证链就能无限延长。

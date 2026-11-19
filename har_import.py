@@ -1,0 +1,216 @@
+"""
+har_import.py —— 从 HAR 里同时提取 qwhdhub app_token 与 BASS Bearer token，写回配置
+
+设计要点：
+  · qwhdhub 的 token 来自 appTokenLogin 请求体（JSESSIONID=..; UID=..; ticketID=..），
+    手机号从 userCheckId（十六进制）反解，反解失败时在请求体里正则兜底。
+  · BASS 的 token 来自任意 wap.fj.10086.cn / app.fmcc.com.cn 请求的 Authorization 头，
+    形如 Bearer <36位UUID>。
+  · BASS 的 HAR 本身不含手机号，所以归属账号靠「同一份 HAR 里的 qwhdhub 号码」推断；
+    推断不到时用调用方显式指定的 key（configs/<key>.json 的 phone）兜底。
+  · 只写 token 相关字段，其余配置原样保留。
+"""
+
+import json
+import re
+from pathlib import Path
+from common import atomic_write_json
+
+BASE = Path(__file__).parent
+
+QWH_MARK = "appTokenLogin"
+BASS_HOSTS = ("wap.fj.10086.cn", "app.fmcc.com.cn")
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+PHONE_RE = re.compile(r"1[3-9]\d{9}")
+
+
+def _headers(req):
+    out = {}
+    for h in (req.get("headers") or []):
+        name = str(h.get("name") or "").lower()
+        if name:
+            out[name] = str(h.get("value") or "")
+    return out
+
+
+def _phone_from_user_check(uc):
+    try:
+        p = str(int(str(uc), 16))
+    except Exception:
+        return ""
+    return p if PHONE_RE.fullmatch(p) else ""
+
+
+def parse_har_text(text):
+    """解析 HAR 文本，返回 {qwhd:{phone:{token,body,ts}}, bass:{token,url,ts}}"""
+    data = json.loads(text)
+    entries = ((data.get("log") or {}).get("entries")) or []
+
+    qwhd = {}
+    bass = None
+    mobiles = set()
+
+    for e in entries:
+        req = e.get("request") or {}
+        url = str(req.get("url") or "")
+        ts = str(e.get("startedDateTime") or "")
+        hdr = _headers(req)
+
+        for m in PHONE_RE.finditer(url):
+            mobiles.add(m.group(0))
+
+        # ---- qwhdhub ----
+        if QWH_MARK in url:
+            raw = (req.get("postData") or {}).get("text") or ""
+            body = {}
+            if raw.strip().startswith("{"):
+                try:
+                    body = json.loads(raw)
+                except Exception:
+                    body = {}
+            tk = str(body.get("token") or "")
+            if "JSESSIONID" in tk.upper():
+                phone = _phone_from_user_check(body.get("userCheckId"))
+                if not phone:
+                    m = PHONE_RE.search(json.dumps(body, ensure_ascii=False))
+                    if m:
+                        phone = m.group(0)
+                if phone and (phone not in qwhd or ts >= qwhd[phone]["ts"]):
+                    qwhd[phone] = {"token": tk, "body": body, "ts": ts}
+                if phone:
+                    mobiles.add(phone)
+
+        # ---- BASS ----
+        auth = hdr.get("authorization", "")
+        if auth.lower().startswith("bearer ") and any(h in url for h in BASS_HOSTS):
+            tok = auth[7:].strip()
+            if UUID_RE.fullmatch(tok):
+                if bass is None or ts >= bass["ts"]:
+                    bass = {"token": tok, "url": url, "ts": ts}
+
+    return {"qwhd": qwhd, "bass": bass, "mobiles": sorted(mobiles)}
+
+
+def _read_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_json(path, obj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, obj, indent=2)
+
+
+def _fj_targets():
+    """{phone: Path} —— configs_fj 下各配置的号码映射"""
+    out = {}
+    d = BASE / "configs_fj"
+    if not d.exists():
+        return out
+    for f in sorted(d.glob("*.json")):
+        c = _read_json(f)
+        ph = str(c.get("phone") or "")
+        if PHONE_RE.fullmatch(ph):
+            out[ph] = f
+    return out
+
+
+def apply(text, key=None):
+    """解析并写回配置，返回人类可读的报告行列表。"""
+    try:
+        p = parse_har_text(text)
+    except Exception as e:
+        return [f"解析失败：{e}"]
+
+    report = []
+
+    # ---- qwhdhub 写 configs/<尾号>.json ----
+    for phone, a in sorted(p["qwhd"].items()):
+        out = BASE / "configs" / f"{phone[-4:]}.json"
+        cfg = _read_json(out)
+        body = a.get("body") or {}
+        cfg.update({
+            "app_token": a["token"],
+            "phone": phone,
+            "province_code": str(body.get("provinceCode") or cfg.get("province_code") or "591"),
+            "city_code": str(body.get("cityCode") or cfg.get("city_code") or "0596"),
+            "carrier_operator": str(body.get("carrierOperator") or cfg.get("carrier_operator") or "002"),
+            "app_version_code": str(body.get("appVersionCode") or cfg.get("app_version_code") or "12.5.7"),
+        })
+        cfg.setdefault("activity_id", "1021122301")
+        cfg.setdefault("channel_id", "P00000109876")
+        _write_json(out, cfg)
+        report.append(f"qwhdhub {phone} → configs/{out.name}（token {len(a['token'])} 字符）")
+
+    if not p["qwhd"]:
+        hint = "（未找到 appTokenLogin 请求）"
+        if p["mobiles"]:
+            hint += "，HAR 里出现的号码：" + "、".join(p["mobiles"])
+        report.append("qwhdhub 无可用 token " + hint)
+
+    # ---- BASS 写 configs_fj ----
+    if p["bass"]:
+        tok = p["bass"]["token"]
+        targets = _fj_targets()
+        phones = list(p["qwhd"].keys())
+        if not phones and key:
+            kf = BASE / "configs" / f"{key}.json"
+            ph = str(_read_json(kf).get("phone") or "")
+            if PHONE_RE.fullmatch(ph):
+                phones = [ph]
+        if not phones and len(p["mobiles"]) == 1:
+            phones = p["mobiles"]
+
+        hit = next((targets[ph] for ph in phones if ph in targets), None)
+        if hit is None:
+            report.append(
+                f"BASS 拿到 token {tok[:8]}…，但无法确定归属账号"
+                f"（HAR 里没有 qwhdhub 请求）。请在页面上选择账号后再导入。"
+            )
+        else:
+            cfg = _read_json(hit)
+            if cfg.get("bearer_token") == tok:
+                report.append(f"BASS {hit.name} 已是该 token，跳过")
+            else:
+                cfg["bearer_token"] = tok
+                _write_json(hit, cfg)
+                report.append(f"BASS {hit.name}（{cfg.get('phone')}）→ Bearer {tok[:8]}…")
+    else:
+        report.append("BASS 无可用 token（未找到 wap.fj.10086.cn 的 Authorization: Bearer）")
+
+    return report
+
+
+def scan_dir(directory=None):
+    """扫描目录下的 *.har，逐个解析并返回 (报告行, 命中文件数)"""
+    d = Path(directory) if directory else BASE
+    files = sorted([f for f in d.glob("*.har")], key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return [f"{d} 下没有 .har 文件，请把抓包文件放到该目录，或用「选择文件」导入。"], 0
+
+    lines = []
+    used = 0
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+            p = parse_har_text(text)
+        except Exception as e:
+            lines.append(f"{f.name}：解析失败（{e}）")
+            continue
+        if not p["qwhd"] and not p["bass"]:
+            lines.append(f"{f.name}：未含目标请求，跳过")
+            continue
+        used += 1
+        lines.append(f"—— {f.name} ——")
+        lines.extend(apply(text))
+    return lines, used
+
+
+if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
+    res, n = scan_dir()
+    print("\n".join(res))
+    print(f"\n共处理 {n} 个有效 HAR")

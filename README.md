@@ -279,6 +279,7 @@ python pull_token_sms.py login <验证码>
 ├── probe_fj.py             只读探测 BASS 接口
 ├── config.example.json     qwhdhub 配置模板
 ├── config_fj.example.json  BASS 配置模板
+├── docs/                   接口文档（qwhdhub / BASS 活动接口与实测结论）
 ├── configs/                真实 qwhdhub 配置（不入库）
 ├── configs_fj/             真实 BASS 配置（不入库）
 ├── gui_data/               运行状态与统计（不入库）
@@ -312,6 +313,15 @@ python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 | `logs/daily.log` | 定时任务日志（按天轮转，保留 7 天） |
 
 统计口径：流量只统计**带 MB/GB 的奖品**（话费券不算）；喂养单列 `feeds`。
+
+### 接口文档
+
+各活动的端点、字段含义与踩过的坑都整理在 [`docs/`](docs/)：
+
+- [docs/qwhdhub.md](docs/qwhdhub.md) —— 全国签到平台的端点与凭证获取
+- [docs/bass.md](docs/bass.md) —— 福建站的养成游戏、流量银行、抽奖、消消乐
+
+想适配别的省份或加新活动，从这两份文档入手会快很多。
 
 ### 失败推送
 

@@ -41,7 +41,7 @@ import re
 import ssl
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -358,6 +358,11 @@ def parse_prize(mark_result: dict) -> str:
 
 # ---------------------------------------------------------------- 会话持久化
 
+# 活动会话 cookie 的实测寿命（2026-11-20：04:22:27 建立 → 06:22:39 服务端
+# 返回 GOTO_LOGIN，准时失效）。保守取 2 小时，实际使用时会再探活确认。
+SESSION_LIFE_HOURS = 2.0
+
+
 def activity_session_file(cfg: Config) -> Path:
     """按账号隔离会话文件——不同号的券各记各的，不能共用。"""
     tag = (cfg.phone or cfg.activity_id or "default")[-4:]
@@ -371,6 +376,10 @@ def save_activity_session(s: requests.Session, referer: str, cfg: Config = None)
     也不重新登录，就能正常调用 markSeckill 全部接口（含 redeem）。
     因此把这个 cookie 留到 12 点用，秒杀就完全不依赖 app_token 的 30 分钟寿命。
 
+    ⚠️ **会话寿命实测只有 2 小时**（04:22:27 建立 → 06:22:39 服务端返回
+    `GOTO_LOGIN`，准时失效）。所以「早上签到一次管到中午」不成立——
+    要覆盖 12:00 开抢，必须在 **10:00 之后**再签到一次。
+
     注意：会话按账号隔离存文件，否则 4167 会误用 3239 的会话去抢券。
     """
     try:
@@ -380,14 +389,38 @@ def save_activity_session(s: requests.Session, referer: str, cfg: Config = None)
         path = activity_session_file(cfg) if cfg else (
             Path(__file__).resolve().parent / "gui_data" / "seckill_session.json")
         path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
         path.write_text(json.dumps(
             {"cookie": cks, "referer": referer,
              "phone": (cfg.phone if cfg else ""),
-             "at": datetime.now().isoformat(timespec="seconds")},
+             "at": now.isoformat(timespec="seconds"),
+             "expires_at": (now + timedelta(hours=SESSION_LIFE_HOURS)
+                            ).isoformat(timespec="seconds")},
             ensure_ascii=False, indent=1), encoding="utf-8")
-        log.info("活动会话已保存（%s），供 12 点秒杀复用", path.name)
+        log.info("活动会话已保存（%s），%s 后失效，供秒杀复用",
+                 path.name, f"{SESSION_LIFE_HOURS:.0f} 小时")
     except Exception as e:
         log.warning("保存活动会话失败: %s", e)
+
+
+def session_expired(cfg: Config, now: datetime = None) -> bool:
+    """已保存的活动会话是否已过期（超过实测的 2 小时寿命）。
+
+    返回 True 表示不可用，需要重新登录建立会话。
+    """
+    path = activity_session_file(cfg)
+    if not path.exists():
+        return True
+    try:
+        o = json.loads(path.read_text(encoding="utf-8"))
+        exp = o.get("expires_at")
+        if exp:
+            return datetime.fromisoformat(exp) <= (now or datetime.now())
+        # 没有 expires_at（早期版本）→ 用 at + 寿命推算
+        at = datetime.fromisoformat(o["at"])
+        return at + timedelta(hours=SESSION_LIFE_HOURS) <= (now or datetime.now())
+    except Exception:
+        return True
 
 
 # ---------------------------------------------------------------- 通知

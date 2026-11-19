@@ -105,10 +105,19 @@ def load_session(cfg: Config = None):
 
 
 def session_alive(s, referer: str) -> bool:
-    """探活：纯 cookie 会话是否还能用。"""
+    """探活：纯 cookie 会话是否还能用。
+
+    实测服务端在会话满 2 小时后返回 `GOTO_LOGIN`（不是 401），
+    所以两种码都算失效。
+    """
     try:
         r = s.post(SECCONFIG_URL, json={}, headers=api_headers(referer), timeout=15)
-        return r.json().get("code") == "SUCCESS"
+        j = r.json()
+        code = str(j.get("code"))
+        if code in ("GOTO_LOGIN", "401"):
+            log.info("会话已失效（服务端返回 %s）", code)
+            return False
+        return code == "SUCCESS"
     except Exception:
         return False
 
@@ -291,6 +300,7 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         interval: float, lead: float, max_attempts: int,
         pre_window_s: float = 60.0) -> int:
     # ① 优先复用已保存的活动会话（实测：仅 cookie 即可调通接口，不依赖 app_token）
+    #    但会话寿命只有 2 小时，所以必须靠「10 点后那次签到」来建立新会话。
     s = referer = None
     cached = load_session(cfg)
     if cached:
@@ -298,7 +308,7 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         if session_alive(s, referer):
             log.info("复用已保存的活动会话成功（无需 app_token）")
         else:
-            log.info("已保存会话已失效，重新登录")
+            log.info("已保存会话已失效，尝试用 app_token 重新登录")
             s = referer = None
 
     # ② 没有可用会话 → 用 app_token 重新建立
@@ -308,10 +318,12 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         except Exception as e:
             # 会话复用失败且 app_token 也不可用 → 明确提示，别抛栈
             log.error("没有可用会话，且 app_token 已失效：%s", str(e).split("——")[0].strip())
-            log.error("请用该账号重新抓一次 HAR 并导入，之后再运行秒杀")
+            log.error("活动会话实测只能活 2 小时，需在 10:00 之后重新签到一次；")
+            log.error("若 app_token 也过期了，请重新抓一次 HAR 并导入。")
             notify(cfg, "移动秒杀：会话缺失",
                    "既无可复用的活动会话，app_token 也已失效\n"
-                   "请用该账号重新抓包导入\n手机尾号 %s" % (cfg.phone[-4:] if cfg.phone else "????"))
+                   "活动会话只能活 2 小时，请用该账号重新抓包导入\n"
+                   "手机尾号 %s" % (cfg.phone[-4:] if cfg.phone else "????"))
             return 1
         save_session(s, referer, cfg)
 

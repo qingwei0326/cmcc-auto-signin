@@ -112,7 +112,8 @@ dist\签到控制台.exe → 复制到项目根目录
 | `MobileSignIn` | 每天 **08:30** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐 |
 | `MobileDailyReward` | 每天 **06:03 起每小时**，共 17 次 | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 |
 | `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
-| `MobileSeckill` | 每天 **11:30** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券 |
+| `MobileSessionRefresh` | 每天 **10:15** | `run_session_refresh.bat` | 只跑 qwhdhub 签到，建立新会话（活到 12:15），为秒杀做准备 |
+| `MobileSeckill` | 每天 **10:30** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券 |
 
 **为什么需要第二个任务**
 
@@ -168,10 +169,15 @@ $t3 = New-ScheduledTaskTrigger -Daily -At 00:00
 $t3.Repetition = (New-ScheduledTaskTrigger -Once -At 00:00 -RepetitionInterval (New-TimeSpan -Minutes 90) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
 Register-ScheduledTask -TaskName "MobileJwtKeepAlive" -Action $a3 -Trigger $t3 -Force
 
-# 秒杀抢券任务（11:30 启动，脚本内部等到 12:00）
-$a4 = New-ScheduledTaskAction -Execute "<项目目录>\run_seckill.bat" -WorkingDirectory "<项目目录>"
-$t4 = New-ScheduledTaskTrigger -Daily -At 11:30
-Register-ScheduledTask -TaskName "MobileSeckill" -Action $a4 -Trigger $t4 -Force
+# 会话刷新任务（10:15 建立新会话，活到 12:15）
+$a4 = New-ScheduledTaskAction -Execute "<项目目录>\run_session_refresh.bat" -WorkingDirectory "<项目目录>"
+$t4 = New-ScheduledTaskTrigger -Daily -At 10:15
+Register-ScheduledTask -TaskName "MobileSessionRefresh" -Action $a4 -Trigger $t4 -Force
+
+# 秒杀抢券任务（10:30 启动，脚本内部等到 12:00）
+$a5 = New-ScheduledTaskAction -Execute "<项目目录>\run_seckill.bat" -WorkingDirectory "<项目目录>"
+$t5 = New-ScheduledTaskTrigger -Daily -At 10:30
+Register-ScheduledTask -TaskName "MobileSeckill" -Action $a5 -Trigger $t5 -Force
 ```
 
 控制台「定时任务」页也能直接查状态、改时间、注销。
@@ -189,19 +195,33 @@ python cmcc_seckill.py --config configs/3239.json --once      # 立即打一次�
 python cmcc_seckill.py --config configs/3239.json             # 等下一场自动抢
 ```
 
-**关键机制：会话 cookie 可脱离 app_token 复用。**
+**关键机制：会话 cookie 可脱离 app_token 复用——但只有 2 小时寿命。**
 实测只要注入 `QWHD_SESSION_TOKEN` cookie，不需要 app_token、不需要重新登录，
 就能调用全部秒杀接口（含 `redeem`）。所以：
 
 - 每次 qwhdhub 签到成功后自动保存该号的会话到 `gui_data/seckill_session_<尾号>.json`
 - 秒杀脚本启动时优先读已保存会话（探活失败才回落到 app_token 重新登录）
-- **早上签到一次，12 点就能直接抢**，不受 app_token 30 分钟寿命限制
+
+⚠️ **但会话是建立后 2 小时硬过期**（两次独立探测一致：04:22:27 建立 → 06:22:39
+返回 `GOTO_LOGIN`，准时 120 分钟）。请求不能延长它，带 jwt 也不行，
+重新访问 SSO token 链接也不行。所以：
+
+| 签到时刻 | 会话失效 | 覆盖 12:00？ |
+|---|---|---|
+| 08:30 | 10:30 | ❌ |
+| **10:15** | **12:15** | ✅ |
+
+**必须在 10:00 之后重新签到一次**（计划任务 `MobileSessionRefresh` 干这个），
+否则 12 点时会话已死。而那次签到**仍需要有效 app_token**（票据约 30~40 分钟寿命），
+若已过期就还得抓一次包 —— 这是目前唯一无法自动化的环节。
 
 服务器时间比本机快约 1 秒，脚本用 `markSeckill/sysTime` 校准后**提前 0.4 秒**出手；
 被拒后每 2 秒核对一次库存，库存为 0 立刻停手（避免对着空库存狂打触发风控）。
 
 > 限制：真正的开抢时刻尚未实测（每天只有 12:00 一次机会）；
-> 资格要求当日已签到（脚本会自动补签）；库存通常只有 1 份，抢不抢得到看手速与运气。
+> 资格要求当日已签到（脚本会自动补签）；库存通常只有 1 份，抢不抢得到看手速与运气；
+> **会话 2 小时硬过期**，所以必须靠 10:15 那次签到建立新会话，
+> 而那次签到仍需有效 app_token —— 票据过期时只能重新抓包。
 
 ---
 

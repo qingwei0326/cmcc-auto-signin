@@ -254,6 +254,49 @@ class TestSeckill(unittest.TestCase):
         # NET_ERROR 是终态（无效 secId 会返回它）
         self.assertIn("NET_ERROR", SK.STOP_STATUSES)
 
+    def test_session_life_is_two_hours(self):
+        """活动会话实测 2 小时硬过期，这是秒杀能否赶上 12:00 的硬约束。"""
+        import cmcc_sign
+        self.assertEqual(cmcc_sign.SESSION_LIFE_HOURS, 2.0)
+
+    def test_session_expired_calculation(self):
+        """会话文件里的 expires_at 决定是否过期。"""
+        import datetime
+        import json
+        import tempfile
+        from pathlib import Path
+        import cmcc_sign
+
+        cfg = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg.phone = "13800138000"
+        with tempfile.TemporaryDirectory() as d:
+            real = cmcc_sign.activity_session_file
+            cmcc_sign.activity_session_file = lambda c: Path(d) / "s.json"
+            try:
+                now = datetime.datetime.now()
+                # 刚建立的会话 → 未过期
+                Path(d, "s.json").write_text(json.dumps({
+                    "at": now.isoformat(timespec="seconds"),
+                    "expires_at": (now + datetime.timedelta(hours=2)).isoformat(timespec="seconds"),
+                }), encoding="utf-8")
+                self.assertFalse(cmcc_sign.session_expired(cfg))
+                # 3 小时前建立的会话 → 已过期
+                old = now - datetime.timedelta(hours=3)
+                Path(d, "s.json").write_text(json.dumps({
+                    "at": old.isoformat(timespec="seconds"),
+                    "expires_at": (old + datetime.timedelta(hours=2)).isoformat(timespec="seconds"),
+                }), encoding="utf-8")
+                self.assertTrue(cmcc_sign.session_expired(cfg))
+            finally:
+                cmcc_sign.activity_session_file = real
+
+    def test_goto_login_counts_as_dead(self):
+        """会话失效时服务端返回 GOTO_LOGIN（不是 401），探活必须认这个码。"""
+        import cmcc_seckill
+        src = Path(cmcc_seckill.__file__)
+        txt = src.read_text(encoding="utf-8")
+        self.assertIn("GOTO_LOGIN", txt)
+
     def test_section_table_has_seckill(self):
         import dashboard
         self.assertIn("cmcc_seckill.py", dashboard.INDEX_HTML)

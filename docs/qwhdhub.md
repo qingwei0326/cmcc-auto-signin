@@ -58,16 +58,58 @@ JSESSIONID=<uuid>; UID=<32位hex>; Comment=SessionServer-unity; Path=/;HTTPOnly;
 > 加入了设备指纹校验，`sendRandomCodeAction.action` 稳定返回 `6`、
 > `loadSendflag.htm` 返回空，已不可用，故移除相关代码。
 
-### jwt 续期（重要）
+### App 内切号的坑
 
-`appTokenLogin` 的请求体里 `jwtToken` **优先于** `token`：
+`appTokenLogin` 的响应里会下发 `data.jwt` 和 `QWHD_SESSION_TOKEN`，而 **App 内切号会让
+另一个号的 `app_token` 立即失效**。多号请分设备登录，或一次只抓一个号。
 
-- jwt 是**账号级长期凭证**，服务端校验通过即签发会话，且不受 App 内切换登录影响
-- 因此脚本优先用本地缓存的 jwt 免票据续期，`app_token` 只在 jwt 缺失/失效时作引导兜底
-- 每次登录响应都会重签 jwt，脚本总是回写缓存（`.cmcc_jwt_cache_<尾号>.json`）
+### act_url 参数
 
-**实测 jwt 存活约 2.5~3.5 小时**。只要在它失效前跑一次脚本，凭证链就能无限延长；
-一旦断了（如关机超过数小时），只能重新抓包。
+`exchange_session()` 目前不支持自定义 `act_url`（活动页地址）。跑周三充值日这类
+**独立活动**时需要它——同类项目的实现（`yupaiLy/cmcc-auto-checkin` 的 `cmcc_wed.py`）
+已经要求 `exchange_session(cfg, act_url=...)`，本项目尚未跟进。
+
+### jwt 续期（**已实测证伪，注意**）
+
+`appTokenLogin` 的请求体里 `jwtToken` 与 `token` 同时出现，App 端两个值都是现成的。
+曾以为「jwt 是账号级长期凭证、可以免票据续期」，**2026-11-20 用对照实验证伪了**：
+
+| 组合 | 结果 |
+|---|---|
+| A. `jwtToken` + `token=""` | FAILED　APP登录状态已过期 |
+| B. `jwtToken` + 伪造的 token | FAILED　APP登录状态已过期 |
+| C. `jwtToken` + 真实 app_token | **SUCCESS** |
+
+服务端真正校验的是 **`token`（App 票据）**，`jwtToken` 单独用通不过。
+所以「用缓存 jwt 免票据续期」这条路当前**不成立**，`cmcc_sign.py` 里第②步仅作兜底保留。
+
+实际链路：
+
+```
+app_token（抓包所得，约 30 分钟）
+  → appTokenLogin(jwtToken=旧jwt, token=app_token)
+  → 响应 data.jwt（新 jwt）+ 下发 QWHD_SESSION_TOKEN
+  → 后续 API 带 x-token 头 / QWHD_SESSION_TOKEN cookie
+```
+
+- `x-token` 头在 HAR 里出现 60+ 次，App 的 qwhdhub 请求基本都带它
+- `QWHD_SESSION_TOKEN` 同时也会落在 cookie 里，本项目用 cookie 方式（已验证可用）
+- 登录成功后服务端会下发**新的 jwt**（与传入的不同），仍写回 `.cmcc_jwt_cache_<尾号>.json`
+
+**净效果：登录依赖 app_token，定时重跑只能延后失效，不能真正续命。**
+只能靠提高抓包频率（实测 04:05 抓的票据，04:15 仍可用）来维持。
+
+## 限时秒杀（markSeckill）
+
+| 端点 | 说明 |
+|---|---|
+| `POST /qwhdhub/api/mark/markSeckill/secConfig` | 秒杀场次配置（本次抓包连接被重置，未取到内容） |
+| `POST /qwhdhub/api/mark/markSeckill/todayMarkStatus` | 当天秒杀状态，实测返回 `{"markStatus": "marked"}` |
+
+## 周三充值日
+
+另见 [wedrecharge.md](wedrecharge.md) —— 独立活动，接口自成一套
+（`/hlwyxhdhub/api/wedrecharge/*`），并带服务器时间戳可用于秒杀对点。
 
 ## 注意事项
 

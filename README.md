@@ -125,18 +125,25 @@ dist\签到控制台.exe → 复制到项目根目录
 
 **为什么需要第三个任务（会话保活）**
 
-qwhdhub 的 `appTokenLogin` 请求里 `jwtToken` 优先于 `token`：jwt 是**账号级长期凭证**，
-服务端校验通过即签发会话。每次登录都会重签 jwt 并回写本地缓存，所以
+`appTokenLogin` 的请求体里 `jwtToken` 与 `token` 同时出现，App 端两个值都是现成的。
+曾以为「jwt 是账号级长期凭证、可以免票据续期」，**2026-11-20 用对照实验证伪了**：
 
-> **只要在 jwt 失效前跑一次脚本，凭证链就能无限延长，永远不用重复抓包。**
+| 组合 | 结果 |
+|---|---|
+| `jwtToken` + `token=""` | FAILED　APP登录状态已过期 |
+| `jwtToken` + 伪造的 token | FAILED　APP登录状态已过期 |
+| `jwtToken` + 真实 app_token | **SUCCESS** |
 
-实测 jwt 存活约 **2.5~3.5 小时**。保活任务每 90 分钟续一次，留了 1 小时冗余。
-唯一例外：**电脑连续关机超过几小时，链还是会断**，那时才需要重新抓一次包。
+服务端真正校验的是 **`token`（App 票据）**，`jwtToken` 单独用通不过。
+也就是说**登录终究依赖 app_token（约 30 分钟寿命）**，定时重跑只能延后失效、不能真正续命。
+
+保活任务的作用因此变成：**在票据有效期内尽量多跑，失败就说明该重新抓包了**，
+同时把每次尝试的结果写进 `logs/keepalive.log`，方便统计票据的真实寿命。
 
 ```bat
 python cmcc_fj.py --config configs_fj/fj1.json --daily-only   # 单号
 python run_all.py --daily-only                                 # 所有 BASS 账号
-python run_all.py --keepalive                                  # 只续 jwt，不签到
+python run_all.py --keepalive                                  # 只试登录，不签到
 ```
 
 注册方式：
@@ -247,10 +254,10 @@ GET /bass-preferentialAreaServer/luck/join               → 抽奖
 
 > **App 内切号会让另一个号的 app_token 失效**，两个号尽量分设备登录。
 
-**关于抓包频率**：`app_token` 只有约 30 分钟寿命，但脚本会用缓存的 **jwt** 免票据续期，
-jwt 实测能活 2.5~3.5 小时且**每次续期都会重签并回写**。所以只要装了
-`MobileJwtKeepAlive` 保活任务（每 90 分钟跑一次），凭证链就能一直续下去，
-**平时根本不需要抓包**。只有电脑连续关机超过几小时、链彻底断了，才需要重新抓一次。
+**关于抓包频率**：`app_token` 只有约 30 分钟寿命，且**只靠它才能登录**——
+`jwtToken` 单独用服务端不认（详见上面「会话保活」那节的对照实验）。
+所以 qwhdhub 需要定期重新抓包。保活任务会在票据有效期内不断尝试，
+失败即代表该抓包了，结果记在 `logs/keepalive.log`。
 
 ### 刷新 BASS
 
@@ -336,8 +343,9 @@ python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 
 - [docs/qwhdhub.md](docs/qwhdhub.md) —— 全国签到平台的端点与凭证获取
 - [docs/bass.md](docs/bass.md) —— 福建站的养成游戏、流量银行、抽奖、消消乐
+- [docs/wedrecharge.md](docs/wedrecharge.md) —— 周三充值日（独立活动，含服务器时间戳）
 
-想适配别的省份或加新活动，从这两份文档入手会快很多。
+想适配别的省份或加新活动，从这几份文档入手会快很多。
 
 ### 失败推送
 
@@ -362,11 +370,14 @@ python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 
 ## 已知限制
 
-- qwhdhub 的 `app_token` 约 30 分钟寿命，jwt 续期实测失败，只能重新获取
+- qwhdhub 的 `app_token` 约 30 分钟寿命，**只靠它才能登录**（`jwtToken` 单独用服务端不认，已实测）；
+  所以 qwhdhub 仍需定期抓包，保活任务只能延后失效、不能续命
 - 消消乐每天约 5 点体力，中奖概率低，别指望薅到东西
 - BASS 签到在凌晨会返回 `1502 未到可签到时间`，属正常
 - 每日奖励三档之间必须间隔 60 分钟，靠 `MobileDailyReward` 每小时轮询领取；不装这个任务就只领得到第一档
 - 福建以外省份的 BASS 活动未适配（`wap.fj.10086.cn` 为福建站）
+- **周三充值日、限时秒杀尚未实现**：接口已在 `docs/wedrecharge.md` 归档，
+  但抽奖与领券的实际请求还没抓到
 
 ---
 

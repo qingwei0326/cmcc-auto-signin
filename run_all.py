@@ -295,6 +295,8 @@ def main():
                     help="只补签到 + 领 BASS 每日奖励三档，用于每小时轮询")
     ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
     ap.add_argument("--no-notify", action="store_true", help="不推送失败告警")
+    ap.add_argument("--keepalive", action="store_true",
+                    help="只做 qwhdhub 会话保活（续期 jwt，不签到、不推送），用于定时任务")
     args = ap.parse_args()
 
     # 只领每日奖励：只跑 BASS，且把 --daily-only 透传给 cmcc_fj.py
@@ -302,6 +304,14 @@ def main():
         args.platform = "bass"
         args.xxl = False
         args.extra = (args.extra + " --daily-only").strip()
+
+    # 保活：只登录续 jwt，不签到；失败也不推送（保活失败由每日签到去告警）
+    if args.keepalive:
+        args.platform = "qwhd"
+        args.xxl = False
+        args.dry_run = False
+        args.no_notify = True
+        args.extra = (args.extra + " --login-only").strip()
 
     log = RotatingLog(args.log)
     if log.enabled:

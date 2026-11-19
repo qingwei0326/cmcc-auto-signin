@@ -570,7 +570,7 @@ def do_action(body: dict):
 
     # ---- 定时任务 ----
     if act == "sched_query":
-        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward'){"
+        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive'){"
               "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
               "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
               "Write-Host ($n+'  状态='+$t.State+'  下次='+$i.NextRunTime+'  上次结果='+$i.LastTaskResult)}"
@@ -590,6 +590,17 @@ def do_action(body: dict):
                   f"$tr.Repetition=$r;"
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每小时一次（持续 17 小时）'")
+        elif kind == "keepalive":
+            # qwhdhub 会话保活：每 90 分钟续期一次 jwt（实测寿命 2.5~3.5 小时）
+            name, bat = "MobileJwtKeepAlive", "run_jwt_keepalive.bat"
+            d = str(BASE)
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
+                  f"$r=(New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 90) "
+                  f"-RepetitionDuration (New-TimeSpan -Days 1)).Repetition;"
+                  f"$tr.Repetition=$r;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"Write-Host '{name} 已注册，{t} 起每 90 分钟一次（全天覆盖）'")
         else:
             name, bat = "MobileSignIn", "run_scheduled.bat"
             d = str(BASE)
@@ -600,7 +611,7 @@ def do_action(body: dict):
         return {"ok": RUNNER.start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
     if act == "sched_unreg":
         name = body.get("name", "")
-        if name not in ("MobileSignIn", "MobileDailyReward"):
+        if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive"):
             return {"ok": False, "err": "非法任务名"}
         ps = f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false; Write-Host '{name} 已注销'"
         return {"ok": RUNNER.start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
@@ -997,8 +1008,14 @@ select.inp{cursor:pointer}
             <input class="inp" id="tDaily" value="06:00" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'daily',time:V('tDaily')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileDailyReward？',()=>act({action:'sched_unreg',name:'MobileDailyReward'}))">注销</button></div>
+          <div class="frow"><label>会话保活任务</label><span style="font-size:13px">MobileJwtKeepAlive → run_jwt_keepalive.bat，每 90 分钟</span>
+            <input class="inp" id="tKeep" value="00:00" style="min-width:80px">
+            <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'keepalive',time:V('tKeep')})">注册/更新</button>
+            <button class="btn sm danger" onclick="cf('注销 MobileJwtKeepAlive？',()=>act({action:'sched_unreg',name:'MobileJwtKeepAlive'}))">注销</button></div>
           <div class="infobox">每日奖励三档（150/250/350）之间必须间隔 60 分钟，一次跑只能领一档。
-            这个任务从设定时间起每小时检查一次、共 17 次，能领就领，领完自动空转。</div>
+            这个任务从设定时间起每小时检查一次、共 17 次，能领就领，领完自动空转。<br>
+            <b>会话保活</b>：qwhdhub 的 jwt 实测只能活 2.5~3.5 小时，每 90 分钟续一次就能让凭证链一直不断，
+            省去反复抓包。电脑连续关机超过几小时链还是会断，那时才需要重新抓包。</div>
           <div class="frow"><button class="btn" onclick="act({action:'sched_query'})">查询当前状态</button>
             <span style="font-size:12px;color:var(--sub)">日志：logs\daily.log / logs\xiaoxiaole.log</span></div>
         </div>

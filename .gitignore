@@ -40,3 +40,6 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 临时诊断脚本
+probe_*.py

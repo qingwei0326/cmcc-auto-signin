@@ -586,7 +586,7 @@ def do_action(body: dict):
 
     # ---- 定时任务 ----
     if act == "sched_query":
-        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill'){"
+        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill','MobileSessionRefresh'){"
               "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
               "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
               "Write-Host ($n+'  状态='+$t.State+'  下次='+$i.NextRunTime+'  上次结果='+$i.LastTaskResult)}"
@@ -617,6 +617,14 @@ def do_action(body: dict):
                   f"$tr.Repetition=$r;"
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每 90 分钟一次（全天覆盖）'")
+        elif kind == "sess":
+            # 会话刷新：活动会话寿命 2 小时，10:15 建立的新会话覆盖 12:00 开抢
+            name, bat = "MobileSessionRefresh", "run_session_refresh.bat"
+            d = str(BASE)
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"Write-Host '{name} 已注册，每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）'")
         elif kind == "seckill":
             # 秒杀抢券：11:30 启动，脚本内部等到 12:00 再出手（app_token 那时仍有效）
             name, bat = "MobileSeckill", "run_seckill.bat"
@@ -635,7 +643,8 @@ def do_action(body: dict):
         return {"ok": RUNNER.start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
     if act == "sched_unreg":
         name = body.get("name", "")
-        if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive", "MobileSeckill"):
+        if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
+                        "MobileSeckill", "MobileSessionRefresh"):
             return {"ok": False, "err": "非法任务名"}
         ps = f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false; Write-Host '{name} 已注销'"
         return {"ok": RUNNER.start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
@@ -676,17 +685,29 @@ def build_state():
 
 
 def _list_seckill_sessions() -> list:
-    """列出已保存的活动会话（按账号），供控制台展示秒杀就绪状态。"""
+    """列出已保存的活动会话（按账号），供控制台展示秒杀就绪状态。
+
+    会话实测寿命 2 小时，所以同时算出剩余时间——这决定能不能赶上 12 点开抢。
+    """
     out = []
-    d = DATA / "seckill_sessions"
-    src = DATA
-    for f in sorted(src.glob("seckill_session_*.json")):
+    for f in sorted(DATA.glob("seckill_session_*.json")):
         try:
             o = load_json(f) or {}
+            at = o.get("at") or ""
+            exp = o.get("expires_at") or ""
+            left_min = None
+            if exp:
+                try:
+                    d = datetime.datetime.fromisoformat(exp) - datetime.datetime.now()
+                    left_min = round(d.total_seconds() / 60)
+                except Exception:
+                    pass
             out.append({
                 "file": f.name,
                 "phone": o.get("phone") or "",
-                "at": o.get("at") or "",
+                "at": at,
+                "expires_at": exp,
+                "left_min": left_min,
                 "keys": list((o.get("cookie") or {}).keys()),
             })
         except Exception:
@@ -1062,8 +1083,13 @@ select.inp{cursor:pointer}
           <div class="frow"><label>会话就绪</label><span style="font-size:13px" id="skSess">加载中…</span></div>
           <div class="infobox">每次 qwhdhub 签到成功后，会自动保存该账号的活动会话 cookie
             （<code>gui_data/seckill_session_&lt;尾号&gt;.json</code>）。实测<b>仅凭该 cookie 就能调用秒杀接口，
-            完全不需要 app_token</b>，所以早上签到一次，12 点就能直接抢。
-            下面显示的就是各号已备好的会话。</div>
+            完全不需要 app_token</b>。</div>
+          <div class="warnbox"><b>会话只能活 2 小时</b>（实测：04:22 建立 → 06:22 服务端返回
+            <code>GOTO_LOGIN</code> 准时失效）。所以要赶上 12:00 开抢，
+            必须在 <b>10:00 之后</b>再签到一次；早上 08:30 那次签到的会话 10:30 就过期了。
+            计划任务 <b>MobileSessionRefresh</b>（10:15）就是干这个的——
+            它建立的新会话能撑到 12:15，覆盖开抢时刻。<br>
+            若那时 app_token 也过期了（票据约 30~40 分钟），仍需你抓一次包导入。</div>
         </div>
       </div>
 
@@ -1084,8 +1110,12 @@ select.inp{cursor:pointer}
             <input class="inp" id="tKeep" value="00:00" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'keepalive',time:V('tKeep')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileJwtKeepAlive？',()=>act({action:'sched_unreg',name:'MobileJwtKeepAlive'}))">注销</button></div>
+          <div class="frow"><label>会话刷新任务</label><span style="font-size:13px">MobileSessionRefresh → run_session_refresh.bat，每天</span>
+            <input class="inp" id="tSess" value="10:15" style="min-width:80px">
+            <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'sess',time:V('tSess')})">注册/更新</button>
+            <button class="btn sm danger" onclick="cf('注销 MobileSessionRefresh？',()=>act({action:'sched_unreg',name:'MobileSessionRefresh'}))">注销</button></div>
           <div class="frow"><label>秒杀抢券任务</label><span style="font-size:13px">MobileSeckill → run_seckill.bat，脚本内等到 12:00</span>
-            <input class="inp" id="tSeckill" value="11:30" style="min-width:80px">
+            <input class="inp" id="tSeckill" value="10:30" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'seckill',time:V('tSeckill')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileSeckill？',()=>act({action:'sched_unreg',name:'MobileSeckill'}))">注销</button></div>
           <div class="infobox">每日奖励三档（150/250/350）之间必须间隔 60 分钟，一次跑只能领一档。
@@ -1243,7 +1273,18 @@ function render(){
   if(skS){
     const ss=(STATE.seckill_sessions||[]);
     if(!ss.length){skS.innerHTML='<span style="color:var(--warn)">暂无会话 —— 请先跑一次 qwhdhub 签到</span>';}
-    else{skS.innerHTML=ss.map(x=>`<span class="pill" style="margin-right:6px">${x.phone?mask(x.phone):x.file} · ${x.at.replace('T',' ').slice(5,16)}</span>`).join('');}
+    else{
+      skS.innerHTML=ss.map(x=>{
+        const t=x.at?x.at.replace('T',' ').slice(5,16):'?';
+        let tail='<span style="color:var(--sub)">未知</span>';
+        if(x.left_min!==null&&x.left_min!==undefined){
+          if(x.left_min<=0) tail='<span style="color:var(--bad)">已过期</span>';
+          else if(x.left_min<60) tail=`<span style="color:var(--warn)">剩 ${x.left_min} 分钟</span>`;
+          else tail=`<span style="color:var(--ok)">剩 ${Math.round(x.left_min/60)} 小时</span>`;
+        }
+        return `<span class="pill" style="margin-right:6px">${x.phone?mask(x.phone):x.file} · ${t} · ${tail}</span>`;
+      }).join('');
+    }
   }
   // HAR 导入的账号兜底下拉（BASS token 无法自证归属时用）
   const hk=$('harKey');

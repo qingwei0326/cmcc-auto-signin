@@ -1056,9 +1056,9 @@ select.inp{cursor:pointer}
           <div class="infobox">流程：校服务器时间 → 拉场次 → 查当日签到资格 → 等到点 → 密集重试 <code>redeem</code>。
             开抢时会<b>提前 0.4 秒</b>出手以抵消网络延迟，被拒后每 2 秒核对一次库存，没货立刻停手。
             抢到的券进 App「我的奖品」核销，脚本会推送到手机。</div>
-          <div class="warnbox">前提是 <b>app_token 在开抢时仍然有效</b>（约 30 分钟寿命）。
-            脚本会在等待期间每 8 分钟发一次心跳续会话，但若电脑关机超过半小时，
-            12 点时登录已失效，需要重新抓包。这项无法完全自动化。</div>
+          <div class="warnbox"><b>真正的前提是「早上那次签到跑过」</b>——它会自动备好活动会话，
+            12 点就能直接用。如果某号从没签到过、且 app_token 也已过期，
+            脚本会提示「请重新抓包」并推送通知。</div>
           <div class="frow"><label>会话就绪</label><span style="font-size:13px" id="skSess">加载中…</span></div>
           <div class="infobox">每次 qwhdhub 签到成功后，会自动保存该账号的活动会话 cookie
             （<code>gui_data/seckill_session_&lt;尾号&gt;.json</code>）。实测<b>仅凭该 cookie 就能调用秒杀接口，

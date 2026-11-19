@@ -65,6 +65,9 @@ STOP_STATUSES = {
     "PRIZE_RESTRIC_LIMIT": "活动期间中奖次数已达上限",
     "WORK_ORDER_RESTRIC_LIMIT": "工单限流（风控）",
     "PARAM_ERROR": "参数异常",
+    # 无效的 secId/prizeId 会返回这个（实测 secId=999 → NET_ERROR），
+    # 属于配置错误，重试无意义，直接停手
+    "NET_ERROR": "场次或奖品参数无效",
 }
 
 # 会话 cookie 滑动过期，长等时用心跳续住
@@ -209,16 +212,35 @@ def wait_until(target: float, s, referer: str, cfg: Config = None):
 
 
 def fire_redeem(s, referer: str, zone: dict, interval: float,
-                max_attempts: int, deadline_srv_ms: int, offset_ms: float):
-    """开抢主循环。被拒后核对 leaveStock，没货立刻停手。"""
+                max_attempts: int, deadline_srv_ms: int, offset_ms: float,
+                start_srv_ms: int = 0, pre_window_s: float = 60.0):
+    """开抢主循环。
+
+    分两个阶段：
+    - **未开抢**（服务器时间还没到 start_srv_ms）：0.05 秒密集重试，
+      但只在 start_srv_ms 前 pre_window_s 秒的窗口内重试。
+      窗口太早（比如 --at 设成凌晨而场次在中午）会打几千次请求触发风控，
+      所以超窗就放弃并如实报告。
+    - **已开抢**：受 max_attempts 硬上限约束，避免对着已抢空的库存狂打触发风控。
+      被拒后每 2 秒核对一次 leaveStock，为 0 立刻停手。
+
+    阶段判定用**服务器时间**而非响应码——响应码可能是别的原因导致的失败。
+    """
     payload = {"secId": str(zone["id"]), "prizeId": str(zone["prize"]["id"])}
     log.info("开始抢购: %s (secId=%s prizeId=%s)",
              zone["prize"]["name"], payload["secId"], payload["prizeId"])
 
     last_stock_check = time.time()
-    for attempt in range(1, max_attempts + 1):
-        if (time.time() + offset_ms) * 1000 > deadline_srv_ms:
+    started = False          # 是否已进入开抢阶段
+    attempt = 0
+    while True:
+        # 服务器当前毫秒：offset_ms 本身就是毫秒，不能再乘 1000
+        now_srv_ms = time.time() * 1000 + offset_ms
+        if now_srv_ms > deadline_srv_ms:
             return None, "场次窗口已结束"
+        if start_srv_ms and now_srv_ms >= start_srv_ms:
+            started = True
+        attempt += 1
         try:
             resp = api_post(s, referer, REDEEM_URL, payload)
         except Exception as e:
@@ -227,12 +249,27 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
             continue
 
         code, status, msg = resp.get("code"), resp.get("status"), resp.get("msg", "")
-        log.info("第%d发: code=%s status=%s msg=%s", attempt, code, status, msg)
+        if started:
+            log.info("第%d发: code=%s status=%s msg=%s", attempt, code, status, msg)
+        else:
+            log.info("第%d发（未开抢）: status=%s msg=%s", attempt, status, msg)
         if code == "SUCCESS":
             return resp, "SUCCESS"
         if status in STOP_STATUSES:
             return resp, status
-        # NOT_TIME_IN（打早了）与其他未知错误：密集重试直到开抢/窗口结束
+
+        # 未开抢 → 继续密集重试，但不得超出提前窗口
+        if not started:
+            if start_srv_ms and (start_srv_ms - now_srv_ms) / 1000.0 > pre_window_s:
+                return None, (f"距开抢还有 {(start_srv_ms - now_srv_ms) / 1000.0:.0f} 秒，"
+                              f"超出提前窗口 {pre_window_s:.0f} 秒，未出手")
+            time.sleep(0.05)
+            continue
+
+        # 已开抢但没抢到 → 受 max_attempts 约束
+        if attempt > max_attempts:
+            break
+
         now = time.time()
         if now - last_stock_check >= 2.0:
             last_stock_check = now
@@ -240,7 +277,7 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
             log.info("库存核对: %s", "未知" if stock is None else f"剩 {stock:g}")
             if stock == 0:
                 return None, "库存已抢完（leaveStock=0），停手"
-        time.sleep(0.05 if status == "NOT_TIME_IN" else interval)
+        time.sleep(interval)
 
     stock = query_stock(s, referer, payload["secId"])
     if stock == 0:
@@ -251,7 +288,8 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
 
 
 def run(cfg: Config, dry_run: bool, once: bool, at: str,
-        interval: float, lead: float, max_attempts: int) -> int:
+        interval: float, lead: float, max_attempts: int,
+        pre_window_s: float = 60.0) -> int:
     # ① 优先复用已保存的活动会话（实测：仅 cookie 即可调通接口，不依赖 app_token）
     s = referer = None
     cached = load_session(cfg)
@@ -329,13 +367,20 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         log.info("[dry-run] 到此为止，不执行抢购")
         return 0 if eligible else 1
 
+    # 场次真实开始时间（服务器时钟）——用于判断是否已进入开抢阶段
+    zone_start_srv_ms = int(zone["startTime"])
+    # 默认在场次开始时出手（服务器时间换算到本机）
+    fire_at_local_s = zone_start_srv_ms / 1000 - offset_ms / 1000
+
     if at:
+        # --at 指定「何时开始出手」，通常给提前量（如 11:59:50）
         hh, mm, *ss = at.split(":")
         target = datetime.now(TZ_CN).replace(
             hour=int(hh), minute=int(mm), second=int(ss[0]) if ss else 0, microsecond=0)
-        start_srv_ms = int(target.timestamp() * 1000)
+        fire_at_local_s = target.timestamp()
         active = False
-        log.info("开抢时刻被 --at 覆盖为 %s", target.strftime("%H:%M:%S"))
+        log.info("开抢出手时刻被 --at 覆盖为 %s（场次本身 %s 开始）",
+                 target.strftime("%H:%M:%S"), st.strftime("%H:%M:%S"))
 
     if once:
         resp = api_post(s, referer, REDEEM_URL,
@@ -351,9 +396,11 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
                f"当日未签到且补签失败，无法参与秒杀\n手机尾号 {cfg.phone[-4:]}")
         return 1
     if not active:
-        wait_until(start_srv_ms / 1000 - offset_ms / 1000 - lead, s, referer, cfg)
+        # 等到出手时刻（fire_at_local_s 已是本机时钟，再减 lead 抵消网络延迟）
+        wait_until(fire_at_local_s - lead, s, referer, cfg)
 
-    resp, reason = fire_redeem(s, referer, zone, interval, max_attempts, end_srv_ms, offset_ms)
+    resp, reason = fire_redeem(s, referer, zone, interval, max_attempts,
+                               end_srv_ms, offset_ms, zone_start_srv_ms, pre_window_s)
 
     if reason == "SUCCESS":
         detail = (f"{zone['prize']['name']}\n场次 {st.strftime('%m-%d %H:%M')}，"
@@ -383,7 +430,10 @@ def main() -> int:
     parser.add_argument("--at", metavar="HH:MM[:SS]", help="手动指定开抢时刻（北京时间）")
     parser.add_argument("--interval", type=float, default=0.35, metavar="SEC", help="重试间隔秒")
     parser.add_argument("--lead", type=float, default=0.4, metavar="SEC", help="提前开火秒数，抵消网络延迟")
-    parser.add_argument("--max-attempts", type=int, default=6, metavar="N", help="最大尝试次数")
+    parser.add_argument("--max-attempts", type=int, default=6, metavar="N",
+                        help="开抢后最大尝试次数（默认 6）")
+    parser.add_argument("--pre-window", type=float, default=60.0, metavar="SEC",
+                        help="未开抢阶段的提前窗口秒数，超出就不出手（默认 60）")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -399,7 +449,8 @@ def main() -> int:
 
     try:
         return run(cfg, dry_run=args.dry_run, once=args.once, at=args.at,
-                   interval=args.interval, lead=args.lead, max_attempts=args.max_attempts)
+                   interval=args.interval, lead=args.lead,
+                   max_attempts=args.max_attempts, pre_window_s=args.pre_window)
     except KeyboardInterrupt:
         log.info("手动中断")
         return 1

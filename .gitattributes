@@ -1,0 +1,15 @@
+# Windows 批处理必须是 CRLF，否则 cmd 解析会错乱
+*.bat text eol=crlf
+
+# 其余文本统一 LF
+*.py text eol=lf
+*.js text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.spec text eol=lf
+
+# 二进制
+*.ico binary
+*.exe binary
+*.har binary

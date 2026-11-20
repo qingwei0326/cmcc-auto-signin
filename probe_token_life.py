@@ -23,14 +23,14 @@
 
 结论输出到 gui_data/token_life/<尾号>.json
 """
+from __future__ import annotations
+
 import argparse
 import json
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-
-sys.stdout.reconfigure(encoding="utf-8")
 
 import cmcc_sign as CS
 from common import setup_utf8
@@ -57,14 +57,23 @@ def _save(p: Path, obj: dict) -> None:
     tmp.replace(p)
 
 
-def _probe(cfg) -> tuple[bool, str]:
-    """试一次登录。返回 (是否有效, 详情)。"""
+# 只有服务端明确拒绝票据才算「失效」；网络抖动 / SSL / SSO 入口变更都不算
+EXPIRED_MARKS = ("APP登录状态已过期", "appTokenLogin 失败", "登录状态已过期")
+
+
+def _probe(cfg) -> tuple[str, str]:
+    """试一次登录。返回 (kind, 详情)，kind ∈ alive / expired / error。
+
+    早先任何异常都记 False，一次网络超时就把状态打成 expired 并永久停探，
+    寿命结论直接失真。这里把「服务端说票据废了」和「这次没探成」分开。
+    """
     try:
         CS.exchange_session(cfg)
-        return True, "登录成功"
+        return "alive", "登录成功"
     except Exception as e:
         msg = str(e).split("——")[0].strip()
-        return False, msg[:160]
+        kind = "expired" if any(k in msg for k in EXPIRED_MARKS) else "error"
+        return kind, msg[:160]
 
 
 def _needs_probe(rec: dict) -> bool:
@@ -89,7 +98,9 @@ def _accounts() -> list[Path]:
 def _conclude(rec: dict) -> str:
     """根据已有样本给出寿命结论。"""
     ok = [s for s in rec.get("samples", []) if s.get("ok")]
-    bad = [s for s in rec.get("samples", []) if not s.get("ok")]
+    # kind=error 是「这次没探成」（网络等），不能当成首次失效时刻
+    bad = [s for s in rec.get("samples", [])
+           if not s.get("ok") and s.get("kind") != "error"]
     if not ok:
         return "尚无成功样本"
     last_ok = ok[-1]
@@ -151,28 +162,35 @@ def run_once() -> int:
         try:
             cfg = CS.Config(cfg_path)
             rec["phone"] = cfg.phone
-            ok, detail = _probe(cfg)
+            kind, detail = _probe(cfg)
         except Exception as e:
-            ok, detail = False, f"配置读取失败: {str(e)[:120]}"
+            kind, detail = "error", f"配置读取失败: {str(e)[:120]}"
 
-        rec["samples"].append({"at": now, "ok": ok, "detail": detail})
+        ok = kind == "alive"
+        rec["samples"].append({"at": now, "ok": ok, "kind": kind, "detail": detail})
         # 只保留最近 500 个样本，避免文件无限增长
         rec["samples"] = rec["samples"][-500:]
         rec["updated"] = now
 
-        # 状态机：unknown → alive（探到过成功）→ expired（成功之后又失效）
-        if ok:
+        # 状态机：unknown → alive（探到过成功）→ expired（服务端明确拒绝票据）
+        # error 样本不改状态：网络抖动不该让探测永久停手
+        if kind == "alive":
             rec["state"] = "alive"
-        elif rec.get("state") == "alive":
-            rec["state"] = "expired"
-            rec["expired_at"] = now
+        elif kind == "expired":
+            tail = rec["samples"][-3:]
+            if rec.get("state") == "alive" or (
+                    len(tail) == 3 and all(s.get("kind") == "expired" for s in tail)):
+                rec["state"] = "expired"
+                rec["expired_at"] = now
+            else:
+                rec.setdefault("state", "unknown")
         else:
             rec.setdefault("state", "unknown")
 
         rec["conclusion"] = _conclude(rec)
         _save(out, rec)
 
-        flag = "有效" if ok else "失效"
+        flag = {"alive": "有效", "expired": "失效", "error": "未判定"}[kind]
         print(f"[{now}] ...{key}  app_token {flag}  {detail}", flush=True)
         if ok:
             alive += 1

@@ -34,6 +34,8 @@ pull_token_phone.py —— 用「中国移动一键登录」直接换 BASS token
     - token 是账号凭证，不要发到聊天窗口或网盘。
 """
 
+from __future__ import annotations
+
 import argparse
 import base64
 import json
@@ -43,12 +45,9 @@ import uuid
 from pathlib import Path
 
 import requests
-from common import atomic_write_json
+from common import atomic_write_json, setup_utf8
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-except Exception:
-    pass
+setup_utf8()   # stdout/stderr 都固定 UTF-8，Termux 上不支持 reconfigure 时自动跳过
 
 APP_ID_ONEKEY = "300011950611"
 APP_ID_FMCC = 20

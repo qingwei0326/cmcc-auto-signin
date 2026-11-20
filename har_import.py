@@ -213,9 +213,13 @@ def apply(text, key=None):
 
 
 def scan_dir(directory=None):
-    """扫描目录下的 *.har，逐个解析并返回 (报告行, 命中文件数)"""
+    """扫描目录下的 *.har，逐个解析并返回 (报告行, 命中文件数)。
+
+    按修改时间**升序**处理（旧 → 新）：后写的覆盖先写的，所以必须让最新的
+    HAR 最后落地。早先是倒序，目录里放两份 HAR 时旧 token 会覆盖新 token。
+    """
     d = Path(directory) if directory else BASE
-    files = sorted([f for f in d.glob("*.har")], key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted([f for f in d.glob("*.har")], key=lambda p: p.stat().st_mtime)
     if not files:
         return [f"{d} 下没有 .har 文件，请把抓包文件放到该目录，或用「选择文件」导入。"], 0
 
@@ -238,8 +242,6 @@ def scan_dir(directory=None):
 
 
 if __name__ == "__main__":
-    import sys
-    sys.stdout.reconfigure(encoding="utf-8")
     res, n = scan_dir()
     print("\n".join(res))
     print(f"\n共处理 {n} 个有效 HAR")

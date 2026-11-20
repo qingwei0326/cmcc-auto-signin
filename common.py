@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import requests
@@ -25,8 +26,6 @@ BASE = Path(__file__).parent
 # 移动端 UA，部分接口会对桌面 UA 直接返回异常
 UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
              "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/wkwebview")
-
-sys.stdout.reconfigure(encoding="utf-8")
 
 
 def setup_utf8():
@@ -41,6 +40,9 @@ def setup_utf8():
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+
+setup_utf8()
 
 
 # ---------------------------------------------------------------- 基础
@@ -78,14 +80,72 @@ def load_json(path, default=None):
         return default if default is not None else {}
 
 
+@contextmanager
+def file_lock(path, timeout=20.0):
+    """跨进程互斥锁，保护「读整份 → 改自己的 key → 写回」这段临界区。
+
+    原子写只能防半截文件，防不了丢更新：run_all 默认 4 并发，两个号同时
+    写 daily_state.json 时后写的会整份覆盖先写的。计划任务与一键签到分属
+    不同进程，threading.Lock 也管不到，所以这里用文件锁。
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    fh = open(lock_path, "a+b")
+    try:
+        fh.seek(0, os.SEEK_END)
+        if fh.tell() == 0:
+            fh.write(b"0")
+            fh.flush()
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fh.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    raise TimeoutError(f"等待文件锁超时：{lock_path}")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                fh.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        fh.close()
+
+
+def update_json(path, mutate, default=None, indent=1):
+    """跨进程安全地读-改-写一份 json；mutate(obj) 就地修改，返回改完的对象。"""
+    with file_lock(path):
+        obj = load_json(path, default if default is not None else {})
+        mutate(obj)
+        atomic_write_json(path, obj, indent=indent)
+        return obj
+
+
 # ---------------------------------------------------------------- 配置
 
-def load_config(path, required=()):
+def load_config(path, required=(), template="config.example.json"):
     """读取平台配置；缺少必需字段时直接退出并说明怎么填。"""
     path = Path(path)
     if not path.exists():
         print(f"缺少配置文件：{path}")
-        print(f"可复制 config.example.json 作为模板：{BASE / 'config.example.json'}")
+        print(f"可复制 {template} 作为模板：{BASE / template}")
         sys.exit(1)
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -95,7 +155,7 @@ def load_config(path, required=()):
     missing = [k for k in required if not cfg.get(k)]
     if missing:
         print(f"{path.name} 缺少字段：{', '.join(missing)}")
-        print("请参考 config.example.json 填写。")
+        print(f"请参考 {template} 填写。")
         sys.exit(1)
     return cfg
 
@@ -181,8 +241,19 @@ def _norm(resp):
     return {"ok": ok, "code": j.get("code"), "msg": j.get("msg"), "data": j.get("data")}
 
 
+def _refresh_ts(payload):
+    """重试前刷新 timestamp（保持原来的 str/int 类型）。
+
+    BASS 的 1006「操作太快」按时间戳判定，带着旧时间戳重试只会继续被拒。
+    """
+    if isinstance(payload, dict) and "timestamp" in payload:
+        old = payload["timestamp"]
+        payload["timestamp"] = now_ms() if isinstance(old, str) else int(now_ms())
+
+
 def api_get(session, url, params=None, retries=1, timeout=25, retry_codes=("-100",)):
-    """GET 调用。命中 retry_codes 时退避重试。"""
+    """GET 调用。命中 retry_codes 时刷新时间戳并退避重试。"""
+    params = dict(params or {})
     last = None
     for attempt in range(retries + 1):
         try:
@@ -194,6 +265,7 @@ def api_get(session, url, params=None, retries=1, timeout=25, retry_codes=("-100
             last = {"ok": False, "code": -1, "msg": f"网络异常: {e}", "data": None}
         if attempt < retries:
             time.sleep(2.5)
+            _refresh_ts(params)
     return last
 
 
@@ -211,6 +283,7 @@ def api_post(session, url, body=None, retries=1, timeout=25, retry_codes=("-100"
             last = {"ok": False, "code": -1, "msg": f"网络异常: {e}", "data": None}
         if attempt < retries:
             time.sleep(3.5)
+            _refresh_ts(body)
     return last
 
 
@@ -232,3 +305,30 @@ def mask_phone(phone):
     """手机号脱敏，显示用。"""
     s = str(phone or "")
     return f"...{s[-4:]}" if len(s) >= 4 else s
+
+
+# ---------------------------------------------------------------- 结构化结果
+
+RESULT_MARK = "@@RESULT "
+
+
+def emit_result(payload):
+    """在 stdout 末尾打一行机器可读结果，供控制台取数。
+
+    控制台原先靠正则匹配中文日志（「当前累计签到 N 天」）取统计，改一句文案
+    就会静默失准。这里把数字直接结构化输出，日志文案随便改都不影响统计。
+    """
+    print(RESULT_MARK + json.dumps(payload, ensure_ascii=False))
+
+
+def parse_result(text):
+    """取输出里最后一条 @@RESULT；没有或解析失败返回 None。"""
+    for line in reversed((text or "").splitlines()):
+        line = line.strip()
+        if line.startswith(RESULT_MARK):
+            try:
+                obj = json.loads(line[len(RESULT_MARK):])
+            except Exception:
+                return None
+            return obj if isinstance(obj, dict) else None
+    return None

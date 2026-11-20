@@ -154,6 +154,7 @@ select.inp{cursor:pointer}
       <button data-p="bass" onclick="nav(this)"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>BASS 任务</button>
       <button data-p="xxl" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>消消乐</button>
       <button data-p="seckill" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>秒杀抢券</button>
+      <button data-p="games" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m9 12 2 2 4-4"/></svg>拓展活动</button>
       <button data-p="sched" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>定时任务</button>
       <button data-p="logs" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m5 0h5"/></svg>日志</button>
     </nav>
@@ -318,6 +319,28 @@ select.inp{cursor:pointer}
         </div>
       </div>
 
+      <!-- 拓展活动 -->
+      <div class="page" id="p-games">
+        <div class="phead"><div><h2>拓展活动</h2><div class="desc">cmcc_extra.py：周六游戏中心 / 追剧领福利 / 玩游戏抽话费</div></div></div>
+        <div class="panel">
+          <h3>执行拓展活动</h3>
+          <div class="frow"><label>账号</label><select class="inp" id="gmFile"></select></div>
+          <div class="frow">
+            <button class="btn pri" onclick="act({action:'games_run',file:V('gmFile')},()=>setTimeout(pullState,3000))">打卡+任务+抽奖</button>
+            <button class="btn" onclick="act({action:'games_run',file:V('gmFile'),dry:1},()=>setTimeout(pullState,3000))">只查状态</button>
+            <button class="btn" onclick="act({action:'games_run',file:V('gmFile'),tasks:1},()=>setTimeout(pullState,3000))">顺带做 AI豆任务</button>
+          </div>
+          <div class="infobox">三个活动各有自己的<b>消耗窗口</b>，脚本自己判定，不在窗口就只报余额、不消耗：
+            <br>· <b>周六游戏中心</b>：游戏币攒着，<b>周六 12:00 起</b>才能抽（余额按 31 天周期清零）
+            <br>· <b>追剧领福利</b>：抽奖次数只在<b>周日</b>开放
+            <br>· <b>玩游戏抽话费</b>：每周一刷新的周任务，没有抽奖
+            <br>计划任务 <code>MobileGames</code> 默认每天 <b>12:05</b> 跑一次，正好覆盖周六 12:00 的游戏币抽奖，
+            其它日子只报状态、不消耗。</div>
+          <div class="warnbox">拓展活动需要<b>有效 app_token</b>（约 30~46 分钟寿命）。
+            票据过期时三个活动一个都跑不了，需要重新抓包导入。</div>
+        </div>
+      </div>
+
       <!-- 定时任务 -->
       <div class="page" id="p-sched">
         <div class="phead"><div><h2>定时任务</h2><div class="desc">Windows 计划任务注册 / 注销（PowerShell Register-ScheduledTask）</div></div></div>
@@ -343,6 +366,10 @@ select.inp{cursor:pointer}
             <input class="inp" id="tSeckill" value="11:55" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'seckill',time:V('tSeckill')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileSeckill？',()=>act({action:'sched_unreg',name:'MobileSeckill'}))">注销</button></div>
+          <div class="frow"><label>拓展活动任务</label><span style="font-size:13px">MobileGames → run_games.bat，每天</span>
+            <input class="inp" id="tGames" value="12:05" style="min-width:80px">
+            <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'games',time:V('tGames')})">注册/更新</button>
+            <button class="btn sm danger" onclick="cf('注销 MobileGames？',()=>act({action:'sched_unreg',name:'MobileGames'}))">注销</button></div>
           <div class="frow"><label>票据寿命探测</label><span style="font-size:13px">MobileTokenLifeProbe → run_token_life.bat，每 2 分钟</span>
             <input class="inp" id="tProbe" value="00:00" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'probe',time:V('tProbe')})">注册/更新</button>
@@ -501,6 +528,7 @@ function render(){
   fillSel('bassRunKey',accts.filter(a=>a.plat==='BASS').map(a=>a.key));
   // 秒杀只作用于 qwhdhub（签到有礼活动）
   fillSel('skFile',accts.filter(a=>a.plat==='qwhdhub').map(a=>a.file));
+  fillSel('gmFile',accts.filter(a=>a.plat==='qwhdhub').map(a=>a.file));
   // 秒杀会话就绪状态
   const skS=$('skSess');
   if(skS){

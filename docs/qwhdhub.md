@@ -56,12 +56,39 @@ JSESSIONID=<uuid>; UID=<32位hex>; Comment=SessionServer-unity; Path=/;HTTPOnly;
 
 ## 拓展活动（`cmcc_extra.py`）
 
+三个 qwhdhub 侧的拓展活动，代码早写好了但**此前从未被调用**（`run_all` 不传 `--games`、
+界面无入口），2026-11-20 13:1x 才真正接上：
+
+| 活动 | 入口 | 消耗窗口 |
+|---|---|---|
+| 周六游戏中心 | `/qwhdhub/diy-client/1126086939` | 游戏币抽奖 **周六 12:00 起**（余额按 31 天清零） |
+| 追剧领福利 | `/qwhdhub/diy-client/1126082530` | 抽奖次数**仅周日**开放 |
+| 玩游戏抽话费（周任务） | `/qwhdhub/diy-client/1126090514` | 无抽奖，只有每周一刷新的周任务 |
+
+各自的端点：
+
 | 端点 | 说明 |
 |---|---|
 | `GET /hlwyxhdhub/api/open/_pub/task/getOneTaskInfo` | 活动任务信息 |
 | `POST /hlwyxhdhub/api/open/_pub/task/openFinish` | 完成活动任务 |
+| `POST /qwhdhub/diyTask/list/<componentId>` | 代币任务清单（`taskStage=UNDO/DONE`） |
+| `POST /qwhdhub/diyTask/finish/<taskId>` | 完成代币任务（服务端不校验真实行为） |
+| `POST /qwhdhub/diyLottery/period/remain/<componentId>` | 抽奖余额与剩余次数（只读） |
+| `GET /qwhdhub/diyLottery/lotterySafely/<componentId>` | 执行一次抽奖 |
 
 入口页：`hlwyxhdhub/act-wedrecharge/index.html?pageId=<活动id>`
+
+### 怎么跑
+
+```bash
+python cmcc_sign.py --config configs/3239.json --games          # 单号
+python cmcc_sign.py --config configs/3239.json --games --dry-run # 只查余额
+python run_all.py --games-only                                   # 全部账号
+```
+
+计划任务 `MobileGames` → `run_games.bat`：每天 **12:05** 跑一次。
+选这个点是因为**周六 12:00** 正是游戏币抽奖窗口开启的时刻；其它日子只报余额、不消耗。
+控制台「拓展活动」页也有单号手动执行入口。
 
 ## 获取凭证
 

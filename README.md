@@ -97,7 +97,11 @@ dist\签到控制台.exe → 复制到项目根目录
 
 - bat 换行必须是 CRLF（被存成 LF 会解析错乱）
 - 依赖源用默认 PyPI，清华源曾缺 pywebview
-- 成功标志是日志出现 `Build complete!`，exe 约 33MB
+- `static/index.html` 必须在位：前端已拆成独立文件，由 `签到控制台.spec` 的 `datas` 打进 exe，
+  缺了它程序会直接报「缺少 static/index.html」而不是开一个空白窗口
+- 打包配置以 **spec 为唯一来源**：`build_exe.bat` 直接构建 spec。若改回用命令行参数构建，
+  PyInstaller 会按参数重新生成 spec，把手工维护的 `datas`/图标等配置覆盖掉
+- 成功标志是日志末尾出现 `Build complete!`，exe 约 33MB，产物在 `dist\签到控制台.exe`
 
 窗口起不来时程序会自动回退浏览器模式，启动过程记录在 `gui_data/startup.log`。
 
@@ -105,7 +109,7 @@ dist\签到控制台.exe → 复制到项目根目录
 
 ## 定时任务
 
-推荐注册两个计划任务（Windows）：
+推荐注册下面六个计划任务（Windows）：
 
 | 任务 | 时间 | 脚本 | 作用 |
 |---|---|---|---|
@@ -218,6 +222,10 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 
 服务器时间比本机快约 1 秒，脚本用 `markSeckill/sysTime` 校准后**提前 0.4 秒**出手；
 被拒后每 2 秒核对一次库存，库存为 0 立刻停手（避免对着空库存狂打触发风控）。
+
+多账号是**并发**等到同一时刻一起出手的（串行会让第二个号晚几十秒，库存只有 1 份时等于抢不到）。
+`run_all.py` 给秒杀子进程的超时上限按 `--seckill-at` 距现在还有多久动态计算，
+足够覆盖 10:30 → 12:00 这段等待；早先固定 900 秒，子进程会在开抢前就被 kill。
 
 > 限制：真正的开抢时刻尚未实测（每天只有 12:00 一次机会）；
 > 资格要求当日已签到（脚本会自动补签）；库存通常只有 1 份，抢不抢得到看手速与运气；
@@ -342,7 +350,7 @@ python pull_token_phone.py --save     # Termux
 ├── run_scheduled.bat       定时签到用
 ├── run_daily_reward.bat    定时领每日奖励用
 ├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
-├── run_seckill.bat         定时秒杀抢券（11:30 启动，等到 12:00）
+├── run_seckill.bat         定时秒杀抢券（10:30 启动，等到 12:00）
 ├── common.py               共用基础设施：原子写、通知、会话、接口调用
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
 ├── cmcc_sign.py            qwhdhub 签到（全国）
@@ -352,13 +360,15 @@ python pull_token_phone.py --save     # Termux
 ├── cmcc_luck.py            优惠专区转盘抽奖
 ├── cmcc_seckill.py         签到有礼每周秒杀（12:00 抢话费券）
 ├── har_import.py           从 HAR 提取 qwhdhub + BASS 凭证并写配置
-├── dashboard.py            图形控制台后端 + 内嵌页面
+├── dashboard.py            图形控制台后端（HTTP API + 任务调度）
+├── static/index.html       控制台前端页面（打包时由 --add-data 带上）
 ├── app_desktop.py          桌面版入口（pywebview 原生窗口）
 ├── pull_token_phone.py     手机一键登录换 BASS token（免抓包）
 ├── pull_token_iphone.js    同上，iPhone Scriptable 版
 ├── probe_fj.py             只读探测 BASS 接口
 ├── config.example.json     qwhdhub 配置模板
 ├── config_fj.example.json  BASS 配置模板
+├── tests/                  单元与回归测试（全部用假响应，不发真实请求）
 ├── docs/                   接口文档（qwhdhub / 秒杀 / 周三充值日 / BASS）
 ├── configs/                真实 qwhdhub 配置（不入库）
 ├── configs_fj/             真实 BASS 配置（不入库）
@@ -466,6 +476,26 @@ python probe_token_life.py --report
   库存通常只有 1 份，抢不抢得到看运气
 - qwhdhub 签到**必须**有有效 app_token；秒杀虽可用已保存的会话 cookie 兜底，
   但会话本身也是靠签到时建立的，app_token 全断后仍需重新抓包
+
+---
+
+## 开发与测试
+
+```bash
+pip install -r requirements.txt
+python -m unittest discover -s tests -v      # 78 个用例，约 6 秒
+```
+
+测试全部用临时目录与假响应，**不读 `configs/`、不发任何真实请求**，可以放心跑。
+另有一个只跑测试的 GitHub Actions（`.github/workflows/tests.yml`，Windows + Linux × Python 3.9/3.12）——
+上面「不要用 GitHub Actions 跑」指的是签到任务本身，不是测试。
+
+`tests/test_regressions.py` 里每条用例都对应一个修过的真实缺陷：保活参数被丢、
+消消乐退出码恒 0、会话剩余分钟恒 null、HAR 签发时刻跨账号污染、并发写状态丢更新、
+控制台路径穿越与跨站请求等。把代码改回去就会红。
+
+两个文件都能单独跑（`python tests/test_smoke.py`），入口在文件末尾，
+不会漏掉后半部分的测试类。
 
 ---
 

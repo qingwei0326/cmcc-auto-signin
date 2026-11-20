@@ -33,13 +33,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import cmcc_sign as CS
-from common import setup_utf8
+from common import setup_utf8, app_base
+
+# 冻结成 exe 后 __file__ 指向临时解包目录，必须改用 exe 所在目录，
+# 否则探测记录会写进临时目录，exe 一关就丢。
+BASE = app_base()
 
 # 输出被重定向到日志文件时，Windows 默认用 GBK，中文会变乱码。
 # 必须在任何输出之前调用（logging 初始化也要在它之后）。
 setup_utf8()
 
-BASE = Path(__file__).parent
 OUT_DIR = BASE / "gui_data" / "token_life"
 
 

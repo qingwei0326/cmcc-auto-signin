@@ -21,7 +21,21 @@ from pathlib import Path
 
 import requests
 
-BASE = Path(__file__).parent
+
+def app_base() -> Path:
+    """项目根目录 —— 冻结成 onefile exe 后也必须指向 exe 所在目录。
+
+    冻结时 PyInstaller 把源码解包到临时目录（_MEIxxxx），`__file__` 指向那里。
+    但配置、脚本、日志都在 **exe 旁边** 的项目目录里，
+    如果用 `Path(__file__).parent`，写进去的 configs 会在 exe 关闭后随临时目录一起消失。
+    所以：冻结时用 sys.executable 的目录，源码运行时用 __file__ 的目录。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+BASE = app_base()
 
 # 移动端 UA，部分接口会对桌面 UA 直接返回异常
 UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
@@ -136,6 +150,62 @@ def update_json(path, mutate, default=None, indent=1):
         mutate(obj)
         atomic_write_json(path, obj, indent=indent)
         return obj
+
+
+def find_har_files(extra_dirs=None):
+    """找出候选 HAR 文件，按修改时间倒序（新的在前）。
+
+    搜索范围：
+      · 项目目录
+      · 用户下载目录
+      · 微信接收目录（xwechat_files/<wxid>/temp/RWTemp/<月份>/<hash>/xxx.har）
+
+    微信那一段是实际使用场景：抓包文件从微信里直接拖到控制台，
+    服务端能自己定位到它，不用把几十 MB 的内容再传一遍。
+    """
+    cands = []
+    try:
+        cands += list(BASE.glob("*.har"))
+    except Exception:
+        pass
+    dl = Path.home() / "Downloads"
+    if dl.is_dir():
+        try:
+            cands += list(dl.glob("*.har"))
+        except Exception:
+            pass
+    for wx_root in (Path("D:/wechat/xwechat_files"), Path("C:/wechat/xwechat_files")):
+        if wx_root.is_dir():
+            try:
+                # 微信接收的文件落在 <wxid>/msg/file/<月份>/xxx.har
+                cands += list(wx_root.glob("*/msg/file/*/*.har"))
+                # 另有一处落在 temp/RWTemp
+                cands += list(wx_root.glob("*/temp/RWTemp/*/*/*.har"))
+            except Exception:
+                pass
+    for d in (extra_dirs or []):
+        try:
+            p = Path(str(d))
+            if p.is_file() and p.suffix.lower() == ".har":
+                cands.append(p)
+            elif p.is_dir():
+                cands += list(p.glob("*.har"))
+        except Exception:
+            pass
+
+    files = []
+    seen = set()
+    for p in cands:
+        try:
+            rp = p.resolve()
+        except Exception:
+            continue
+        if rp in seen or not p.is_file():
+            continue
+        seen.add(rp)
+        files.append(p)
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files
 
 
 # ---------------------------------------------------------------- 配置

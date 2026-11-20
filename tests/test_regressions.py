@@ -859,5 +859,255 @@ class TestContinuousStage(unittest.TestCase):
         self.assertIn("code=133", doc)
 
 
+class FakeHttpResp:
+    """模拟 requests.Response：只需要 json() 与 raise_for_status()。"""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        return None
+
+
+class TestWedPuzzle(unittest.TestCase):
+    """周三充值日拼图任务、抽奖与领券。"""
+
+    def test_puzzle_complete_needs_every_piece(self):
+        from cmcc_wed import puzzle_complete
+        self.assertFalse(puzzle_complete({"a": "1", "b": "0"}))
+        self.assertTrue(puzzle_complete({"a": "1", "b": "2"}))
+        self.assertFalse(puzzle_complete({}))
+
+    def test_quota_left_uses_monthly_quota(self):
+        from cmcc_wed import quota_left
+        self.assertEqual(quota_left({"requireTimes": 4, "completedTimes": 2}), 2)
+        self.assertEqual(quota_left({"requireTimes": 4, "completedTimes": 9}), 0)
+        self.assertIsNone(quota_left({}))
+
+    def test_task_lines_marks_manual_tasks(self):
+        from cmcc_wed import task_lines
+        tasks = [
+            {"taskId": "czhf", "title": "充值满10元", "status": 0, "addDrawTimes": 1},
+            {"taskId": "ll_x", "title": "浏览页面", "status": 0, "addDrawTimes": 1},
+            {"taskId": "done1", "title": "已完成任务", "status": 2, "addDrawTimes": 1},
+        ]
+        lines = task_lines(tasks)
+        self.assertTrue(any("充值满10元" in l and "·" in l for l in lines),
+                        "真实充值任务必须标成不代做")
+        self.assertTrue(any("浏览页面" in l and "→" in l for l in lines))
+        self.assertTrue(any("已完成任务" in l and "✓" in l for l in lines))
+
+    def test_finish_tasks_skips_manual_tasks(self):
+        import cmcc_wed as W
+        calls = []
+
+        class FS:
+            def post(self, url, json=None, headers=None, timeout=None):
+                calls.append((url, json))
+                return FakeHttpResp({"code": "0", "data": {"addDrawTimes": 1}})
+
+        tasks = [
+            {"taskId": "czhf", "title": "充值满10元", "status": 0},
+            {"taskId": "ll_x", "title": "浏览页面", "status": 0},
+        ]
+        lines = []
+        with mock.patch.object(W.time, "sleep"):
+            W.finish_tasks(FS(), "ref", tasks, lines)
+        self.assertEqual(len(calls), 1, "只应上报可代做任务")
+        self.assertTrue(calls[0][0].endswith("/finishTask"))
+        self.assertEqual(calls[0][1], {"taskId": "ll_x"})
+
+    def test_draw_all_uses_current_puzzle_and_stops_when_empty(self):
+        import cmcc_wed as W
+        calls = []
+        state = {"drawTimes": 1, "activeIndex": 2, "pictureList": {"2": {"a": "0"}}}
+
+        class FS:
+            def post(self, url, json=None, headers=None, timeout=None):
+                calls.append((url, json))
+                if url.endswith("queryPictureActInfo"):
+                    return FakeHttpResp({"code": "0", "data": state})
+                if url.endswith("drawPicture"):
+                    state["drawTimes"] = 0
+                    return FakeHttpResp({"code": "0", "data": {"prize": {"prizeId": "p1"}}})
+                return FakeHttpResp({"code": "0", "data": {}})
+
+        lines = []
+        with mock.patch.object(W.time, "sleep"):
+            W.draw_all(FS(), "ref", lines)
+        draws = [c for c in calls if c[0].endswith("/drawPicture")]
+        self.assertEqual(len(draws), 1)
+        self.assertEqual(draws[0][1], {"round": "dp2"},
+                         "必须抽当前 activeIndex 对应的档位")
+
+    def test_draw_all_keeps_chances_when_puzzle_complete(self):
+        import cmcc_wed as W
+        calls = []
+
+        class FS:
+            def post(self, url, json=None, headers=None, timeout=None):
+                calls.append(url)
+                return FakeHttpResp({"code": "0", "data": {
+                    "drawTimes": 5, "activeIndex": 1,
+                    "pictureList": {"1": {"a": "1", "b": "1"}}}})
+
+        lines = []
+        with mock.patch.object(W.time, "sleep"):
+            W.draw_all(FS(), "ref", lines)
+        self.assertFalse([c for c in calls if c.endswith("/drawPicture")],
+                         "拼图已集齐时不该再消耗次数")
+        self.assertTrue(any("已集齐" in l for l in lines))
+
+    def test_receive_ready_uses_round_mapping(self):
+        import cmcc_wed as W
+        calls = []
+
+        class FS:
+            def post(self, url, json=None, headers=None, timeout=None):
+                calls.append((url, json))
+                return FakeHttpResp({"code": "0", "data": {
+                    "actPrizes": [{"prizeName": "95折话费券"}]}})
+
+        lines = []
+        with mock.patch.object(W.time, "sleep"):
+            W.receive_ready(FS(), "ref",
+                            {"pictureList": {"1": {"a": "1"}}}, lines)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0][0].endswith("/receiveNew"))
+        self.assertEqual(calls[0][1], {"round": "r6"})
+        self.assertTrue(any("领取成功" in l for l in lines))
+
+    def test_dry_run_never_writes(self):
+        import cmcc_wed as W
+        calls = []
+
+        class FS:
+            def post(self, url, json=None, headers=None, timeout=None):
+                calls.append(url)
+                if url.endswith("queryPictureActInfo"):
+                    return FakeHttpResp({"code": "0", "data": {
+                        "drawTimes": 2, "activeIndex": 1,
+                        "pictureList": {"1": {"a": "1"}}}})
+                if url.endswith("taskList"):
+                    return FakeHttpResp({"code": "0", "data": [
+                        {"taskId": "ll_x", "title": "浏览", "status": 0}]})
+                return FakeHttpResp({"code": "0", "data": {}})
+
+        cfg = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg.phone = "13800001234"
+        cfg.app_token = "x"
+        with mock.patch.object(W, "exchange_session", return_value=(FS(), "ref")):
+            lines = W.run(cfg, dry_run=True)
+        writes = [c for c in calls
+                  if c.endswith("/finishTask") or c.endswith("/drawPicture")
+                  or c.endswith("/receiveNew")]
+        self.assertEqual(writes, [], "dry-run 不能做任何写操作")
+        self.assertTrue(any("dry-run" in l for l in lines))
+
+    def test_run_all_supports_wed_only(self):
+        """周三充值日要能从批量运行器单独触发。"""
+        calls = []
+
+        def fake_run_script(script, conf, args, timeout):
+            calls.append((script.name, list(args)))
+            return conf.stem, True, 1.0, "ok"
+
+        with mock.patch.object(run_all, "run_script", side_effect=fake_run_script), \
+                mock.patch.object(sys, "argv", ["run_all.py", "--wed-only", "--dry-run"]):
+            run_all.main()
+        self.assertTrue(calls, "wed-only 应至少跑一个账号")
+        for name, args in calls:
+            self.assertEqual(name, "cmcc_wed.py")
+            self.assertIn("--dry-run", args)
+
+
+class TestSeckillSessionRetry(unittest.TestCase):
+    """秒杀：启动时没会话不再直接退出，而是重试到开抢前。"""
+
+    def test_parse_fire_at_uses_todays_clock(self):
+        import cmcc_seckill as SK
+        ts = SK.parse_fire_at("11:59:50", datetime(2026, 11, 20, 0, 0, 0))
+        dt = datetime.fromtimestamp(ts)
+        self.assertEqual((dt.hour, dt.minute, dt.second), (11, 59, 50))
+
+    def test_session_deadline_covers_grace_after_fire(self):
+        import cmcc_seckill as SK
+        base = SK.parse_fire_at("11:59:50", datetime(2026, 11, 20, 0, 0, 0))
+        self.assertAlmostEqual(SK.session_deadline_for("11:59:50", now=base - 100),
+                               base + SK.SESSION_GRACE_AFTER_FIRE, delta=1)
+        self.assertAlmostEqual(SK.session_deadline_for("", now=1000.0),
+                               1000.0 + SK.DEFAULT_SESSION_WAIT, delta=1)
+
+    def test_retry_keeps_going_until_session_appears(self):
+        import cmcc_seckill as SK
+        clock = {"t": 1000.0}
+        calls = {"n": 0}
+
+        def fake_exchange(cfg):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("appTokenLogin 失败: FAILED —— 票据已过期")
+            return ("S", "R")
+
+        cfg = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg.phone = "13800001234"
+        cfg.app_token = "x"
+        cfg.config_path = ""
+        with mock.patch.object(SK, "load_session", return_value=None), \
+                mock.patch.object(SK, "save_session", lambda *a, **k: None), \
+                mock.patch.object(SK, "exchange_session", side_effect=fake_exchange):
+            s, ref, latest = SK.acquire_session_with_retry(
+                cfg, deadline=1100.0, retry_interval=15.0,
+                now_fn=lambda: clock["t"],
+                sleep_fn=lambda d: clock.__setitem__("t", clock["t"] + d))
+        self.assertEqual(calls["n"], 2, "第一次失败后必须继续重试")
+        self.assertEqual((s, ref), ("S", "R"))
+
+    def test_retry_gives_up_after_deadline(self):
+        import cmcc_seckill as SK
+        clock = {"t": 1000.0}
+        calls = {"n": 0}
+
+        def always_fail(cfg):
+            calls["n"] += 1
+            raise RuntimeError("票据已过期")
+
+        cfg = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg.phone = "13800001234"
+        cfg.app_token = "x"
+        cfg.config_path = ""
+        with mock.patch.object(SK, "load_session", return_value=None), \
+                mock.patch.object(SK, "exchange_session", side_effect=always_fail):
+            with self.assertRaises(RuntimeError) as ctx:
+                SK.acquire_session_with_retry(
+                    cfg, deadline=1060.0, retry_interval=15.0,
+                    now_fn=lambda: clock["t"],
+                    sleep_fn=lambda d: clock.__setitem__("t", clock["t"] + d))
+        self.assertGreaterEqual(calls["n"], 2, "截止前应尝试多次")
+        self.assertIn("票据已过期", str(ctx.exception))
+
+    def test_waiting_process_picks_up_newly_imported_har(self):
+        """等待期间导入的新 HAR 必须被下一轮重试读到（内存旧票据不算数）。"""
+        import cmcc_seckill as SK
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "c.json"
+            path.write_text(json.dumps(
+                {"app_token": "old-token", "phone": "13800001234"}), encoding="utf-8")
+            env = dict(os.environ)
+            env.pop("CMCC_APP_TOKEN", None)
+            env.pop("CMCC_PHONE", None)
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = cmcc_sign.Config(str(path))
+                self.assertEqual(cfg.app_token, "old-token")
+                path.write_text(json.dumps(
+                    {"app_token": "new-token", "phone": "13800001234"}), encoding="utf-8")
+                fresh = SK.reload_config(cfg)
+                self.assertEqual(fresh.app_token, "new-token",
+                                 "重试时必须重读配置文件才能用上新票据")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

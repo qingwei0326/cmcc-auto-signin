@@ -270,8 +270,8 @@ def run_xxl(dry_run: bool, times: int) -> list:
 def seckill_timeout(at: str = "") -> int:
     """秒杀子进程的超时上限（秒）。
 
-    脚本内部要一直睡到开抢时刻（计划任务 10:30 启动、12:00 出手，约 90 分钟），
-    超时若小于这段等待，子进程会在开抢前被 kill —— 秒杀就永远不会发生。
+    脚本内部要睡到开抢时刻（计划任务 11:55 启动、12:00 出手），
+    超时必须覆盖等待、会话重试和开抢后的库存核对。
     所以按 --at 距现在还有多久来算，再留 15 分钟给抢购与重试。
     """
     if not at:
@@ -322,6 +322,31 @@ def run_seckill(dry_run: bool, at: str = "") -> list:
     return results
 
 
+def run_wed(dry_run: bool) -> list:
+    """周三充值日：查询/完成拼图任务、抽奖并领取已集齐奖励。"""
+    script = BASE / "cmcc_wed.py"
+    confs = sorted((BASE / "configs").glob("*.json"))
+    results = []
+    if not script.exists() or not confs:
+        print("缺少 cmcc_wed.py 或 configs 下没有配置，跳过周三充值日")
+        return results
+    print("\n" + "=" * 66)
+    print(f" 周三充值日   {len(confs)} 个账号")
+    print("=" * 66)
+
+    def one(conf):
+        return run_script(script, conf, ["--dry-run"] if dry_run else [], 900)
+
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(confs))) as ex:
+        futs = [ex.submit(one, c) for c in confs]
+        for fut in futs:
+            name, ok, sec, text = fut.result()
+            if text:
+                print(text)
+            results.append(("wed", name, ok, sec))
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -342,6 +367,10 @@ def main():
     ap.add_argument("--seckill-only", action="store_true",
                     help="只跑秒杀，不跑签到（用于秒杀专用计划任务）")
     ap.add_argument("--seckill-at", default="", help="秒杀开抢时刻，默认按 secConfig 自动选场次")
+    ap.add_argument("--wed", action="store_true",
+                    help="额外跑周三充值日拼图任务、抽奖与领券")
+    ap.add_argument("--wed-only", action="store_true",
+                    help="只跑周三充值日，不跑其它平台")
     args = ap.parse_args()
 
     # 额外参数按平台分发：--extra 是给 BASS 的，qwhd 的由模式开关自己决定。
@@ -359,6 +388,13 @@ def main():
     if args.seckill_only:
         args.seckill = True
         args.xxl = False
+        args.platform = "none"
+
+    # 只跑周三充值日：拼图抽奖与领券独立于普通签到和每日秒杀
+    if args.wed_only:
+        args.wed = True
+        args.xxl = False
+        args.seckill = False
         args.platform = "none"
 
     # 保活：只登录续 jwt，不签到；失败也不推送（保活失败由每日签到去告警）
@@ -399,6 +435,9 @@ def main():
 
     if args.seckill:
         results.extend(run_seckill(args.dry_run, args.seckill_at))
+
+    if args.wed:
+        results.extend(run_wed(args.dry_run))
 
     if not results:
         print("\n没有任何账号被执行。")

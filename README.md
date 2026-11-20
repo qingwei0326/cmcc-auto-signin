@@ -116,8 +116,8 @@ dist\签到控制台.exe → 复制到项目根目录
 | `MobileSignIn` | 每天 **08:30** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐 |
 | `MobileDailyReward` | 每天 **06:03 起每小时**，共 17 次 | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 |
 | `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
-| `MobileSessionRefresh` | 每天 **10:15** | `run_session_refresh.bat` | 只跑 qwhdhub 签到，建立新会话（活到 12:15），为秒杀做准备 |
-| `MobileSeckill` | 每天 **10:30** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券 |
+| `MobileSessionRefresh` | 每天 **11:54** | `run_session_refresh.bat` | 只跑 qwhdhub 签到，建立新会话，为秒杀做准备 |
+| `MobileSeckill` | 每天 **11:55** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券；会话未就绪会每 15 秒重试 |
 | `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**，全天覆盖 | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
 
 **为什么需要第二个任务**
@@ -174,14 +174,14 @@ $t3 = New-ScheduledTaskTrigger -Daily -At 00:00
 $t3.Repetition = (New-ScheduledTaskTrigger -Once -At 00:00 -RepetitionInterval (New-TimeSpan -Minutes 90) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
 Register-ScheduledTask -TaskName "MobileJwtKeepAlive" -Action $a3 -Trigger $t3 -Force
 
-# 会话刷新任务（10:15 建立新会话，活到 12:15）
+# 会话刷新任务（11:54 建立新会话，紧邻开抢）
 $a4 = New-ScheduledTaskAction -Execute "<项目目录>\run_session_refresh.bat" -WorkingDirectory "<项目目录>"
-$t4 = New-ScheduledTaskTrigger -Daily -At 10:15
+$t4 = New-ScheduledTaskTrigger -Daily -At 11:54
 Register-ScheduledTask -TaskName "MobileSessionRefresh" -Action $a4 -Trigger $t4 -Force
 
-# 秒杀抢券任务（10:30 启动，脚本内部等到 12:00）
+# 秒杀抢券任务（11:55 启动，脚本内部等到 12:00）
 $a5 = New-ScheduledTaskAction -Execute "<项目目录>\run_seckill.bat" -WorkingDirectory "<项目目录>"
-$t5 = New-ScheduledTaskTrigger -Daily -At 10:30
+$t5 = New-ScheduledTaskTrigger -Daily -At 11:55
 Register-ScheduledTask -TaskName "MobileSeckill" -Action $a5 -Trigger $t5 -Force
 ```
 
@@ -214,10 +214,10 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 | 签到时刻 | 会话失效 | 覆盖 12:00？ |
 |---|---|---|
 | 08:30 | 10:30 | ❌ |
-| **10:15** | **12:15** | ✅ |
+| **11:54** | **13:54** | ✅ |
 
-**必须在 10:00 之后重新签到一次**（计划任务 `MobileSessionRefresh` 干这个），
-否则 12 点时会话已死。而那次签到**仍需要有效 app_token**（票据约 30~40 分钟寿命），
+**必须临近 12:00 重新签到一次**（计划任务 `MobileSessionRefresh` 11:54 干这个），
+否则 12 点时会话已死。而那次签到**仍需要有效 app_token**（票据约 30~46 分钟寿命），
 若已过期就还得抓一次包 —— 这是目前唯一无法自动化的环节。
 
 服务器时间比本机快约 1 秒，脚本用 `markSeckill/sysTime` 校准后**提前 0.4 秒**出手；
@@ -225,11 +225,14 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 
 多账号是**并发**等到同一时刻一起出手的（串行会让第二个号晚几十秒，库存只有 1 份时等于抢不到）。
 `run_all.py` 给秒杀子进程的超时上限按 `--seckill-at` 距现在还有多久动态计算，
-足够覆盖 10:30 → 12:00 这段等待；早先固定 900 秒，子进程会在开抢前就被 kill。
+足够覆盖 11:55 → 12:00 这段等待；早先固定 900 秒，子进程会在开抢前就被 kill。
+
+**启动时拿不到会话不再直接退出**：脚本每 15 秒重试一次，直到 `11:59:50 + 60 秒` 才放弃，
+而且**每轮都重读配置文件** —— 等待期间导入的新 HAR 会被下一轮自动识别，不用重启任务。
 
 > 限制：真正的开抢时刻尚未实测（每天只有 12:00 一次机会）；
 > 资格要求当日已签到（脚本会自动补签）；库存通常只有 1 份，抢不抢得到看手速与运气；
-> **会话 2 小时硬过期**，所以必须靠 10:15 那次签到建立新会话，
+> **会话 2 小时硬过期**，所以必须靠 11:54 那次签到建立新会话，
 > 而那次签到仍需有效 app_token —— 票据过期时只能重新抓包。
 
 ---
@@ -356,7 +359,7 @@ python pull_token_phone.py --save     # Termux
 ├── run_scheduled.bat       定时签到用
 ├── run_daily_reward.bat    定时领每日奖励用
 ├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
-├── run_seckill.bat         定时秒杀抢券（10:30 启动，等到 12:00）
+├── run_seckill.bat         定时秒杀抢券（11:55 启动，等到 12:00）
 ├── common.py               共用基础设施：原子写、通知、会话、接口调用
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
 ├── cmcc_sign.py            qwhdhub 签到（全国）
@@ -365,6 +368,7 @@ python pull_token_phone.py --save     # Termux
 ├── cmcc_xiaoxiaole.py      消消乐
 ├── cmcc_luck.py            优惠专区转盘抽奖
 ├── cmcc_seckill.py         签到有礼每周秒杀（12:00 抢话费券）
+├── cmcc_wed.py             周三充值日（拼图任务、抽奖、集齐领券）
 ├── har_import.py           从 HAR 提取 qwhdhub + BASS 凭证并写配置
 ├── dashboard.py            图形控制台后端（HTTP API + 任务调度）
 ├── static/index.html       控制台前端页面（打包时由 --add-data 带上）
@@ -480,8 +484,8 @@ python probe_token_life.py --report
 - BASS 签到在凌晨会返回 `1502 未到可签到时间`，属正常
 - 每日奖励三档之间必须间隔 60 分钟，靠 `MobileDailyReward` 每小时轮询领取；不装这个任务就只领得到第一档
 - 福建以外省份的 BASS 活动未适配（`wap.fj.10086.cn` 为福建站）
-- **周三充值日尚未实现**：接口已在 `docs/wedrecharge.md` 归档，
-  但抽奖与领券的实际请求还没抓到
+- **周三充值日的抽奖与领券已实现**（`cmcc_wed.py`），但端点来自公开实现而非本地抓包，
+  尚未用有效票据实测；任务类只做查询/浏览类，**邀请助力与真实充值一律不代做**
 - **秒杀的真正开抢时刻尚未实测**：每天只有 12:00 ~ 13:00 一次机会，
   库存通常只有 1 份，抢不抢得到看运气
 - qwhdhub 签到**必须**有有效 app_token；秒杀虽可用已保存的会话 cookie 兜底，

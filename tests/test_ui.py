@@ -362,6 +362,133 @@ class TestPolicyAppliesToScheduledRun(unittest.TestCase):
         self.assertNotIn("--feed-all", args)
 
 
+class TestHumanFacing(unittest.TestCase):
+    """界面要面向「人」而不是面向命令行：术语、反馈、忙态、手机布局。"""
+
+    def setUp(self):
+        self.html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    def test_no_cli_flags_in_visible_labels(self):
+        for flag in ("--claim", "--roll", "--dry-run", "--tasks", "--fb-tasks",
+                     "--auto-claim", "--continue-stage", "--level", "dry-run"):
+            self.assertNotIn(flag, self.html, "界面不该暴露命令行参数：%s" % flag)
+
+    def test_platform_names_are_chinese(self):
+        self.assertIn("PLAT_CN", self.html)
+        self.assertIn("凭证与账号", self.html)
+        self.assertIn("福建活动", self.html)
+        # 脚本名保留在 title 里供排查，但不出现在正文文案中
+        self.assertIn('title="cmcc_seckill.py"', self.html)
+
+    def test_xxl_not_default_on_and_needs_confirm(self):
+        self.assertIn('id="dashXxl"', self.html)
+        self.assertNotIn('id="dashXxl" checked', self.html)
+        i = self.html.find("function runAll")
+        self.assertIn("confirm", self.html[i:i + 700])
+
+    def test_errors_stay_on_page(self):
+        self.assertIn('id="errBox"', self.html)
+        self.assertIn("function showErr", self.html)
+        self.assertIn("function clearErr", self.html)
+        self.assertIn('aria-live="polite"', self.html)
+
+    def test_busy_disables_action_buttons(self):
+        self.assertIn("function setBusy", self.html)
+        self.assertIn("data-nobusy", self.html)
+        self.assertIn("b.disabled=!!running", self.html)
+        self.assertIn('id="taskPillTop"', self.html)
+
+    def test_sched_tip_is_single_and_honest(self):
+        i = self.html.find("function updSched")
+        seg = self.html[i:self.html.find("async function refreshSched")]
+        self.assertIn("schedtip", seg)
+        self.assertIn("sched_read_ok", seg)
+        self.assertIn("还没有注册任何计划任务", seg)
+        self.assertIn("读取中", seg)   # 没读到之前不能谎报「未注册」
+        # 原来每次渲染都 insertAdjacentHTML 一条警告，6 秒一条无限堆叠
+        self.assertNotIn("insertAdjacentHTML('afterend'", seg)
+
+    def test_task_log_openable_from_ui(self):
+        self.assertIn("function openLog", self.html)
+        self.assertIn("/api/tasklog", self.html)
+        self.assertIn('id="modal"', self.html)
+        self.assertIn("function closeModal", self.html)
+        self.assertIn("看日志", self.html)
+
+    def test_account_management_has_ui(self):
+        for marker in ("function renderAccounts", "function openNewAccount",
+                       "function saveNewAccount", "function editAccount",
+                       "function saveAccount", "account_new", "account_save",
+                       'id="acctBox"'):
+            self.assertIn(marker, self.html)
+
+    def test_capture_guide_present(self):
+        self.assertIn("第一次用？", self.html)
+        self.assertIn("ProxyPin", self.html)
+        self.assertIn("文件传输助手", self.html)
+
+    def test_detect_level_autofills_input(self):
+        self.assertIn("function detectLevel", self.html)
+        self.assertIn("自动探测当前关卡", self.html)
+        self.assertIn("$('xLevel').value=m[1]", self.html)
+
+    def test_cards_show_data_timestamp(self):
+        self.assertIn("数据截至", self.html)
+        self.assertIn("s.last_run", self.html)
+
+    def test_token_age_shown_and_warned(self):
+        self.assertIn("function tokenAge", self.html)
+        self.assertIn("接近约 30 分钟的寿命上限", self.html)
+
+    def test_mobile_tables_scroll_in_own_container(self):
+        self.assertIn(".tablewrap{overflow-x:auto", self.html)
+        self.assertIn(".sidebar nav{display:flex;padding:8px;overflow-x:auto", self.html)
+        self.assertIn(".scrollhint{display:block}", self.html)
+
+    def test_log_timestamp_contrast_fixed(self):
+        self.assertNotIn("color:#5a678a", self.html)
+        self.assertIn(".console .t{color:#8b96b8", self.html)
+
+    def test_bass_and_seckill_have_result_boxes(self):
+        self.assertIn('id="bassBox"', self.html)
+        self.assertIn('id="skBox"', self.html)
+        self.assertIn("function seckillQuery", self.html)
+        self.assertIn("function runBassProbe", self.html)
+
+    def test_refresh_status_keeps_user_checkbox(self):
+        i = self.html.find("function refreshStatus")
+        self.assertNotIn("checked=false", self.html[i:i + 200])
+
+    def test_seckill_warns_when_window_passed(self):
+        self.assertIn("function renderSkWindow", self.html)
+        self.assertIn('id="skWindow"', self.html)
+        self.assertIn("今天的场次", self.html)
+
+    def test_har_import_guards_double_click(self):
+        self.assertIn("harBusy", self.html)
+
+    def test_har_import_usable_while_task_running(self):
+        """秒杀等待期间要能导入新 HAR（脚本每轮重读配置），导入按钮不能被忙态置灰。"""
+        i = self.html.find('onclick="importHar()"')
+        self.assertIn("data-nobusy", self.html[max(0, i - 120):i])
+        for marker in ("act({action:'har_import'},afterHar)",
+                       "act({action:'har_import',latest:1},afterHar)"):
+            j = self.html.find(marker)
+            self.assertIn("data-nobusy", self.html[max(0, j - 120):j])
+
+    def test_feed_all_switches_present(self):
+        """「喂到用完」在自动策略与手动执行两处都要有，且勾上就置灰轮数框。"""
+        for marker in ('id="pFeedAll"', 'id="bFeedAll"', "function feedAllToggle",
+                       "feed_all:$('pFeedAll').checked", "feed_all:$('bFeedAll').checked?1:0"):
+            self.assertIn(marker, self.html)
+
+    def test_font_size_control(self):
+        """桌面窗口没有浏览器缩放快捷键，界面要自己给一个且记住选择。"""
+        self.assertIn("function zoomBy", self.html)
+        self.assertIn("cmcc_zoom", self.html)
+        self.assertIn('aria-label="放大字号"', self.html)
+
+
 class TestFeedOncePerDay(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

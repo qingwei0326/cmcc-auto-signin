@@ -401,7 +401,8 @@ python run_all.py --platform bass --dry-run
 python run_all.py --log logs/daily.log     # 同时写一份按天轮转的日志
 python cmcc_fj.py --config configs_fj/fj1.json --claim       # 领阶段奖励
 python cmcc_fj.py --config configs_fj/fj1.json --feed 3      # 喂养 3 次（每次 250 饲料）
-python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks    # 流量银行任务
+python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks    # 流量银行任务（按周期门控）
+python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks --fb-all  # 忽略周期强制尝试
 python cmcc_luck.py --key fj2 --dry-run                      # 抽奖：只看次数
 python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 python probe_token_life.py --report                    # 看 app_token 寿命结论

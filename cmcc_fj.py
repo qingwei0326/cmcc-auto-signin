@@ -279,6 +279,51 @@ def _apply_fb(acc, tasks, stamp):
     acc["updated"] = stamp
 
 
+def fb_due(cycle, last_done, now=None):
+    """周任务到周一、月任务到 1 号才进入新周期。
+
+    服务端只返回「已完成 / 未做」，不给上次完成时间，所以用本地记录的
+    last_done 判断。没有记录、格式异常或周期 0 一律视为可做（保守，宁可多试一次）。
+    """
+    try:
+        cyc = int(cycle or 0)
+    except (TypeError, ValueError):
+        return True
+    if cyc not in (1, 2) or not last_done:
+        return True
+    try:
+        d = datetime.datetime.strptime(str(last_done)[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return True
+    now = now or datetime.datetime.now()
+    if cyc == 2:                      # 每周一次：本周一之后才算新周期
+        monday = (now - datetime.timedelta(days=now.weekday())).date()
+        return d.date() < monday
+    return (d.year, d.month) < (now.year, now.month)   # 每月一次
+
+
+def fb_due_tasks(tasks, records, now=None, force=False):
+    """按周期筛出该做的任务，返回 (todo, skipped)。
+
+    status=2（进行中）不受周期约束——做了一半要收尾，否则会一直挂着。
+    force=True 时（--fb-all）忽略周期，全部尝试。
+    """
+    todo, skipped = [], []
+    for t in tasks:
+        st = str(t.get("completeStatus"))
+        if st not in ("0", "2"):
+            continue
+        if st == "2" or force:
+            todo.append(t)
+            continue
+        rec = (records or {}).get(str(t.get("id"))) or {}
+        if fb_due(t.get("taskCycle"), rec.get("last_done"), now):
+            todo.append(t)
+        else:
+            skipped.append(t)
+    return todo, skipped
+
+
 def receive_stage_prize(s, cfg, kind):
     """领阶段奖励，带上 prizeId 指定档位；返回 (resp, prizeId, prizeName)。"""
     st = call(s, cfg, "stage_info")
@@ -302,6 +347,8 @@ def main():
                     help="完成 UN_DO 的 VISIT 类任务（等价于空报浏览，默认关闭）")
     ap.add_argument("--fb-tasks", action="store_true",
                     help="完成流量银行的浏览任务（空报浏览，默认关闭）")
+    ap.add_argument("--fb-all", action="store_true",
+                    help="流量银行任务忽略周期，周/月任务也强制尝试")
     ap.add_argument("--daily-only", action="store_true",
                     help="只补签到 + 领每日奖励三档（跳过喂养/流量银行），用于定时轮询，10 秒内结束")
     ap.add_argument("--delay", type=int, default=0, help="执行前随机等待上限（秒）")
@@ -593,10 +640,16 @@ def main():
         tl = call(s, cfg, "fb_tasks")
         if tl["ok"] and isinstance(tl["data"], list):
             track_fb_tasks(Path(args.config).stem, tl["data"])
+            # 周任务只在周一之后、月任务只在 1 号之后才尝试；没到周期直接跳过，
+            # 少打无意义的请求（这个接口有 1006 频控）。
+            recs = (load_json(FB_STATE, {}).get(Path(args.config).stem) or {}).get("tasks") or {}
+            todo, skipped = fb_due_tasks(tl["data"], recs, force=args.fb_all)
+            if skipped:
+                print(f"  -  {len(skipped)} 个周/月任务未到周初/月初，跳过"
+                      f"（--fb-all 可强制）")
             # completeStatus: 0=未做（要点两次 0→2→1）  2=进行中（再点一次即完成）  1=已完成
-            todo = [t for t in tl["data"] if str(t.get("completeStatus")) in ("0", "2")]
             if not todo:
-                print("  -  流量银行没有待做任务")
+                print("  -  流量银行没有到周期的待做任务")
             for t in todo:
                 tid, title = t.get("id"), t.get("taskTitle")
                 rounds = (1, 2) if str(t.get("completeStatus")) == "0" else (1,)

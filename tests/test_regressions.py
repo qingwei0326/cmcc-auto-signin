@@ -1531,6 +1531,122 @@ class TestUsabilityFixes(unittest.TestCase):
             dashboard._sched_state(ttl=0)
         self.assertIs(dashboard._SCHED_CACHE["ok"], False)
 
+    # ---- 计划任务日志 / 账号管理 ----
+
+    def test_tasklog_whitelist_and_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp) / "logs"
+            logs.mkdir()
+            (logs / "daily.log").write_text("\n".join("行%d" % i for i in range(50)), encoding="utf-8")
+            with mock.patch.object(dashboard, "BASE", Path(tmp)):
+                self.assertIsNone(dashboard.read_task_log("../config.json"))
+                self.assertIsNone(dashboard.read_task_log("not-a-task.log"))
+                self.assertTrue(dashboard.read_task_log("keepalive.log")["missing"])
+                r = dashboard.read_task_log("daily.log", tail=5)
+        self.assertEqual(len(r["lines"]), 5)
+        self.assertEqual(r["lines"][-1], "行49")
+
+    def test_tasklog_and_favicon_routes(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        base = "http://127.0.0.1:%d" % srv.server_address[1]
+
+        def status(path):
+            try:
+                with urlopen(base + path, timeout=10) as r:
+                    return r.status
+            except HTTPError as e:
+                return e.code
+
+        try:
+            self.assertEqual(status("/api/tasklog?name=../config.json"), 404)
+            self.assertIn(status("/favicon.ico"), (200, 204))
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_account_new_and_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(dashboard, "BASE", Path(tmp)):
+                r = dashboard.do_action({"action": "account_new", "plat": "BASS", "phone": "13800001234"})
+                self.assertTrue(r["ok"], r)
+                f = Path(tmp) / "configs_fj" / "1234.json"
+                self.assertTrue(f.is_file())
+                self.assertEqual(json.loads(f.read_text(encoding="utf-8"))["phone"], "13800001234")
+                self.assertFalse(dashboard.do_action(
+                    {"action": "account_new", "plat": "BASS", "phone": "123"})["ok"])
+                self.assertFalse(dashboard.do_action(
+                    {"action": "account_new", "plat": "BASS", "name": "..\\evil"})["ok"])
+                self.assertFalse(dashboard.do_action(
+                    {"action": "account_save", "file": "../config.json", "phone": "13800001234"})["ok"])
+                r2 = dashboard.do_action({"action": "account_save", "file": "configs_fj/1234.json",
+                                          "bark_url": "https://api.day.app/x",
+                                          "serverchan_sendkey": "ABC123"})
+                self.assertTrue(r2["ok"], r2)
+                cfg = json.loads(f.read_text(encoding="utf-8"))
+                self.assertEqual(cfg["bark_url"], "https://api.day.app/x")
+                self.assertFalse(dashboard.do_action(
+                    {"action": "account_save", "file": "configs_fj/1234.json",
+                     "serverchan_sendkey": "a;b"})["ok"])
+                self.assertFalse(dashboard.do_action(
+                    {"action": "account_save", "file": "configs_fj/1234.json",
+                     "bark_url": "javascript:alert(1)"})["ok"])
+
+    def test_scan_accounts_reports_notify_without_leaking_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "configs_fj"
+            d.mkdir()
+            (d / "1234.json").write_text(json.dumps({
+                "phone": "13800001234", "bearer_token": "x",
+                "bark_url": "https://api.day.app/secret", "serverchan_sendkey": "SECRET"}),
+                encoding="utf-8")
+            with mock.patch.object(dashboard, "BASE", Path(tmp)):
+                a = dashboard.scan_accounts()[0]
+        self.assertTrue(a["has_bark"])
+        self.assertTrue(a["has_sendkey"])
+        self.assertNotIn("secret", json.dumps(a))
+        self.assertNotIn("SECRET", json.dumps(a))
+
+    def test_har_import_creates_missing_bass_config(self):
+        """全新安装：号码已知但 configs_fj 为空时必须自动建配置，而不是让人手工复制模板。"""
+        har = {"log": {"entries": [
+            {"startedDateTime": "2026-11-20T04:00:00Z",
+             "request": {"url": "https://wx.10086.cn/qwhdsso/appTokenLogin", "headers": [],
+                         "postData": {"text": json.dumps({
+                             "token": "JSESSIONID=A; UID=1; ticketID=x",
+                             "userCheckId": format(13800001234, "X")})}}},
+            {"startedDateTime": "2026-11-20T04:00:01Z",
+             "request": {"url": "https://wap.fj.10086.cn/bass-cultivateGameServer/sign/getSignInfo",
+                         "headers": [{"name": "Authorization",
+                                      "value": "Bearer 12345678-1234-1234-1234-123456789abc"}]}}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(har_import, "BASE", Path(tmp)), \
+                    mock.patch.object(har_import, "_verify", lambda rep: []), \
+                    mock.patch.object(PT, "mark_issued", lambda *a, **k: None):
+                rep = har_import.apply(json.dumps(har))
+            f = Path(tmp) / "configs_fj" / "1234.json"
+            self.assertTrue(f.is_file(), rep)
+            cfg = json.loads(f.read_text(encoding="utf-8"))
+            self.assertEqual(cfg["phone"], "13800001234")
+            self.assertTrue(cfg["bearer_token"].startswith("12345678"))
+            self.assertTrue(any("已新建" in l for l in rep), rep)
+
+    def test_har_import_unknown_owner_gives_actionable_hint(self):
+        har = {"log": {"entries": [
+            {"startedDateTime": "2026-11-20T04:00:01Z",
+             "request": {"url": "https://wap.fj.10086.cn/bass-cultivateGameServer/sign/getSignInfo",
+                         "headers": [{"name": "Authorization",
+                                      "value": "Bearer 12345678-1234-1234-1234-123456789abc"}]}}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(har_import, "BASE", Path(tmp)), \
+                    mock.patch.object(har_import, "_verify", lambda rep: []):
+                rep = har_import.apply(json.dumps(har))
+        line = next(l for l in rep if l.startswith("BASS 拿到 token"))
+        self.assertIn("新建账号", line)
+        self.assertNotIn("请在页面上选择账号后再导入", line)
+
+
 # ======================================================================
 # 喂到饲料用完：不用每次手填轮数
 # ======================================================================

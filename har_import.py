@@ -222,10 +222,24 @@ def apply(text, key=None):
             phones = p["mobiles"]
 
         hit = next((targets[ph] for ph in phones if ph in targets), None)
+        if hit is None and phones:
+            # 号码已知、但还没有对应配置（全新安装就是这种情况）：直接建一份。
+            # 早先这里只报「请在页面上选择账号」，可下拉框本身就是空的，
+            # 选什么都没用 —— 首次导入永远走不通。
+            ph = phones[0]
+            hit = BASE / "configs_fj" / f"{ph[-4:]}.json"
+            if not hit.exists():
+                _write_json(hit, {
+                    "bearer_token": "", "app_id": "0", "prize_prefer": "flow",
+                    "referer": "https://wap.fj.10086.cn/bass-cultivateGameServer/",
+                    "phone": ph, "note": "", "bark_url": "", "serverchan_sendkey": "",
+                })
+                report.append(f"BASS 首次导入，已新建 configs_fj/{hit.name}（{ph}）")
         if hit is None:
             report.append(
-                f"BASS 拿到 token {tok[:8]}…，但无法确定归属账号"
-                f"（HAR 里没有 qwhdhub 请求）。请在页面上选择账号后再导入。"
+                f"BASS 拿到 token {tok[:8]}…，但认不出属于哪个号码。"
+                f"请在导入按钮旁选择账号；若列表是空的，先到「凭证与账号 → 新建账号」"
+                f"建一份福建活动配置并填上手机号。"
             )
         else:
             cfg = _read_json(hit)
@@ -233,6 +247,8 @@ def apply(text, key=None):
                 report.append(f"BASS {hit.name} 已是该 token，跳过")
             else:
                 cfg["bearer_token"] = tok
+                if phones and not str(cfg.get("phone") or ""):
+                    cfg["phone"] = phones[0]
                 _write_json(hit, cfg)
                 report.append(f"BASS {hit.name}（{cfg.get('phone')}）→ Bearer {tok[:8]}…")
     else:

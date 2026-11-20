@@ -254,8 +254,11 @@ def scan_accounts():
             cfg = load_json(f) or {}
             tok = str(cfg.get(field) or "")
             state = "empty" if (not tok or "<" in tok) else "filled"
+            # 只报「有没有配推送」，不把 Bark 地址 / SendKey 本身吐给页面
             out.append({"key": f.stem, "plat": plat, "file": str(f.relative_to(BASE)),
-                        "phone": str(cfg.get("phone") or ""), "token_state": state})
+                        "phone": str(cfg.get("phone") or ""), "token_state": state,
+                        "has_bark": bool(str(cfg.get("bark_url") or "").strip()),
+                        "has_sendkey": bool(str(cfg.get("serverchan_sendkey") or "").strip())})
     return out
 
 
@@ -575,6 +578,41 @@ def find_account(pred):
     return None
 
 
+def _new_account(plat: str, name, phone) -> dict:
+    """在界面里新建一份账号配置。
+
+    原先只能手工复制 config*.example.json，而 BASS 的 HAR 导入又要求目标文件
+    已存在 —— 全新安装因此在界面里走不通。这里补上入口。
+    """
+    if plat not in ("qwhdhub", "BASS"):
+        return {"ok": False, "err": "请选择平台（全国签到 / 福建活动）"}
+    phone = str(phone or "").strip()
+    if phone and not re.fullmatch(r"1[3-9]\d{9}", phone):
+        return {"ok": False, "err": "手机号应为 11 位数字（1 开头）"}
+    name = str(name or "").strip() or (phone[-4:] if phone else "")
+    if not name:
+        return {"ok": False, "err": "请填手机号（自动用尾号做文件名），或自定义文件名"}
+    if not name.endswith(".json"):
+        name += ".json"
+    # 文件名会拼进路径，必须挡住 ..\ 与绝对路径
+    if name.startswith(".") or not re.fullmatch(r"[A-Za-z0-9_\-.]+\.json", name):
+        return {"ok": False, "err": "文件名只能用字母、数字、_ - ."}
+    sub = "configs" if plat == "qwhdhub" else "configs_fj"
+    f = BASE / sub / name
+    if f.exists():
+        return {"ok": False, "err": f"已存在同名配置 {sub}/{name}"}
+    if plat == "qwhdhub":
+        cfg = load_json(BASE / "config.example.json") or {}
+        cfg.update({"app_token": "", "phone": phone})
+    else:
+        cfg = {"bearer_token": "", "app_id": "0", "prize_prefer": "flow",
+               "referer": "https://wap.fj.10086.cn/bass-cultivateGameServer/",
+               "phone": phone, "note": "", "bark_url": "", "serverchan_sendkey": ""}
+    f.parent.mkdir(exist_ok=True)
+    atomic_write_json(f, cfg, indent=2)
+    return {"ok": True, "msg": f"已新建 {sub}/{name}，再导入 HAR 填入凭证即可"}
+
+
 def act_refresh_status() -> dict:
     """逐个账号 dry-run，拉取实时状态刷新仪表盘。"""
     if RUNNER.running:
@@ -631,6 +669,18 @@ SCHED_PLAN = [
     ("probe", "00:00"),
 ]
 
+# 每个计划任务的日志文件名（与各 bat 里写的一致）。
+# 界面上「失败（见日志）」要能直接点开，不能让用户自己去文件夹翻。
+SCHED_LOG = {
+    "sign": "daily.log",
+    "daily": "daily_reward.log",
+    "keepalive": "keepalive.log",
+    "sess": "session_refresh.log",
+    "seckill": "seckill.log",
+    "games": "games.log",
+    "probe": "token_life.log",
+}
+
 _NO_PYW_ERR = ("找不到系统 Python（pythonw.exe），无法注册计划任务。\n"
                "请先安装 Python 3.9+ 并勾选 Add Python to PATH，再重开本程序。")
 
@@ -640,6 +690,29 @@ SCHED_CN = {
     "sess": "会话刷新", "seckill": "秒杀抢券", "games": "拓展活动",
     "probe": "票据寿命探测",
 }
+
+
+def read_task_log(name: str, tail: int = 200):
+    """读某个计划任务日志的尾部若干行；文件名不在白名单内一律拒绝。"""
+    if name not in SCHED_LOG.values():
+        return None
+    try:
+        tail = max(1, min(1000, int(tail)))
+    except Exception:
+        tail = 200
+    f = BASE / "logs" / name
+    if not f.is_file():
+        return {"name": name, "lines": [], "missing": True}
+    try:
+        # 日志可能几十 MB，只 seek 读尾部，别整份进内存
+        with open(f, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 256 * 1024))
+            text = fh.read().decode("utf-8", errors="replace")
+        return {"name": name, "lines": text.splitlines()[-tail:], "size": size}
+    except Exception as e:
+        return {"name": name, "lines": [], "err": str(e)}
 
 
 def _sched_ps(kind: str, t: str, pyw: str, launcher: str):
@@ -850,22 +923,35 @@ def do_action(body: dict):
         return {"ok": True, "msg": f"已保存 {f.name}（token {len(tok)} 字符）"}
 
     if act == "bass_token_new":
-        name = str(body.get("name", "")).strip()
-        if not name:
-            return {"ok": False, "err": "文件名为空"}
-        if not name.endswith(".json"):
-            name += ".json"
-        # 文件名会拼进路径，必须挡住 ..\ 与绝对路径
-        if name.startswith(".") or not re.fullmatch(r"[A-Za-z0-9_\-.]+\.json", name):
-            return {"ok": False, "err": "文件名只能用字母、数字、_ - ."}
-        f = BASE / "configs_fj" / name
-        f.parent.mkdir(exist_ok=True)
-        if f.exists():
-            return {"ok": False, "err": "已存在同名配置"}
-        atomic_write_json(f, {"bearer_token": "", "app_id": "0",
-                              "referer": "https://wap.fj.10086.cn/bass-cultivateGameServer/",
-                              "phone": "", "note": ""}, indent=2)
-        return {"ok": True, "msg": f"已新建 configs_fj/{name}"}
+        return _new_account("BASS", body.get("name", ""), body.get("phone", ""))
+
+    if act == "account_new":
+        return _new_account(body.get("plat", ""), body.get("name", ""), body.get("phone", ""))
+
+    if act == "account_save":
+        # 手机号 / 失败推送 / 备注：原先只能手改 JSON，界面上没有入口
+        f = safe_conf_path(body.get("file"))
+        if f is None or not f.is_file():
+            return {"ok": False, "err": "配置文件不存在"}
+        cfg = load_json(f) or {}
+        phone = str(body.get("phone") or "").strip()
+        if phone and not re.fullmatch(r"1[3-9]\d{9}", phone):
+            return {"ok": False, "err": "手机号应为 11 位数字（1 开头）"}
+        if phone:
+            cfg["phone"] = phone
+        for field in ("bark_url", "serverchan_sendkey"):
+            if field not in body:
+                continue
+            v = str(body.get(field) or "").strip()
+            if v and field == "bark_url" and not v.lower().startswith(("http://", "https://")):
+                return {"ok": False, "err": "Bark 地址应以 http:// 或 https:// 开头"}
+            if v and field == "serverchan_sendkey" and not re.fullmatch(r"[0-9A-Za-z]+", v):
+                return {"ok": False, "err": "SendKey 只能含字母和数字"}
+            cfg[field] = v
+        if "note" in body:
+            cfg["note"] = str(body.get("note") or "")[:200]
+        atomic_write_json(f, cfg, indent=2)
+        return {"ok": True, "msg": f"已保存 {f.name}"}
 
     # ---- 定时任务 ----
     if act == "policy_save":
@@ -1052,6 +1138,8 @@ def build_state():
         "token_life": _list_token_life(),
         "sched": _sched_state(),
         "sched_read_ok": _SCHED_CACHE["ok"],
+        "sched_logs": SCHED_LOG,
+        "sched_cn": SCHED_CN,
         "env": {"ok": env_ok, "msg": env_msg},
         "policy": load_policy(),
     }
@@ -1089,6 +1177,7 @@ def _list_token_life() -> list:
 SCHED_TASKS = ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
                "MobileSeckill", "MobileSessionRefresh", "MobileGames",
                "MobileTokenLifeProbe")
+_SCHED_KIND_BY_NAME = {v[0]: k for k, v in SCHED_DEF.items()}
 _SCHED_CACHE = {"at": 0.0, "data": [], "ok": None, "th": None}
 _SCHED_LOCK = threading.Lock()
 
@@ -1177,8 +1266,11 @@ def _sched_read_sync() -> list:
         # 267011 = 从未运行；此时系统给的 LastRunTime 是 1999-11-30 这类占位值，
         # 直接显示会让人以为「刚跑过一次」，所以清掉。
         last = "" if code == 267011 else str(d.get("last") or "")
+        kind = _SCHED_KIND_BY_NAME.get(d.get("name") or "", "")
         out.append({
             "name": d.get("name") or "",
+            "kind": kind,
+            "log": SCHED_LOG.get(kind, ""),
             "state": d.get("state") or "",
             # StartBoundary 形如 2026-11-20T06:03:00+08:00，取 HH:MM 回填输入框
             "time": at[11:16] if len(at) >= 16 and at[10] == "T" else "",
@@ -1304,6 +1396,12 @@ class Handler(BaseHTTPRequestHandler):
                 since = 0
             lines = [l for l in RUNNER.logs if l["seq"] > since]
             self._json({"lines": lines, "running": RUNNER.running, "label": RUNNER.label})
+        elif u.path == "/api/tasklog":
+            data = read_task_log((q.get("name") or [""])[0], (q.get("tail") or ["200"])[0])
+            if data is None:
+                self._json({"err": "未知日志名"}, 404)
+            else:
+                self._json(data)
         else:
             self._json({"err": "not found"}, 404)
 

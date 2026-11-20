@@ -13,8 +13,8 @@
 
 | 平台 | 域名 | 管什么 | 凭证 | 寿命 |
 |---|---|---|---|---|
-| **qwhdhub** | `wx.10086.cn` | 全国签到、月签、群签、任务、秒杀 | `app_token` = `JSESSIONID=…; UID=…; ticketID=…` | 约 30 分钟 |
-| **BASS** | `wap.fj.10086.cn` | 福建养成游戏、流量银行、消消乐、优惠抽奖 | `Bearer token` = 36 位 UUID | 数小时 |
+| **qwhdhub** | `wx.10086.cn` | 全国签到、月签、群签、任务、秒杀 | `app_token` = `JSESSIONID=…; UID=…; ticketID=…` | 约 30 分钟（分钟级实测） |
+| **BASS** | `wap.fj.10086.cn` | 福建养成游戏、流量银行、消消乐、优惠抽奖 | `Bearer token` = 36 位 UUID | **≥20 小时**（实测仍存活） |
 
 **已覆盖的活动**
 
@@ -114,6 +114,7 @@ dist\签到控制台.exe → 复制到项目根目录
 | `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
 | `MobileSessionRefresh` | 每天 **10:15** | `run_session_refresh.bat` | 只跑 qwhdhub 签到，建立新会话（活到 12:15），为秒杀做准备 |
 | `MobileSeckill` | 每天 **10:30** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券 |
+| `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**，全天覆盖 | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
 
 **为什么需要第二个任务**
 
@@ -376,7 +377,28 @@ python cmcc_fj.py --config configs_fj/fj1.json --feed 3      # 喂养 3 次（�
 python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks    # 流量银行任务
 python cmcc_luck.py --key fj2 --dry-run                      # 抽奖：只看次数
 python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
+python probe_token_life.py --report                    # 看 app_token 寿命结论
+python probe_token_life.py --once                      # 手动探一轮
 ```
+
+### app_token 到底能活多久
+
+`MobileTokenLifeProbe` 计划任务每 2 分钟探一次登录，签发时刻取自 HAR 里
+`appTokenLogin` 的时间戳，**结论精确到分钟**：
+
+```bash
+python probe_token_life.py --report
+```
+
+输出形如：
+
+```
+--- ...3239（184****3239）
+    距签发 30 分钟仍有效；09:05:00 首次失效（采样间隔 2 分钟） → 票据寿命 30~53 分钟
+```
+
+导入新 HAR 时会自动重置探测状态、重新开始计时；
+确认失效后脚本会**停止继续探测**（避免刷同一条报错、也避免被频控）。
 
 ---
 
@@ -389,6 +411,7 @@ python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 | `gui_data/flowbank_state.json` | 流量银行任务周期与上次完成时间 |
 | `gui_data/luck_state.json` | 抽奖次数与中奖记录 |
 | `gui_data/runs.json` | 运行次数、成功率、机器工时 |
+| `gui_data/token_life/<尾号>.json` | app_token 寿命探测样本与结论 |
 | `logs/daily.log` | 定时任务日志（按天轮转，保留 7 天） |
 
 统计口径：流量只统计**带 MB/GB 的奖品**（话费券不算）；喂养单列 `feeds`。
@@ -428,6 +451,11 @@ python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 
 - qwhdhub 的 `app_token` 约 30 分钟寿命，**只靠它才能登录**（`jwtToken` 单独用服务端不认，已实测）；
   所以 qwhdhub 仍需定期抓包，保活任务只能延后失效、不能续命
+- **app_token 实质是中国移动 App 的主站会话 cookie**（HAR 里格式与 App Cookie 完全一致）：
+  App 会话一过期，qwhdhub 票据同时作废，两者寿命是同一条曲线
+- **BASS 是本项目里最省心的凭证**：bearer 实测已存活 20.6 小时仍有效，
+  换票接口（`auth/loginByHangYan`）存在但依赖更短命的航眼 token，
+  长期仍以 HAR 导入为主
 - 消消乐每天约 5 点体力，中奖概率低，别指望薅到东西
 - BASS 签到在凌晨会返回 `1502 未到可签到时间`，属正常
 - 每日奖励三档之间必须间隔 60 分钟，靠 `MobileDailyReward` 每小时轮询领取；不装这个任务就只领得到第一档

@@ -41,5 +41,8 @@ venv/
 Thumbs.db
 desktop.ini
 
-# 临时诊断脚本
+# 临时诊断脚本（一次性排查用，不入库）
+# 注意：probe_token_life.py 是正式功能（app_token 寿命精确探测），不在此列
+probe_fj.py
 probe_*.py
+!probe_token_life.py

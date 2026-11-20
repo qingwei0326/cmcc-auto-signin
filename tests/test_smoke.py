@@ -302,3 +302,102 @@ class TestSeckill(unittest.TestCase):
         self.assertIn("cmcc_seckill.py", dashboard.INDEX_HTML)
         self.assertIn("seckill_run", dashboard.INDEX_HTML)
         self.assertIn("runSeckill", dashboard.INDEX_HTML)
+
+
+class TestTokenLifeProbe(unittest.TestCase):
+    """app_token 寿命精确探测器的行为守护。"""
+
+    def test_issued_local_converts_utc_to_local(self):
+        """HAR 的 startedDateTime 是 UTC，必须 +8 小时换算成本地时间，
+        否则签发时刻会差 8 小时，寿命结论完全错。"""
+        self.assertEqual(har_import._issued_local("2026-11-20T04:09:25.123456Z"),
+                         "2026-11-20T12:09:25")
+        self.assertEqual(har_import._issued_local("2026-11-20T00:00:00Z"),
+                         "2026-11-20T08:00:00")
+
+    def test_issued_local_handles_bad_input(self):
+        """坏输入必须返回空串而不是抛异常（HAR 可能缺时间字段）。"""
+        self.assertEqual(har_import._issued_local(""), "")
+        self.assertEqual(har_import._issued_local("garbage"), "")
+        self.assertEqual(har_import._issued_local(None), "")
+
+    def test_conclusion_reports_life_range(self):
+        """结论里应给出「签发后多少分钟仍有效」与「寿命区间」。"""
+        import probe_token_life as PT
+        rec = {
+            "issued_at": "2026-11-20T08:00:00",
+            "samples": [
+                {"at": "2026-11-20T08:30:00", "ok": True, "detail": "登录成功"},
+                {"at": "2026-11-20T09:05:00", "ok": False, "detail": "已过期"},
+            ],
+        }
+        text = PT._conclude(rec)
+        self.assertIn("30", text)          # 签发后 30 分钟仍有效
+        self.assertIn("首次失效", text)
+        self.assertIn("分钟", text)
+
+    def test_conclusion_before_any_failure(self):
+        """只探到成功、还没观测到失效时，结论不能瞎报寿命。"""
+        import probe_token_life as PT
+        rec = {
+            "issued_at": "2026-11-20T08:00:00",
+            "samples": [{"at": "2026-11-20T08:10:00", "ok": True, "detail": "登录成功"}],
+        }
+        text = PT._conclude(rec)
+        self.assertIn("尚未观测到失效", text)
+
+    def test_expired_state_stops_further_probing(self):
+        """确认失效后要停止探测，避免刷同一条报错、也避免被频控。
+        导入新 HAR 时 mark_issued 会重置状态，恢复探测。"""
+        import probe_token_life as PT
+        self.assertFalse(PT._needs_probe({"state": "expired"}))
+        self.assertTrue(PT._needs_probe({"state": "alive"}))
+        self.assertTrue(PT._needs_probe({"state": "unknown"}))
+        self.assertTrue(PT._needs_probe({}))
+
+    def test_mark_issued_resets_state_and_samples(self):
+        """导入新票据 = 新一轮探测：旧样本和 expired 状态都要清掉。"""
+        import probe_token_life as PT
+        with tempfile.TemporaryDirectory() as d:
+            real_dir = PT.OUT_DIR
+            real_accounts = PT._accounts
+            PT.OUT_DIR = Path(d)
+            PT._accounts = lambda: [Path(d) / "1234.json"]
+            Path(d, "1234.json").write_text(json.dumps({
+                "state": "expired",
+                "expired_at": "2026-11-20T09:00:00",
+                "samples": [{"at": "x", "ok": False}],
+            }), encoding="utf-8")
+            try:
+                PT.mark_issued("2026-11-20T10:00:00")
+                rec = json.loads(Path(d, "1234.json").read_text(encoding="utf-8"))
+                self.assertEqual(rec["state"], "unknown")
+                self.assertEqual(rec["samples"], [])
+                self.assertEqual(rec["issued_at"], "2026-11-20T10:00:00")
+                self.assertNotIn("expired_at", rec)
+            finally:
+                PT.OUT_DIR = real_dir
+                PT._accounts = real_accounts
+
+    def test_bat_files_use_crlf(self):
+        """Windows 的 bat 必须是 CRLF，LF 会导致 cmd 解析报错。"""
+        for name in ("run_token_life.bat", "run_jwt_keepalive.bat", "run_daily_reward.bat"):
+            p = Path(__file__).resolve().parent.parent / name
+            if not p.exists():
+                continue
+            data = p.read_bytes()
+            self.assertIn(b"\r\n", data, f"{name} 缺 CRLF")
+            # 不应出现"只有 LF 没有 CR"的裸换行
+            self.assertNotIn(b"\n", data.replace(b"\r\n", b""), f"{name} 存在裸 LF")
+
+    def test_bat_comments_are_english(self):
+        """cmd 在 GBK 控制台下会把 bat 里的中文 rem 注释当命令执行。"""
+        for name in ("run_token_life.bat", "run_jwt_keepalive.bat", "run_daily_reward.bat"):
+            p = Path(__file__).resolve().parent.parent / name
+            if not p.exists():
+                continue
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if s.lower().startswith("rem"):
+                    self.assertTrue(s.isascii(),
+                                    f"{name} 的 rem 注释含非 ASCII 字符：{s}")

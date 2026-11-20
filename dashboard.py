@@ -586,7 +586,7 @@ def do_action(body: dict):
 
     # ---- 定时任务 ----
     if act == "sched_query":
-        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill','MobileSessionRefresh'){"
+        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill','MobileSessionRefresh','MobileTokenLifeProbe'){"
               "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
               "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
               "Write-Host ($n+'  状态='+$t.State+'  下次='+$i.NextRunTime+'  上次结果='+$i.LastTaskResult)}"
@@ -633,6 +633,17 @@ def do_action(body: dict):
                   f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行（脚本内部等到 12:00 开抢）'")
+        elif kind == "probe":
+            # 票据寿命探测：每 2 分钟探一次，签发时刻取自 HAR，结论精确到分钟
+            name, bat = "MobileTokenLifeProbe", "run_token_life.bat"
+            d = str(BASE)
+            ps = (f"$a=New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
+                  f"$r=(New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 2) "
+                  f"-RepetitionDuration (New-TimeSpan -Days 1)).Repetition;"
+                  f"$tr.Repetition=$r;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"Write-Host '{name} 已注册，{t} 起每 2 分钟一次（全天覆盖）'")
         else:
             name, bat = "MobileSignIn", "run_scheduled.bat"
             d = str(BASE)
@@ -644,7 +655,7 @@ def do_action(body: dict):
     if act == "sched_unreg":
         name = body.get("name", "")
         if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
-                        "MobileSeckill", "MobileSessionRefresh"):
+                        "MobileSeckill", "MobileSessionRefresh", "MobileTokenLifeProbe"):
             return {"ok": False, "err": "非法任务名"}
         ps = f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false; Write-Host '{name} 已注销'"
         return {"ok": RUNNER.start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
@@ -681,7 +692,37 @@ def build_state():
         "daily": _load_json_safe(DATA / "daily_state.json"),
         "luck": _load_json_safe(DATA / "luck_state.json"),
         "seckill_sessions": _list_seckill_sessions(),
+        "token_life": _list_token_life(),
     }
+
+
+def _list_token_life() -> list:
+    """列出各账号的 app_token 寿命探测结论。
+
+    探测由计划任务 MobileTokenLifeProbe 每 2 分钟跑一次，状态落在
+    gui_data/token_life/<尾号>.json。这里只读出来展示，不发任何请求。
+    """
+    out = []
+    d = DATA / "token_life"
+    if not d.exists():
+        return out
+    for f in sorted(d.glob("*.json")):
+        try:
+            o = load_json(f) or {}
+        except Exception:
+            continue
+        s = o.get("samples") or []
+        out.append({
+            "key": f.stem,
+            "phone": o.get("phone") or "",
+            "state": o.get("state") or "unknown",
+            "issued_at": o.get("issued_at") or "",
+            "updated": o.get("updated") or "",
+            "conclusion": o.get("conclusion") or "",
+            "last_ok": bool(s and s[-1].get("ok")),
+            "samples": len(s),
+        })
+    return out
 
 
 def _list_seckill_sessions() -> list:
@@ -1081,6 +1122,11 @@ select.inp{cursor:pointer}
             12 点就能直接用。如果某号从没签到过、且 app_token 也已过期，
             脚本会提示「请重新抓包」并推送通知。</div>
           <div class="frow"><label>会话就绪</label><span style="font-size:13px" id="skSess">加载中…</span></div>
+          <div class="frow"><label>票据寿命</label><span style="font-size:13px" id="tlBox">加载中…</span></div>
+          <div class="infobox">票据寿命由计划任务 <code>MobileTokenLifeProbe</code> 每 2 分钟探测一次
+            （每账号只发一次登录请求，确认失效后自动停手）。
+            签发时刻取自 HAR 里 <code>appTokenLogin</code> 的时间戳，
+            所以结论能精确到分钟，而不是「大概半小时」。</div>
           <div class="infobox">每次 qwhdhub 签到成功后，会自动保存该账号的活动会话 cookie
             （<code>gui_data/seckill_session_&lt;尾号&gt;.json</code>）。实测<b>仅凭该 cookie 就能调用秒杀接口，
             完全不需要 app_token</b>。</div>
@@ -1118,10 +1164,16 @@ select.inp{cursor:pointer}
             <input class="inp" id="tSeckill" value="10:30" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'seckill',time:V('tSeckill')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileSeckill？',()=>act({action:'sched_unreg',name:'MobileSeckill'}))">注销</button></div>
+          <div class="frow"><label>票据寿命探测</label><span style="font-size:13px">MobileTokenLifeProbe → run_token_life.bat，每 2 分钟</span>
+            <input class="inp" id="tProbe" value="00:00" style="min-width:80px">
+            <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'probe',time:V('tProbe')})">注册/更新</button>
+            <button class="btn sm danger" onclick="cf('注销 MobileTokenLifeProbe？',()=>act({action:'sched_unreg',name:'MobileTokenLifeProbe'}))">注销</button></div>
           <div class="infobox">每日奖励三档（150/250/350）之间必须间隔 60 分钟，一次跑只能领一档。
             这个任务从设定时间起每小时检查一次、共 17 次，能领就领，领完自动空转。<br>
             <b>会话保活</b>：qwhdhub 的 jwt 实测只能活 2.5~3.5 小时，每 90 分钟续一次就能让凭证链一直不断，
-            省去反复抓包。电脑连续关机超过几小时链还是会断，那时才需要重新抓包。</div>
+            省去反复抓包。电脑连续关机超过几小时链还是会断，那时才需要重新抓包。<br>
+            <b>票据寿命探测</b>：每 2 分钟探一次 app_token 登录，签发时刻取自 HAR，
+            所以「票据到底活多久」能精确到分钟；确认失效后自动停手不再空转。</div>
           <div class="frow"><button class="btn" onclick="act({action:'sched_query'})">查询当前状态</button>
             <span style="font-size:12px;color:var(--sub)">日志：logs\daily.log / logs\xiaoxiaole.log</span></div>
         </div>
@@ -1286,9 +1338,27 @@ function render(){
       }).join('');
     }
   }
+  // app_token 寿命探测结论
+  const tl=$('tlBox');
+  if(tl){
+    const ts=(STATE.token_life||[]);
+    if(!ts.length){tl.innerHTML='<span style="color:var(--sub)">还没有探测数据。导入 HAR 后由计划任务每 2 分钟自动探测。</span>';}
+    else{
+      tl.innerHTML=ts.map(x=>{
+        let tag;
+        if(x.state==='alive') tag='<span style="color:var(--ok)">有效</span>';
+        else if(x.state==='expired') tag='<span style="color:var(--bad)">已失效</span>';
+        else tag='<span style="color:var(--warn)">未确认</span>';
+        const iss=x.issued_at?x.issued_at.replace('T',' ').slice(5,16):'?';
+        return `<div class="pill" style="display:block;margin-bottom:6px;padding:8px 10px">
+          <b>${x.phone?mask(x.phone):x.key}</b> · ${tag}
+          <span style="color:var(--sub)">签发 ${iss} · ${x.conclusion||''}</span>
+        </div>`;
+      }).join('');
+    }
+  }
   // HAR 导入的账号兜底下拉（BASS token 无法自证归属时用）
-  const hk=$('harKey');
-  if(hk&&!hk.dataset.done){
+  const hk=$('harKey');  if(hk&&!hk.dataset.done){
     const seen=new Set();
     const opts=accts.filter(a=>{if(!a.phone||seen.has(a.phone))return false;seen.add(a.phone);return true;})
       .map(a=>`<option value="${a.key}">${a.key} · ${mask(a.phone)}</option>`).join('');

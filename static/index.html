@@ -97,6 +97,7 @@ nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--ac
 .stat .v small{font-size:11px;color:var(--sub);font-weight:400}
 .stat .v.wrap{font-size:12px;line-height:1.5;max-width:62%;text-align:right;font-weight:500}
 .stat .v.y{color:var(--warn)}
+.stat .v .sum{display:block;font-size:10.5px;color:var(--sub);font-weight:400;margin-top:2px}
 .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .hist{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
 .hist .t{font-size:11.5px;color:var(--sub);margin-bottom:7px}
@@ -192,7 +193,7 @@ select.inp{cursor:pointer}
       <!-- 总览 -->
       <div class="page on" id="p-dash">
         <div class="phead">
-          <div><h2>总览</h2><div class="desc">每个号码的签到状态、累计收益与近 7 天记录</div></div>
+          <div><h2>总览</h2><div class="desc">每个号码的签到状态、本月收益与近 7 天记录</div></div>
           <div class="ops">
             <button class="btn pri" onclick="runAll('all')">一键签到</button>
             <button class="btn" onclick="runAll('qwhd')">只跑 qwhdhub</button>
@@ -441,6 +442,9 @@ function last7(map){
 function signedBadge(date){
   return date===todayLocal()?'<span class="badge signed">今日已签</span>':'<span class="badge na">今日未签</span>';}
 function fmtNum(v){return v==null?'—':v;}
+// 流量显示：>1GB 用 GB，否则 MB。Txt 给纯文本场景，Fmt 带单位标签
+function flowTxt(v){return v>=1024?(v/1024).toFixed(2)+' GB':Math.round(v)+' MB';}
+function flowFmt(v){return v>=1024?(v/1024).toFixed(2)+'<small>GB</small>':Math.round(v)+'<small>MB</small>';}
 
 function render(){
   if(!STATE)return;
@@ -455,9 +459,10 @@ function render(){
   const tokState=(a,s)=>((a.plat==='qwhdhub'&&liveTok[a.key])?liveTok[a.key]
     :(a.plat==='qwhdhub'?s.token_qwhd:s.token_bass)||(a.token_state==='filled'?'unchecked':'empty'));
   // KPI
-  let flow=0,tasks=0,okTok=0;
+  let flow=0,tasks=0,okTok=0,flowM=0,tasksM=0;
   const days={},dayT={};
   accts.forEach(a=>{const s=S[a.key]||{};flow+=s.flow_mb_total||0;tasks+=s.tasks_done_total||0;
+    flowM+=s.flow_mb_month||0;tasksM+=s.tasks_month||0;
     if(tokState(a,s)==='ok')okTok++;
     (s.history||[]).forEach(h=>{days[h.date]=(days[h.date]||0)+(h.flow_mb||0);dayT[h.date]=(dayT[h.date]||0)+(h.tasks||0);});});
   const dks=Object.keys(days).sort().slice(-7);
@@ -468,8 +473,8 @@ function render(){
     return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;};
   const spF=spark(days),spT=spark(dayT);
   $('sumbar').innerHTML=`
-    <div class="kpi"><div class="k">累计领取流量</div><div class="v">${flow>=1024?(flow/1024).toFixed(2)+'<small>GB</small>':flow.toFixed(0)+'<small>MB</small>'}</div>${spF||'<div class="c">全部账号历史合计</div>'}</div>
-    <div class="kpi"><div class="k">累计完成任务</div><div class="v">${tasks}<small>个</small></div>${spT||'<div class="c">doTask / fb 任务</div>'}</div>
+    <div class="kpi"><div class="k">本月领取流量</div><div class="v">${flowM>=1024?(flowM/1024).toFixed(2)+'<small>GB</small>':flowM.toFixed(0)+'<small>MB</small>'}</div><div class="c">历史合计 ${flow>=1024?(flow/1024).toFixed(2)+' GB':flow.toFixed(0)+' MB'}</div>${spF}</div>
+    <div class="kpi"><div class="k">本月完成任务</div><div class="v">${tasksM}<small>个</small></div><div class="c">历史合计 ${tasks} 个</div>${spT}</div>
     <div class="kpi"><div class="k">Token 可用</div><div class="v">${okTok}<small>/ ${accts.length}</small></div><div class="c">过期需重新获取</div></div>
     <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">qwhdhub + BASS 配置</div></div>`;
   // 运行记录统计条
@@ -515,12 +520,12 @@ function render(){
           ${signedBadge(isQ?s.today_signed_qwhd:s.today_signed_bass)}</div>
         <div class="stats">
           ${isQ?`
-          <div class="stat"><div class="k">累计领取</div><div class="v">${(s.flow_mb_total||0)>=1024?((s.flow_mb_total/1024).toFixed(2)+'<small>GB</small>'):((s.flow_mb_total||0).toFixed(0)+'<small>MB</small>')}</div></div>
+          <div class="stat"><div class="k">本月领取</div><div class="v">${flowFmt(s.flow_mb_month||0)}<small class="sum">累计 ${flowTxt(s.flow_mb_total||0)}</small></div></div>
           <div class="stat"><div class="k">连签天数</div><div class="v">${fmtNum(s.sign_days)}</div></div>
-          <div class="stat"><div class="k">完成任务</div><div class="v">${s.tasks_done_total||0}</div></div>
+          <div class="stat"><div class="k">本月任务</div><div class="v">${s.tasks_month||0}<small class="sum">累计 ${s.tasks_done_total||0}</small></div></div>
           <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${s.last_reward||'—'}</div></div>`
           :`
-          <div class="stat"><div class="k">喂养次数</div><div class="v">${s.feeds_total||0}<small>次</small></div></div>
+          <div class="stat"><div class="k">本月喂养</div><div class="v">${s.feeds_month||0}<small>次</small><small class="sum">累计 ${s.feeds_total||0} 次</small></div></div>
           <div class="stat"><div class="k">饲料余额</div><div class="v y">${fmtNum(s.fodder)}</div></div>
           <div class="stat"><div class="k">流量可兑</div><div class="v">${s.fb_exchange||'—'}</div></div>
           <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${s.stage||'—'}</div></div>`}
@@ -536,7 +541,7 @@ function render(){
         ${hist.length&&hasData?`<div class="hist"><div class="t">近 7 天记录（流量 / 任务 / 喂养）</div><div class="bars">${bars}</div><div class="bardates">${dates}</div></div>`:`<div class="hist"><div class="t">近 7 天</div><div class="empty">暂无记录</div></div>`}
       </div>`;}).join('');
     return `<div class="acct">
-      <div class="acct-head"><span class="phone">${mask(g.phone)}</span><span class="raw">${g.phone}</span></div>
+      <div class="acct-head"><span class="phone" title="${g.phone}">${mask(g.phone)}</span></div>
       <div class="acct-body">${plats||'<div class="plat">未配置任何平台</div>'}</div>
     </div>`;
   }).join('');

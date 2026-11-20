@@ -1691,6 +1691,33 @@ class TestFeedAll(unittest.TestCase):
         self.assertEqual(n, 0)
         self.assertNotIn("batch_feed", calls)
 
+    def test_fodder_refreshed_after_feed(self):
+        """喂完的余额要复核：stage_info 不带 fodderSurplus，留旧值会误导控制台。"""
+        import cmcc_fj as FJ
+        state = {"fodder": 500}
+
+        def fake_call(s, cfg, ep, **kw):
+            if ep == "index_info":
+                return {"ok": True, "data": {"fodderSurplus": state["fodder"]}}
+            if ep == "stage_info":
+                return {"ok": True, "data": {"feedFodders": 0,
+                                             "stageInfo": {"feedNeedFodderCount": 5000,
+                                                           "stageName": "一阶"}}}
+            if ep == "batch_feed":
+                state["fodder"] -= 250
+                return {"ok": True, "code": "0000", "data": {}}
+            return {"ok": True, "code": "0", "data": {}}
+
+        args = types.SimpleNamespace(feed=0, feed_all=True,
+                                     auto_claim=True, continue_stage=False)
+        res = {"feeds": 0, "fodder": 500}
+        with mock.patch.object(FJ, "call", fake_call), \
+                mock.patch.object(FJ, "pause", lambda *a, **k: None), \
+                redirect_stdout(io.StringIO()):
+            FJ.run_feed(None, {}, args, res, "fee", "k", lambda *a, **k: None)
+        self.assertEqual(res["feeds"], 2)
+        self.assertEqual(res["fodder"], 0, "喂完余额必须复核，不能留喂前的旧值")
+
     def test_feed_all_conflicts_with_feed(self):
         import cmcc_fj as FJ
         with mock.patch.object(sys, "argv", ["cmcc_fj.py", "--feed-all", "--feed", "3"]), \

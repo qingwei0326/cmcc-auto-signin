@@ -48,7 +48,7 @@ class TestCommon(unittest.TestCase):
             self.assertEqual(common.load_json(p, {"fallback": 1}), {"fallback": 1})
 
     def test_mask_phone(self):
-        self.assertEqual(common.mask_phone("18405963239"), "...3239")
+        self.assertEqual(common.mask_phone("13800001234"), "...1234")
         self.assertEqual(common.mask_phone("12"), "12")
         self.assertEqual(common.mask_phone(""), "")
 
@@ -75,7 +75,7 @@ class TestHarImport(unittest.TestCase):
         return json.dumps({"log": {"entries": entries}})
 
     def test_parse_qwhd_token_and_phone(self):
-        phone = 18405963239
+        phone = 13800001234
         text = self._har([
             {"startedDateTime": "2026-11-19T23:00:00",
              "request": {"url": "https://wx.10086.cn/abc/appTokenLogin.do",
@@ -164,8 +164,8 @@ class TestRunAll(unittest.TestCase):
     def test_label_of_masks_phone(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "a.json"
-            p.write_text(json.dumps({"phone": "18405963239"}), encoding="utf-8")
-            self.assertEqual(run_all.label_of(p, "phone"), "...3239")
+            p.write_text(json.dumps({"phone": "13800001234"}), encoding="utf-8")
+            self.assertEqual(run_all.label_of(p, "phone"), "...1234")
 
     def test_label_of_missing_file(self):
         self.assertEqual(run_all.label_of(Path("/no/such.json"), "phone"), "such")
@@ -217,17 +217,17 @@ class TestSeckill(unittest.TestCase):
         self.assertNotIn("SUCCESS", STOP_STATUSES)
 
     def test_session_file_is_per_account(self):
-        """会话必须按账号隔离，否则 4167 会误用 3239 的会话抢券。"""
+        """会话必须按账号隔离，否则另一个号会误用本号的会话抢券、券记错人头。"""
         import cmcc_sign
         cfg_a = cmcc_sign.Config.__new__(cmcc_sign.Config)
-        cfg_a.phone = "18405963239"
+        cfg_a.phone = "13800001234"
         cfg_b = cmcc_sign.Config.__new__(cmcc_sign.Config)
-        cfg_b.phone = "17359634167"
+        cfg_b.phone = "13900005678"
         fa = cmcc_sign.activity_session_file(cfg_a)
         fb = cmcc_sign.activity_session_file(cfg_b)
         self.assertNotEqual(fa, fb)
-        self.assertTrue(fa.name.endswith("3239.json"))
-        self.assertTrue(fb.name.endswith("4167.json"))
+        self.assertTrue(fa.name.endswith("1234.json"))
+        self.assertTrue(fb.name.endswith("5678.json"))
 
     def test_server_time_conversion_has_no_double_scaling(self):
         """直接测生产函数：毫秒偏移不能再乘 1000（曾偏了约 1000 秒）。"""

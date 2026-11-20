@@ -12,6 +12,7 @@ import ast
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -255,17 +256,17 @@ class TestSessionExpiry(unittest.TestCase):
 
 class TestTokenLifeProbe(unittest.TestCase):
     def test_mark_issued_only_touches_matching_account(self):
-        """给 3239 导入 HAR 不能清空 4167 的样本、写上 3239 的签发时刻。"""
+        """给一个号导入 HAR 不能清空另一个号的样本、写上本号的签发时刻。"""
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            a, b = d / "3239.json", d / "4167.json"
-            for p, ph in ((a, "18405963239"), (b, "17359634167")):
+            a, b = d / "1234.json", d / "5678.json"
+            for p, ph in ((a, "13800001234"), (b, "13900005678")):
                 p.write_text(json.dumps({"phone": ph, "state": "expired",
                                          "samples": [{"at": "x", "ok": False}]}),
                              encoding="utf-8")
             with mock.patch.object(PT, "OUT_DIR", d), \
                  mock.patch.object(PT, "_accounts", lambda: [a, b]):
-                PT.mark_issued("2026-11-20T10:00:00", phone="18405963239")
+                PT.mark_issued("2026-11-20T10:00:00", phone="13800001234")
             ra = json.loads(a.read_text(encoding="utf-8"))
             rb = json.loads(b.read_text(encoding="utf-8"))
             self.assertEqual(ra["state"], "unknown")
@@ -311,7 +312,7 @@ class TestHarImport(unittest.TestCase):
                         "headers": [],
                         "postData": {"text": json.dumps({
                             "token": token,
-                            "userCheckId": format(18405963239, "X")})}}}]}})
+                            "userCheckId": format(13800001234, "X")})}}}]}})
 
     def test_newest_har_wins(self):
         """目录里放两份 HAR 时，必须让最新那份最后落地（曾按倒序处理，旧的覆盖新的）。"""
@@ -329,7 +330,7 @@ class TestHarImport(unittest.TestCase):
                  mock.patch.object(PT, "_accounts", lambda: []):
                 lines, used = har_import.scan_dir(d)
             self.assertEqual(used, 2)
-            cfg = json.loads((d / "configs" / "3239.json").read_text(encoding="utf-8"))
+            cfg = json.loads((d / "configs" / "1234.json").read_text(encoding="utf-8"))
             self.assertTrue(cfg["app_token"].startswith("JSESSIONID=NEW"), cfg["app_token"])
 
     def test_mark_issued_receives_phone(self):
@@ -340,7 +341,7 @@ class TestHarImport(unittest.TestCase):
                                    lambda ts, phone=None: seen.update(ts=ts, phone=phone)):
                 har_import.apply(self._har("JSESSIONID=A; UID=1; ticketID=x",
                                            "2026-11-20T04:09:25Z"))
-        self.assertEqual(seen["phone"], "18405963239")
+        self.assertEqual(seen["phone"], "13800001234")
         self.assertEqual(seen["ts"], "2026-11-20T12:09:25")   # UTC → 本地 +8
 
 
@@ -377,7 +378,7 @@ class TestDashboardGuards(unittest.TestCase):
                     "/etc/passwd", "configs/.hidden.json", "configs/sub/a.json",
                     "configs_fj/..\\evil.json", "", None):
             self.assertIsNone(dashboard.safe_conf_path(bad), bad)
-        ok = dashboard.safe_conf_path("configs/3239.json")
+        ok = dashboard.safe_conf_path("configs/1234.json")
         self.assertIsNotNone(ok)
         self.assertEqual(ok.parent.name, "configs")
 
@@ -429,7 +430,7 @@ class TestDashboardGuards(unittest.TestCase):
 
         try:
             # 会明文吐 app_token 的死端点必须已经不存在
-            self.assertEqual(status(base + "/api/bass_cfg?file=configs/3239.json"), 404)
+            self.assertEqual(status(base + "/api/bass_cfg?file=configs/1234.json"), 404)
             # 恶意网页的跨站 POST → 403
             self.assertEqual(status(Request(
                 base + "/api/action", data=b'{"action":"stop"}',
@@ -629,6 +630,24 @@ class TestFrontendSplit(unittest.TestCase):
         self.assertIn("('static', 'static')", spec)
         # bat 必须从 spec 构建：用命令行参数会让 PyInstaller 重新生成 spec、覆盖手工配置
         self.assertIn("签到控制台.spec", bat)
+
+
+# ======================================================================
+# fixture 隐私（本仓库是公开的）
+# ======================================================================
+
+class TestFixturePrivacy(unittest.TestCase):
+    """测试 fixture 只能用合成号码，别把真实手机号写进公开仓库。"""
+
+    SYNTHETIC = {"13800001234", "13900005678", "13800138000"}
+
+    def test_no_real_mobile_numbers_in_fixtures(self):
+        for p in sorted((ROOT / "tests").glob("*.py")):
+            for n in re.findall(r"\b1[3-9]\d{9}\b", p.read_text(encoding="utf-8")):
+                # 失败信息里也要脱敏，别把号码打进 CI 日志
+                self.assertIn(n, self.SYNTHETIC,
+                              f"{p.name} 出现非合成手机号 {n[:3]}****{n[-4:]}，"
+                              f"请换成 TestFixturePrivacy.SYNTHETIC 里的号码")
 
 
 # ======================================================================

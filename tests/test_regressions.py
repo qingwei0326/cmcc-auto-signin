@@ -1531,6 +1531,101 @@ class TestUsabilityFixes(unittest.TestCase):
             dashboard._sched_state(ttl=0)
         self.assertIs(dashboard._SCHED_CACHE["ok"], False)
 
+# ======================================================================
+# 喂到饲料用完：不用每次手填轮数
+# ======================================================================
+
+class TestFeedAll(unittest.TestCase):
+    def _call(self, fodder, calls):
+        def fake_call(s, cfg, ep, **kw):
+            calls.append(ep)
+            if ep == "index_info":
+                return {"ok": True, "data": {"fodderSurplus": fodder}}
+            if ep == "stage_info":
+                return {"ok": True, "data": {"feedFodders": 0, "fodderSurplus": fodder,
+                                             "stageInfo": {"feedNeedFodderCount": 5000,
+                                                           "stageName": "一阶"}}}
+            return {"ok": True, "code": "0", "data": {}}
+        return fake_call
+
+    def _run_feed(self, fodder):
+        import cmcc_fj as FJ
+        calls = []
+        args = types.SimpleNamespace(feed=0, feed_all=True,
+                                     auto_claim=True, continue_stage=False)
+        res = {"feeds": 0}
+        with mock.patch.object(FJ, "call", self._call(fodder, calls)), \
+                mock.patch.object(FJ, "pause", lambda *a, **k: None), \
+                redirect_stdout(io.StringIO()):
+            n = FJ.run_feed(None, {}, args, res, "fee", "k", lambda *a, **k: None)
+        return n, calls
+
+    def test_rounds_computed_from_fodder(self):
+        n, calls = self._run_feed(1000)
+        self.assertEqual(n, 4, "1000 饲料应喂 4 轮（每轮 250）")
+        self.assertEqual(calls.count("batch_feed"), 4)
+
+    def test_leftover_below_250_not_fed(self):
+        n, calls = self._run_feed(1249)
+        self.assertEqual(n, 4, "余 249 不够一轮，不该再喂")
+        self.assertEqual(calls.count("batch_feed"), 4)
+
+    def test_no_fodder_means_no_feed(self):
+        n, calls = self._run_feed(200)
+        self.assertEqual(n, 0)
+        self.assertNotIn("batch_feed", calls)
+
+    def test_feed_all_conflicts_with_feed(self):
+        import cmcc_fj as FJ
+        with mock.patch.object(sys, "argv", ["cmcc_fj.py", "--feed-all", "--feed", "3"]), \
+                mock.patch.object(FJ, "load_config", lambda p: {}), \
+                redirect_stdout(io.StringIO()):
+            rc = FJ.main()
+        self.assertEqual(rc, 1)
+
+    def test_policy_save_accepts_feed_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = common.POLICY_FILE
+            common.POLICY_FILE = Path(tmp) / "p.json"
+            try:
+                r = dashboard.do_action({"action": "policy_save",
+                                         "bass": {"feed": 0, "feed_all": True}})
+                self.assertTrue(r["ok"], r)
+                self.assertTrue(r["policy"]["bass"]["feed_all"])
+                self.assertEqual(common.load_policy()["bass"]["feed_all"], True)
+            finally:
+                common.POLICY_FILE = real
+
+    def test_feed_all_defaults_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = common.POLICY_FILE
+            common.POLICY_FILE = Path(tmp) / "p.json"
+            try:
+                self.assertIs(common.load_policy()["bass"]["feed_all"], False)
+            finally:
+                common.POLICY_FILE = real
+
+    def test_bass_run_passes_feed_all(self):
+        cmds = []
+
+        class FakeRunner:
+            running = False
+            label = ""
+
+            def start(self, label, cmd, parser=None, shell=False):
+                cmds.append(cmd)
+                return True
+
+        a = next(x for x in dashboard.scan_accounts() if x["plat"] == "BASS")
+        real = dashboard.RUNNER
+        dashboard.RUNNER = FakeRunner()
+        try:
+            dashboard.do_action({"action": "bass_run", "key": a["key"], "feed_all": 1})
+        finally:
+            dashboard.RUNNER = real
+        self.assertIn("--feed-all", cmds[-1])
+        self.assertNotIn("--feed", cmds[-1])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

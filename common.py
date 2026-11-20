@@ -217,6 +217,7 @@ POLICY_FILE = BASE / "gui_data" / "policy.json"
 POLICY_DEFAULT = {
     "bass": {
         "feed": 0,               # 每天自动喂几轮（每轮 250 饲料，0 = 不喂）
+        "feed_all": False,       # True = 喂到饲料不足 250 为止，轮数自动算，不用填 feed
         "feed_hour": 12,         # 只在几点那一轮喂（默认 12 点，与每日奖励任务同一次运行）
         "on_stage_full": "stop",  # stop 停手 / claim 领奖续喂 / continue 放弃奖品升阶
         "prize": "fee",          # 领奖档位 fee 话费 / flow 流量 / discount 折扣

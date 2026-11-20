@@ -289,6 +289,26 @@ def run_xxl(dry_run: bool, times: int) -> list:
 
 # ---------------------------------------------------------------- 主流程
 
+def seckill_timeout(at: str = "") -> int:
+    """秒杀子进程的超时上限（秒）。
+
+    脚本内部要一直睡到开抢时刻（计划任务 10:30 启动、12:00 出手，约 90 分钟），
+    超时若小于这段等待，子进程会在开抢前被 kill —— 秒杀就永远不会发生。
+    所以按 --at 距现在还有多久来算，再留 15 分钟给抢购与重试。
+    """
+    if not at:
+        return 6 * 3600
+    try:
+        hh, mm, *ss = at.split(":")
+        now = datetime.datetime.now()
+        target = now.replace(hour=int(hh), minute=int(mm),
+                             second=int(ss[0]) if ss else 0, microsecond=0)
+        wait = (target - now).total_seconds()
+    except Exception:
+        return 6 * 3600
+    return max(900, int(wait) + 900)
+
+
 def run_seckill(dry_run: bool, at: str = "") -> list:
     """跑签到有礼「每周秒杀」：每个 configs 配置一个号，等到 12:00 自动抢。"""
     script = BASE / "cmcc_seckill.py"
@@ -306,38 +326,21 @@ def run_seckill(dry_run: bool, at: str = "") -> list:
     print(f" 秒杀抢券   {len(confs)} 个账号")
     print("=" * 66)
 
-    def one(conf):
-        cmd = [sys.executable, str(script), "--config", str(conf)]
-        if dry_run:
-            cmd.append("--dry-run")
-        elif at:
-            cmd += ["--at", at]
-        t0 = time.time()
-        ok = False
-        buf = []
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True,
-                                 encoding="utf-8", errors="ignore", timeout=900)
-            out = (res.stdout or "").strip()
-            err = (res.stderr or "").strip()
-            if out:
-                buf.append(out[-1500:])
-            ok = res.returncode == 0
-            if not ok:
-                msg = brief_error(err) or brief_error(out)
-                if msg:
-                    buf.append(f"  ↑ 失败原因：{msg}")
-        except subprocess.TimeoutExpired:
-            buf.append("超时，跳过")
-        except Exception as e:
-            buf.append(f"异常：{e}")
-        return label_of(conf, "phone"), ok, round(time.time() - t0, 1), "\n".join(buf)
+    timeout = seckill_timeout(at)
 
-    for i, conf in enumerate(confs, 1):
-        name, ok, sec, text = one(conf)
-        if text:
-            print(text)
-        results.append(("seckill", name, ok, sec))
+    def one(conf):
+        args = ["--dry-run"] if dry_run else (["--at", at] if at else [])
+        return run_script(script, conf, args, timeout)
+
+    # 各号会话独立，必须并发等到同一开抢时刻；串行会让第二个号晚几十秒出手，
+    # 而库存通常只有 1 份，晚到就等于抢不到。
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(confs))) as ex:
+        futs = [ex.submit(one, c) for c in confs]
+        for fut in futs:
+            name, ok, sec, text = fut.result()
+            if text:
+                print(text)
+            results.append(("seckill", name, ok, sec))
     return results
 
 

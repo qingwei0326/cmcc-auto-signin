@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from common import atomic_write_json
+from common import atomic_write_json, parse_result, update_json
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）
 if getattr(sys, "frozen", False):
@@ -69,10 +69,6 @@ def load_stats() -> dict:
         return {}
 
 
-def save_stats(st: dict):
-    atomic_write_json(STATS_FILE, st)
-
-
 RUNS_LOCK = threading.Lock()
 
 
@@ -84,11 +80,12 @@ def load_runs() -> list:
 
 
 def append_run(label: str, sec: float, ok: bool):
-    with RUNS_LOCK:
-        runs = load_runs()
+    def mutate(runs):
         runs.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                      "label": label, "sec": round(sec, 1), "ok": ok})
-        atomic_write_json(RUNS_FILE, runs[-500:], indent=0)
+        del runs[:-500]
+    with RUNS_LOCK:
+        update_json(RUNS_FILE, mutate, default=[], indent=0)
 
 
 def efficiency() -> dict:
@@ -112,39 +109,27 @@ def efficiency() -> dict:
 STATS_LOCK = threading.Lock()
 
 
-def acct_stats(key: str) -> dict:
-    with STATS_LOCK:
-        st = load_stats()
-        a = st.setdefault(key, {
-            "flow_mb_total": 0.0,     # 累计领取流量 MB（qwhd 奖品解析）
-            "tasks_done_total": 0,    # 累计完成任务数（doTask/fb任务 OK 计数）
-            "sign_days": None,        # qwhd 累计签到天数
-            "today_signed_qwhd": "",  # qwhd 今日已签日期
-            "today_signed_bass": "",  # BASS 今日已签日期
-            "fodder": None,           # BASS 饲料
-            "stage": "",              # BASS 阶段名
-            "fb_exchange": "",        # 流量银行可兑（如 352MB / 1.5GB）
-            "token_qwhd": "",         # ok / expired / empty
-            "token_bass": "",
-            "last_reward": "",
-            "last_run": "",
-            "history": [],            # [{date, flow_mb, tasks}]
-        })
-        return a
+# stats.json 里每个账号的字段口径：
+#   flow_mb_total / tasks_done_total / feeds_total —— 累计量
+#   sign_days / today_signed_qwhd / today_signed_bass —— 签到状态
+#   fodder / stage / fb_exchange —— BASS 实时状态
+#   token_qwhd / token_bass —— ok / expired / empty
+#   last_reward / last_run / history[{date, flow_mb, tasks, feeds}]
 
 
 def update_stats(key: str, **kw):
+    """更新某账号的统计字段。
+
+    跨进程加锁：计划任务与一键签到是不同进程，threading.Lock 管不到，
+    不加锁会整份互相覆盖（原子写只防半截文件，不防丢更新）。
+    """
     with STATS_LOCK:
-        st = load_stats()
-        a = st.setdefault(key, {})
-        a.update(kw)
-        save_stats(st)
+        update_json(STATS_FILE, lambda st: st.setdefault(key, {}).update(kw))
 
 
 def bump_daily(key: str, flow_mb: float = 0, tasks: int = 0, feeds: int = 0):
     """把当日领取量记入 history（同日累加）。"""
-    with STATS_LOCK:
-        st = load_stats()
+    def mutate(st):
         a = st.setdefault(key, {"history": []})
         hist = a.setdefault("history", [])
         today = TODAY()
@@ -152,8 +137,8 @@ def bump_daily(key: str, flow_mb: float = 0, tasks: int = 0, feeds: int = 0):
         if row is None:
             row = {"date": today, "flow_mb": 0.0, "tasks": 0, "feeds": 0}
             hist.append(row)
-        row["flow_mb"] = round(row["flow_mb"] + flow_mb, 1)
-        row["tasks"] += tasks
+        row["flow_mb"] = round(row.get("flow_mb", 0) + flow_mb, 1)
+        row["tasks"] = row.get("tasks", 0) + tasks
         row["feeds"] = row.get("feeds", 0) + feeds
         a["history"] = hist[-30:]
         if flow_mb:
@@ -162,7 +147,8 @@ def bump_daily(key: str, flow_mb: float = 0, tasks: int = 0, feeds: int = 0):
             a["tasks_done_total"] = a.get("tasks_done_total", 0) + tasks
         if feeds:
             a["feeds_total"] = a.get("feeds_total", 0) + feeds
-        save_stats(st)
+    with STATS_LOCK:
+        update_json(STATS_FILE, mutate)
 
 
 # ======================================================================
@@ -365,6 +351,40 @@ def py(*args):
 # 动作
 # ======================================================================
 
+CONF_DIRS = ("configs", "configs_fj")
+
+
+def safe_conf_path(rel):
+    """把前端传来的配置路径限制在 configs/ 与 configs_fj/ 内，非法返回 None。
+
+    早先直接 BASE / rel：传绝对路径会整个覆盖 BASE，传 ..\\.. 能读写项目外任意
+    文件，而 /api/bass_cfg 只脱敏 bearer_token，app_token 会明文吐出去。
+    """
+    rel = str(rel or "").replace("\\", "/").strip()
+    parts = rel.split("/")
+    if len(parts) != 2 or parts[0] not in CONF_DIRS:
+        return None
+    name = parts[1]
+    if (not name.endswith(".json") or name.startswith(".")
+            or not re.fullmatch(r"[A-Za-z0-9_\-.]+", name)):
+        return None
+    f = (BASE / parts[0] / name).resolve()
+    root = (BASE / parts[0]).resolve()
+    return f if root in f.parents else None
+
+
+def safe_project_path(p):
+    """限制在项目目录内的已存在文件（HAR 等），非法返回 None。"""
+    try:
+        f = Path(str(p or "")).resolve()
+    except Exception:
+        return None
+    root = BASE.resolve()
+    if f == root or root not in f.parents:
+        return None
+    return f if f.is_file() else None
+
+
 def find_account(pred):
     for a in scan_accounts():
         if pred(a):
@@ -500,7 +520,10 @@ def do_action(body: dict):
     if act == "luck_run":
         cmd = py("cmcc_luck.py")
         if body.get("har"):
-            cmd += ["--har", str(body["har"])]
+            hf = safe_project_path(body["har"])
+            if hf is None:
+                return {"ok": False, "err": "HAR 路径必须是项目内的文件"}
+            cmd += ["--har", str(hf)]
         if body.get("dry"):
             cmd.append("--dry-run")
         if body.get("no_tasks"):
@@ -510,18 +533,26 @@ def do_action(body: dict):
         return {"ok": RUNNER.start("优惠专区抽奖", cmd)}
 
     if act == "seckill_run":
-        cfg = body.get("file") or "configs/3239.json"
-        cmd = py("cmcc_seckill.py", "--config", cfg)
+        f = safe_conf_path(body.get("file"))
+        if f is None or not f.is_file():
+            return {"ok": False, "err": "配置文件非法或不存在"}
+        at = str(body.get("at") or "").strip()
+        if at and not re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", at):
+            return {"ok": False, "err": "开抢时刻格式应为 HH:MM[:SS]"}
+        cmd = py("cmcc_seckill.py", "--config", str(f))
         if body.get("dry"):
             cmd.append("--dry-run")
         elif body.get("once"):
             cmd.append("--once")
-        elif body.get("at"):
-            cmd += ["--at", body["at"]]
-        return {"ok": RUNNER.start(f"签到秒杀 · {cfg}", cmd)}
+        elif at:
+            cmd += ["--at", at]
+        return {"ok": RUNNER.start(f"签到秒杀 · {f.name}", cmd)}
 
     if act == "xxl_run":
-        cmd = py("cmcc_xiaoxiaole.py", "--config", body.get("file", "configs_fj/fj1.json"))
+        f = safe_conf_path(body.get("file"))
+        if f is None or not f.is_file():
+            return {"ok": False, "err": "配置文件非法或不存在"}
+        cmd = py("cmcc_xiaoxiaole.py", "--config", str(f))
         if body.get("dry"):
             cmd.append("--dry-run")
         elif body.get("detect"):
@@ -543,7 +574,13 @@ def do_action(body: dict):
                 rep = HI.apply(har, key=(body.get("key") or None))
                 used = 1
             else:
-                rep, used = HI.scan_dir(body.get("dir") or None)
+                d = body.get("dir") or None
+                if d is not None:
+                    dp = Path(str(d)).resolve()
+                    root = BASE.resolve()
+                    if dp != root and root not in dp.parents:
+                        return {"ok": False, "err": "扫描目录必须在项目内"}
+                rep, used = HI.scan_dir(d)
         except Exception as e:
             return {"ok": False, "err": f"导入失败：{e}"}
         for line in rep:
@@ -554,10 +591,9 @@ def do_action(body: dict):
         return {"ok": True, "report": rep, "msg": f"HAR 导入完成（{used} 份）"}
 
     if act == "bass_token_save":
-        rel = body.get("file")
-        f = BASE / rel
-        if not f.exists() or "configs_fj" not in rel:
-            return {"ok": False, "err": "配置文件不存在"}
+        f = safe_conf_path(body.get("file"))
+        if f is None or f.parent.name != "configs_fj" or not f.is_file():
+            return {"ok": False, "err": "配置文件不存在或不在 configs_fj 下"}
         cfg = load_json(f) or {}
         tok = str(body.get("token", "")).strip()
         if tok.startswith("Bearer "):
@@ -575,6 +611,9 @@ def do_action(body: dict):
             return {"ok": False, "err": "文件名为空"}
         if not name.endswith(".json"):
             name += ".json"
+        # 文件名会拼进路径，必须挡住 ..\ 与绝对路径
+        if name.startswith(".") or not re.fullmatch(r"[A-Za-z0-9_\-.]+\.json", name):
+            return {"ok": False, "err": "文件名只能用字母、数字、_ - ."}
         f = BASE / "configs_fj" / name
         f.parent.mkdir(exist_ok=True)
         if f.exists():
@@ -594,7 +633,12 @@ def do_action(body: dict):
         return {"ok": RUNNER.start("查询计划任务", ["powershell", "-NoProfile", "-Command", ps])}
     if act == "sched_reg":
         kind = body.get("kind", "sign")
-        t = body.get("time", "08:30")
+        t = str(body.get("time") or "08:30").strip()
+        # t 会插进单引号 PowerShell 字符串，不校验就能闭合引号注入任意命令
+        if not re.fullmatch(r"\d{1,2}:\d{2}", t):
+            return {"ok": False, "err": "时间格式应为 HH:MM"}
+        if kind not in ("sign", "daily", "keepalive", "sess", "seckill", "probe"):
+            return {"ok": False, "err": "未知任务类型"}
         if kind == "daily":
             # 每小时轮询领每日奖励三档：06:00 起每 1 小时一次，持续 17 小时
             name, bat = "MobileDailyReward", "run_daily_reward.bat"
@@ -607,7 +651,8 @@ def do_action(body: dict):
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每小时一次（持续 17 小时）'")
         elif kind == "keepalive":
-            # qwhdhub 会话保活：每 90 分钟续期一次 jwt（实测寿命 2.5~3.5 小时）
+            # qwhdhub 会话保活：每 90 分钟只试登录一次（--login-only，不签到）。
+            # jwt 单独用服务端不认，续不了命；失败即代表 app_token 过期、该重新抓包
             name, bat = "MobileJwtKeepAlive", "run_jwt_keepalive.bat"
             d = str(BASE)
             ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
@@ -626,7 +671,8 @@ def do_action(body: dict):
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）'")
         elif kind == "seckill":
-            # 秒杀抢券：11:30 启动，脚本内部等到 12:00 再出手（app_token 那时仍有效）
+            # 秒杀抢券：10:30 启动，脚本内部等到 12:00 再出手。
+            # 靠的是 10:15 那次签到建立的活动会话（2 小时寿命），不是 app_token
             name, bat = "MobileSeckill", "run_seckill.bat"
             d = str(BASE)
             ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
@@ -765,9 +811,35 @@ def _load_json_safe(p: Path):
         return {}
 
 
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+MAX_BODY = 64 * 1024 * 1024   # HAR 可能很大，但也要有个上限
+
+
+def _host_of(value) -> str:
+    """从 Host / Origin 头里取出主机名（去掉协议、端口、路径）。"""
+    v = str(value or "").strip().lower()
+    if "://" in v:
+        v = v.split("://", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["):
+        return v.split("]")[0] + "]"
+    return v.rsplit(":", 1)[0] if ":" in v else v
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def _local_only(self) -> bool:
+        """只接受本机来源，挡住 DNS rebinding 与恶意网页的跨站请求。
+
+        服务虽然只监听 127.0.0.1，但浏览器里任何网页都能向它发请求；
+        POST 用 text/plain 属「简单请求」不触发预检，所以必须自己校验来源。
+        """
+        if _host_of(self.headers.get("Host")) not in LOCAL_HOSTS:
+            return False
+        origin = self.headers.get("Origin")
+        return not origin or _host_of(origin) in LOCAL_HOSTS
 
     def _send(self, code, ctype, data: bytes):
         self.send_response(code)
@@ -781,6 +853,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, "application/json; charset=utf-8", json.dumps(obj, ensure_ascii=False).encode())
 
     def do_GET(self):
+        if not self._local_only():
+            self._json({"err": "forbidden"}, 403)
+            return
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
@@ -788,26 +863,37 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self._json(build_state())
         elif u.path == "/api/logs":
-            since = int((q.get("since") or ["0"])[0])
+            try:
+                since = int((q.get("since") or ["0"])[0])
+            except ValueError:
+                since = 0
             lines = [l for l in RUNNER.logs if l["seq"] > since]
             self._json({"lines": lines, "running": RUNNER.running, "label": RUNNER.label})
-        elif u.path == "/api/bass_cfg":
-            rel = (q.get("file") or [""])[0]
-            f = BASE / rel if rel else BASE / "__none__"
-            cfg = load_json(f) if f.is_file() else None
-            if cfg:
-                tok = cfg.get("bearer_token", "")
-                cfg = {**cfg, "bearer_token": (tok[:4] + "…" + tok[-4:]) if len(tok) > 12 else ("(空)" if not tok else tok)}
-            self._json(cfg or {"err": "not found"})
         else:
             self._json({"err": "not found"}, 404)
 
     def do_POST(self):
+        if not self._local_only():
+            self._json({"err": "forbidden"}, 403)
+            return
+        # 要求 application/json：跨站「简单请求」发不出这个类型，会被预检挡住
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._json({"err": "需要 application/json"}, 415)
+            return
         u = urlparse(self.path)
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n > MAX_BODY:
+            self._json({"err": "请求体过大"}, 413)
+            return
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
+            body = {}
+        if not isinstance(body, dict):
             body = {}
         if u.path == "/api/action":
             try:

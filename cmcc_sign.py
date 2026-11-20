@@ -31,6 +31,8 @@
 退出码：0 = 签到成功或今日已签；1 = 失败（便于 CI 判断）
 """
 
+from __future__ import annotations
+
 import argparse
 import ipaddress
 import json
@@ -48,7 +50,7 @@ from urllib.parse import urlsplit
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import atomic_write_json, setup_utf8
+from common import atomic_write_json, emit_result, load_json, setup_utf8
 
 # ---------------------------------------------------------------- 常量
 
@@ -381,6 +383,11 @@ def save_activity_session(s: requests.Session, referer: str, cfg: Config = None)
     要覆盖 12:00 开抢，必须在 **10:00 之后**再签到一次。
 
     注意：会话按账号隔离存文件，否则 4167 会误用 3239 的会话去抢券。
+
+    ⚠️ 同一个 cookie 再次保存（秒杀等待期的心跳）时**只更新 cookie，不刷新
+    at/expires_at**：会话是建立后 2 小时硬过期，请求延长不了它。早先每次保存
+    都重算 expires_at，面板上的剩余寿命就随心跳越涨越多，实际 12:15 已死却
+    显示还能用到下午。只有换到新 cookie（重新登录）才重新起算。
     """
     try:
         cks = {c.name: c.value for c in s.cookies if c.name.endswith("SESSION_TOKEN")}
@@ -388,17 +395,21 @@ def save_activity_session(s: requests.Session, referer: str, cfg: Config = None)
             return
         path = activity_session_file(cfg) if cfg else (
             Path(__file__).resolve().parent / "gui_data" / "seckill_session.json")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        now = datetime.now()
-        path.write_text(json.dumps(
-            {"cookie": cks, "referer": referer,
-             "phone": (cfg.phone if cfg else ""),
-             "at": now.isoformat(timespec="seconds"),
-             "expires_at": (now + timedelta(hours=SESSION_LIFE_HOURS)
-                            ).isoformat(timespec="seconds")},
-            ensure_ascii=False, indent=1), encoding="utf-8")
-        log.info("活动会话已保存（%s），%s 后失效，供秒杀复用",
-                 path.name, f"{SESSION_LIFE_HOURS:.0f} 小时")
+        old = load_json(path, {})
+        if old.get("cookie") == cks and old.get("at"):
+            at = old["at"]
+            expires = old.get("expires_at") or (
+                datetime.fromisoformat(at) + timedelta(hours=SESSION_LIFE_HOURS)
+            ).isoformat(timespec="seconds")
+        else:
+            now = datetime.now()
+            at = now.isoformat(timespec="seconds")
+            expires = (now + timedelta(hours=SESSION_LIFE_HOURS)).isoformat(timespec="seconds")
+        atomic_write_json(path, {"cookie": cks, "referer": referer,
+                                 "phone": (cfg.phone if cfg else ""),
+                                 "at": at, "expires_at": expires})
+        left = (datetime.fromisoformat(expires) - datetime.now()).total_seconds() / 60
+        log.info("活动会话已保存（%s），剩余约 %.0f 分钟，供秒杀复用", path.name, max(left, 0))
     except Exception as e:
         log.warning("保存活动会话失败: %s", e)
 

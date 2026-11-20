@@ -28,6 +28,8 @@ redeem 响应判定：
   python cmcc_seckill.py                等下一场开抢自动抢
   python cmcc_seckill.py --at 11:59:50  手动指定开抢时刻（调试）
 """
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -150,6 +152,20 @@ def server_now_ms(s, referer: str) -> int:
     raise RuntimeError("无法获取服务器时间（sysTime 与 Date 响应头均不可用）")
 
 
+def srv_now_ms(offset_ms: float, local_ms: float | None = None) -> float:
+    """本机毫秒 + 偏移 = 服务器毫秒。
+
+    offset_ms 本身就是毫秒，**不能再乘 1000**（曾因此偏了约 1000 秒）。
+    抽成纯函数是为了能被测试直接覆盖，而不是在测试里重算一遍公式。
+    """
+    return (time.time() * 1000 if local_ms is None else local_ms) + offset_ms
+
+
+def srv_ms_to_local_s(srv_ms: float, offset_ms: float) -> float:
+    """服务器毫秒 → 本机时钟秒（wait_until 用本机时钟睡）。"""
+    return (srv_ms - offset_ms) / 1000.0
+
+
 def sec_config_zones(s, referer: str) -> tuple:
     """拉秒杀场次。风控时 data 会退化成字符串，这里只判类型不硬解。"""
     resp = api_post(s, referer, SECCONFIG_URL)
@@ -243,8 +259,7 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
     started = False          # 是否已进入开抢阶段
     attempt = 0
     while True:
-        # 服务器当前毫秒：offset_ms 本身就是毫秒，不能再乘 1000
-        now_srv_ms = time.time() * 1000 + offset_ms
+        now_srv_ms = srv_now_ms(offset_ms)
         if now_srv_ms > deadline_srv_ms:
             return None, "场次窗口已结束"
         if start_srv_ms and now_srv_ms >= start_srv_ms:
@@ -382,7 +397,7 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
     # 场次真实开始时间（服务器时钟）——用于判断是否已进入开抢阶段
     zone_start_srv_ms = int(zone["startTime"])
     # 默认在场次开始时出手（服务器时间换算到本机）
-    fire_at_local_s = zone_start_srv_ms / 1000 - offset_ms / 1000
+    fire_at_local_s = srv_ms_to_local_s(zone_start_srv_ms, offset_ms)
 
     if at:
         # --at 指定「何时开始出手」，通常给提前量（如 11:59:50）

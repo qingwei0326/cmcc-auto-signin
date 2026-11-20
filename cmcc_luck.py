@@ -34,9 +34,9 @@ from pathlib import Path
 
 import requests
 
-from common import atomic_write_json
+from common import setup_utf8, update_json
 
-sys.stdout.reconfigure(encoding="utf-8")
+setup_utf8()
 
 BASE = Path(__file__).parent
 CFG_DIR = BASE / "configs_fj"
@@ -128,17 +128,17 @@ def collect_targets(key=None):
 
 
 def save_state(phone, info):
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        st = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
-    except Exception:
-        st = {}
+    """多账号共用一份文件，读-改-写要加跨进程锁，否则并发跑号会互相覆盖。"""
     key = (phone or "unknown").replace("*", "")[-4:] or "unknown"
-    acc = st.setdefault(key, {})
-    acc.update(info)
-    acc["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def mutate(st):
+        acc = st.setdefault(key, {})
+        acc.update(info)
+        acc["updated"] = stamp
+
     try:
-        atomic_write_json(STATE_FILE, st)
+        update_json(STATE_FILE, mutate)
     except Exception:
         pass
 

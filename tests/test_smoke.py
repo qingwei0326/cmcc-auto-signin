@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -233,25 +234,41 @@ class TestSeckill(unittest.TestCase):
         self.assertTrue(fb.name.endswith("4167.json"))
 
     def test_server_time_conversion_has_no_double_scaling(self):
-        """服务器毫秒换算不能把毫秒偏移再乘 1000（曾偏了约 1000 秒）。"""
-        import time
+        """直接测生产函数：毫秒偏移不能再乘 1000（曾偏了约 1000 秒）。"""
         import cmcc_seckill as SK
-        offset_ms = -1021.0
-        now_srv_ms = time.time() * 1000 + offset_ms
-        # 服务器时间应与本机相差约 1 秒（毫秒级），而不是 1000 秒
-        self.assertLess(abs(now_srv_ms - time.time() * 1000), 5000)
-        # 对照：错误的写法会差约 100 万毫秒
-        wrong = (time.time() + offset_ms) * 1000
-        self.assertGreater(abs(wrong - now_srv_ms), 900000)
+        local_ms = 1700000000000.0
+        self.assertEqual(SK.srv_now_ms(-1021.0, local_ms), local_ms - 1021.0)
+        self.assertEqual(SK.srv_now_ms(1500.0, local_ms), local_ms + 1500.0)
+        # 反向换算：服务器毫秒 → 本机时钟秒
+        self.assertAlmostEqual(SK.srv_ms_to_local_s(local_ms + 1500.0, 1500.0),
+                               local_ms / 1000.0, places=6)
 
     def test_pre_window_blocks_early_fire(self):
-        """距开抢太远时不该出手（否则会打上千个请求触发风控）。"""
+        """距开抢超出提前窗口时必须直接放弃，不能密集重试刷风控。"""
+        import time
         import cmcc_seckill as SK
-        self.assertIn("NOT_TIME_IN", SK.STOP_STATUSES.__class__.__mro__[0].__name__ and
-                      list(SK.STOP_STATUSES) and "NOT_TIME_IN" or "")
-        # NOT_TIME_IN 不能是终态（否则未开抢就停了）
+        calls = []
+        real = SK.api_post
+
+        def fake(s, ref, url, payload=None):
+            calls.append(url)
+            return {"code": "FAILED", "status": "NOT_TIME_IN", "msg": "未开抢"}
+
+        SK.api_post = fake
+        try:
+            zone = {"id": 7, "prize": {"id": 9, "name": "1元话费券"}}
+            start = time.time() * 1000 + 3600 * 1000    # 一小时后才开抢
+            resp, reason = SK.fire_redeem(
+                None, "ref", zone, interval=0.01, max_attempts=3,
+                deadline_srv_ms=start + 3600 * 1000, offset_ms=0.0,
+                start_srv_ms=start, pre_window_s=60.0)
+            self.assertIsNone(resp)
+            self.assertIn("超出提前窗口", reason)
+            self.assertEqual(len(calls), 1)              # 只打一发就收手
+        finally:
+            SK.api_post = real
+        # NOT_TIME_IN 不能是终态（否则未开抢就停了）；NET_ERROR 是终态
         self.assertNotIn("NOT_TIME_IN", SK.STOP_STATUSES)
-        # NET_ERROR 是终态（无效 secId 会返回它）
         self.assertIn("NET_ERROR", SK.STOP_STATUSES)
 
     def test_session_life_is_two_hours(self):
@@ -292,10 +309,17 @@ class TestSeckill(unittest.TestCase):
 
     def test_goto_login_counts_as_dead(self):
         """会话失效时服务端返回 GOTO_LOGIN（不是 401），探活必须认这个码。"""
-        import cmcc_seckill
-        src = Path(cmcc_seckill.__file__)
-        txt = src.read_text(encoding="utf-8")
-        self.assertIn("GOTO_LOGIN", txt)
+        import cmcc_seckill as SK
+
+        class FakeSession:
+            def __init__(self, code):
+                self.code = code
+
+            def post(self, *a, **k):
+                return types.SimpleNamespace(json=lambda: {"code": self.code})
+
+        for code, alive in (("GOTO_LOGIN", False), ("401", False), ("SUCCESS", True)):
+            self.assertIs(SK.session_alive(FakeSession(code), "ref"), alive, code)
 
     def test_section_table_has_seckill(self):
         import dashboard

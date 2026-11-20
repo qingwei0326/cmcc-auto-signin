@@ -476,6 +476,12 @@ class TestHumanFacing(unittest.TestCase):
             j = self.html.find(marker)
             self.assertIn("data-nobusy", self.html[max(0, j - 120):j])
 
+    def test_feed_reward_visible(self):
+        """昨日投喂奖励漏领要看得见：每日面板 + 总览待办条都要提醒。"""
+        self.assertIn("feed_reward", self.html)
+        self.assertIn("投喂累计奖励可领未领", self.html)
+        self.assertIn("当晚作废", self.html)
+
     def test_feed_all_switches_present(self):
         """「喂到用完」在自动策略与手动执行两处都要有，且勾上就置灰轮数框。"""
         for marker in ('id="pFeedAll"', 'id="bFeedAll"', "function feedAllToggle",

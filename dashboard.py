@@ -497,6 +497,69 @@ def act_refresh_status():
     return RUNNER.start_sequence("刷新全部账号状态（dry-run 只读）", steps)
 
 
+# 7 个计划任务的唯一定义处：名字、脚本、触发器类型、注册后的提示语。
+# 单个注册与「一键配置全部」都从这里取，两处不会跑偏。
+SCHED_DEF = {
+    "sign":      ("MobileSignIn", "run_scheduled.bat", "daily",
+                  "每天 {t} 运行"),
+    "daily":     ("MobileDailyReward", "run_daily_reward.bat", "1h17",
+                  "{t} 起每小时一次（持续 17 小时）"),
+    "keepalive": ("MobileJwtKeepAlive", "run_jwt_keepalive.bat", "90m1d",
+                  "{t} 起每 90 分钟一次（全天覆盖）"),
+    "sess":      ("MobileSessionRefresh", "run_session_refresh.bat", "daily",
+                  "每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）"),
+    "seckill":   ("MobileSeckill", "run_seckill.bat", "daily",
+                  "每天 {t} 运行（脚本内部等到 12:00 开抢）"),
+    "games":     ("MobileGames", "run_games.bat", "daily",
+                  "每天 {t} 运行（游戏中心 / 追剧 / 抽话费）"),
+    "probe":     ("MobileTokenLifeProbe", "run_token_life.bat", "2m1d",
+                  "{t} 起每 2 分钟一次（全天覆盖）"),
+}
+
+# 推荐方案：一键配置全部时用的时刻。和 README / 文档里的说明保持一致。
+SCHED_PLAN = [
+    ("sign", "08:30"),
+    ("daily", "06:00"),
+    ("keepalive", "00:00"),
+    ("sess", "11:54"),
+    ("seckill", "11:55"),
+    ("games", "12:05"),
+    ("probe", "00:00"),
+]
+
+
+def _sched_ps(kind: str, t: str, pyw: str, launcher: str):
+    """生成单个任务的注册脚本，返回 (任务名, PowerShell 片段)。
+
+    触发器只有三种形态：每天定时、每小时若干次、以及 90 分钟 / 2 分钟的重复。
+    注意不能用 `$tr.Repetition=` 去改重复——PS 5.1 上该属性不可写，写了等于没设。
+    """
+    name, bat, trig, note = SCHED_DEF[kind]
+    d = str(BASE)
+    if trig == "daily":
+        trg = f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
+    elif trig == "1h17":
+        trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' "
+               f"-RepetitionInterval (New-TimeSpan -Hours 1) "
+               f"-RepetitionDuration (New-TimeSpan -Hours 17);")
+    elif trig == "90m1d":
+        trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' "
+               f"-RepetitionInterval (New-TimeSpan -Minutes 90) "
+               f"-RepetitionDuration (New-TimeSpan -Days 1);")
+    else:  # 2m1d
+        trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' "
+               f"-RepetitionInterval (New-TimeSpan -Minutes 2) "
+               f"-RepetitionDuration (New-TimeSpan -Days 1);")
+    ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' "
+          f"-Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
+          + trg +
+          "$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+          "-DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+          f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
+          f"Write-Host '{name} 已注册，" + note.format(t=t) + "'")
+    return name, ps
+
+
 def do_action(body: dict):
     act = body.get("action", "")
     accts = scan_accounts()
@@ -545,6 +608,8 @@ def do_action(body: dict):
         if feed: cmd += ["--feed", str(feed)]
         if body.get("prize"): cmd += ["--prize", str(body["prize"])]
         if body.get("auto_claim"): cmd.append("--auto-claim")
+        # 阶段满时的另一条路：放弃本阶奖品直接升阶（与 --auto-claim 互斥）
+        if body.get("continue_stage"): cmd.append("--continue-stage")
         if body.get("tasks"): cmd.append("--tasks")
         if body.get("fb"): cmd.append("--fb-tasks")
         return {"ok": RUNNER.start(f"BASS 任务 · {a['key']}", cmd, parser=(parse_bass_output, a["key"]))}
@@ -702,75 +767,55 @@ def do_action(body: dict):
         # t 会插进单引号 PowerShell 字符串，不校验就能闭合引号注入任意命令
         if not re.fullmatch(r"\d{1,2}:\d{2}", t):
             return {"ok": False, "err": "时间格式应为 HH:MM"}
-        if kind not in ("sign", "daily", "keepalive", "sess", "seckill", "games", "probe"):
+        if kind not in SCHED_DEF:
             return {"ok": False, "err": "未知任务类型"}
-        if kind == "daily":
-            # 每小时轮询领每日奖励三档：06:00 起每 1 小时一次，持续 17 小时
-            name, bat = "MobileDailyReward", "run_daily_reward.bat"
-            d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Hours 1) "
-                  f"-RepetitionDuration (New-TimeSpan -Hours 17);"
-                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
-                  f"Write-Host '{name} 已注册，{t} 起每小时一次（持续 17 小时）'")
-        elif kind == "keepalive":
-            # qwhdhub 会话保活：每 90 分钟只试登录一次（--login-only，不签到）。
-            # jwt 单独用服务端不认，续不了命；失败即代表 app_token 过期、该重新抓包
-            name, bat = "MobileJwtKeepAlive", "run_jwt_keepalive.bat"
-            d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 90) "
-                  f"-RepetitionDuration (New-TimeSpan -Days 1);"
-                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
-                  f"Write-Host '{name} 已注册，{t} 起每 90 分钟一次（全天覆盖）'")
-        elif kind == "sess":
-            # 会话刷新：11:54 建立新会话，供 11:55 启动的秒杀任务复用
-            name, bat = "MobileSessionRefresh", "run_session_refresh.bat"
-            d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
-                  f"Write-Host '{name} 已注册，每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）'")
-        elif kind == "seckill":
-            # 秒杀抢券：11:55 启动；会话未就绪会重试，并自动读取新导入的配置。
-            name, bat = "MobileSeckill", "run_seckill.bat"
-            d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
-                  f"Write-Host '{name} 已注册，每天 {t} 运行（脚本内部等到 12:00 开抢）'")
-        elif kind == "games":
-            # 拓展活动三个：周六游戏中心（周六 12:00 起可抽）/ 追剧领福利（周日）/ 玩游戏抽话费
-            name, bat = "MobileGames", "run_games.bat"
-            d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
-                  f"Write-Host '{name} 已注册，每天 {t} 运行（拓展活动：游戏中心 / 追剧 / 抽话费）'")
-        elif kind == "probe":
-            # 票据寿命探测：每 2 分钟探一次，签发时刻取自 HAR，结论精确到分钟
-            name, bat = "MobileTokenLifeProbe", "run_token_life.bat"
-            d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 2) "
-                  f"-RepetitionDuration (New-TimeSpan -Days 1);"
-                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
-                  f"Write-Host '{name} 已注册，{t} 起每 2 分钟一次（全天覆盖）'")
-        else:
-            name, bat = "MobileSignIn", "run_scheduled.bat"
-            d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
-                  f"Write-Host '{name} 已注册，每天 {t} 运行'")
+        name, ps = _sched_ps(kind, t, pyw, launcher)
         return {"ok": RUNNER.start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
+
+    if act == "sched_apply_all":
+        # 一次调用注册全部任务：7 个 Register-ScheduledTask 塞进同一个 PowerShell 会话，
+        # 比在界面上点七次快，也不用逐个等状态刷新。
+        pyw = _pythonw()
+        launcher = str(BASE / "run_hidden.py")
+        plan = body.get("plan") or [[k, t] for k, t in SCHED_PLAN]
+        if not isinstance(plan, list) or not plan:
+            return {"ok": False, "err": "方案为空"}
+        parts, names = [], []
+        for item in plan:
+            try:
+                kind, t = item[0], str(item[1])
+            except Exception:
+                return {"ok": False, "err": "方案格式应为 [[类型, 时刻], ...]"}
+            if kind not in SCHED_DEF:
+                return {"ok": False, "err": f"未知任务类型 {kind}"}
+            if not re.fullmatch(r"\d{1,2}:\d{2}", t):
+                return {"ok": False, "err": f"{kind} 的时刻格式应为 HH:MM"}
+            name, ps = _sched_ps(kind, t, pyw, launcher)
+            parts.append(ps)
+            names.append(f"{name} {t}")
+        with _SCHED_LOCK:
+            _SCHED_CACHE["at"] = 0.0
+        ok = RUNNER.start("一键配置全部计划任务",
+                          ["powershell", "-NoProfile", "-Command", "\n".join(parts)])
+        return {"ok": ok, "msg": f"正在配置 {len(parts)} 个任务：{'、'.join(names)}" if ok
+                else "有任务正在运行，稍后再试"}
+
+    if act == "sched_unreg_all":
+        names = ",".join(f"'{v[0]}'" for v in SCHED_DEF.values())
+        ps = (f"foreach($n in @({names})){{"
+              "Unregister-ScheduledTask -TaskName $n -Confirm:$false -ErrorAction SilentlyContinue};"
+              "Write-Host '全部计划任务已注销'")
+        with _SCHED_LOCK:
+            _SCHED_CACHE["at"] = 0.0
+        return {"ok": RUNNER.start("注销全部计划任务", ["powershell", "-NoProfile", "-Command", ps])}
+
+    if act == "sched_refresh":
+        # 清缓存后同步重读一次，直接把结果回给前端（注册/注销是异步跑的，
+        # 前端等两秒再调这个，就能立刻看到新状态）
+        with _SCHED_LOCK:
+            _SCHED_CACHE["at"] = 0.0
+        return {"ok": True, "sched": _sched_state(ttl=0.0)}
+
     if act == "sched_unreg":
         name = body.get("name", "")
         if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
@@ -813,6 +858,7 @@ def build_state():
         "luck": _load_json_safe(DATA / "luck_state.json"),
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
+        "sched": _sched_state(),
     }
 
 
@@ -842,6 +888,77 @@ def _list_token_life() -> list:
             "last_ok": bool(s and s[-1].get("ok")),
             "samples": len(s),
         })
+    return out
+
+
+SCHED_TASKS = ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
+               "MobileSeckill", "MobileSessionRefresh", "MobileGames",
+               "MobileTokenLifeProbe")
+_SCHED_CACHE = {"at": 0.0, "data": []}
+_SCHED_LOCK = threading.Lock()
+
+
+def _sched_state(ttl: float = 90.0) -> list:
+    """读取 Windows 计划任务的**真实**状态：是否注册 / 实际触发时间 / 下次 / 上次结果。
+
+    页面上原来只有「注册/注销」按钮，看不出任务到底有没有在跑；输入框里还是写死的
+    默认时刻（与真实注册时间可能不一致，点一下就静默改掉）。这里把系统里的真相读出来。
+
+    结果缓存 ttl 秒：前端每 6 秒轮询 /api/state，而每次读取都要起一个 PowerShell，
+    不缓存会明显拖慢机器。读取失败（被策略拦 / 超时）时返回上一次的结果，不抛给页面。
+    """
+    now = time.time()
+    with _SCHED_LOCK:
+        if now - _SCHED_CACHE["at"] < ttl:
+            return _SCHED_CACHE["data"]
+
+    names = ",".join(f"'{n}'" for n in SCHED_TASKS)
+    ps = ("$o=@();foreach($n in @(" + names + ")){"
+          "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
+          "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
+          "$nx='';if($i.NextRunTime){$nx=$i.NextRunTime.ToString('MM-dd HH:mm')};"
+          "$ls='';if($i.LastRunTime){$ls=$i.LastRunTime.ToString('MM-dd HH:mm')};"
+          "$o+=[PSCustomObject]@{name=$n;state=[string]$t.State;"
+          "at=[string]$t.Triggers[0].StartBoundary;"
+          "next=$nx;last=$ls;"
+          "code=[int]$i.LastTaskResult}}};"
+          "ConvertTo-Json @($o) -Compress")
+    data = None
+    try:
+        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                           capture_output=True, timeout=12, creationflags=NO_WINDOW)
+        raw = (p.stdout or b"").decode("utf-8", errors="replace").strip()
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                data = [data]
+            if not isinstance(data, list):
+                data = None
+    except Exception:
+        data = None
+    if data is None:
+        with _SCHED_LOCK:
+            return _SCHED_CACHE["data"]
+
+    out = []
+    for d in data:
+        at = str(d.get("at") or "")
+        code = d.get("code")
+        # 267011 = 从未运行；此时系统给的 LastRunTime 是 1999-11-30 这类占位值，
+        # 直接显示会让人以为「刚跑过一次」，所以清掉。
+        last = "" if code == 267011 else str(d.get("last") or "")
+        out.append({
+            "name": d.get("name") or "",
+            "state": d.get("state") or "",
+            # StartBoundary 形如 2026-11-20T06:03:00+08:00，取 HH:MM 回填输入框
+            "time": at[11:16] if len(at) >= 16 and at[10] == "T" else "",
+            "next": str(d.get("next") or ""),
+            "last": last,
+            "code": code,
+        })
+    with _SCHED_LOCK:
+        _SCHED_CACHE["at"] = now
+        _SCHED_CACHE["data"] = out
     return out
 
 

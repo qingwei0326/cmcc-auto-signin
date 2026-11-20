@@ -24,9 +24,37 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import collect_notify_settings, load_json, notify   # 导入即固定 UTF-8 输出
+from common import (atomic_write_json, collect_notify_settings, load_json,
+                    load_policy, notify)   # 导入即固定 UTF-8 输出
 
 BASE = Path(__file__).parent
+
+# 每日自动喂养的「今天已喂过」标记，防止计划任务补跑时重复消耗饲料
+FEED_STATE = BASE / "gui_data" / "feed_state.json"
+
+
+def feed_due(pol: dict) -> bool:
+    """今天这一轮要不要自动喂养。
+
+    两个条件：现在正好是策略指定的那个小时、且今天还没喂过。
+    后者防的是计划任务「错过补跑」再触发一次，白烧 250×N 饲料。
+    """
+    try:
+        hour = int(pol.get("feed_hour"))
+    except Exception:
+        return False
+    if datetime.datetime.now().hour != hour:
+        return False
+    st = load_json(FEED_STATE, default={}) or {}
+    return st.get("date") != datetime.date.today().isoformat()
+
+
+def mark_fed() -> None:
+    FEED_STATE.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(FEED_STATE, {
+        "date": datetime.date.today().isoformat(),
+        "at": datetime.datetime.now().strftime("%H:%M:%S"),
+    }, indent=1)
 
 PLATFORMS = {
     "qwhd": {
@@ -383,12 +411,32 @@ def main():
     # 早先两个平台共用一个 extra 字符串、却只透传给 bass，导致 --keepalive
     # 的 --login-only 被丢掉，保活任务变成了每 90 分钟真签到一次。
     extra_map = {"qwhd": [], "bass": args.extra.split() if args.extra else []}
+    feed_injected = False   # 这一轮是否按策略注入了 --feed（成功后才记「今天已喂」）
 
     # 只领每日奖励：只跑 BASS，且把 --daily-only 透传给 cmcc_fj.py
     if args.daily_only:
         args.platform = "bass"
         args.xxl = False
         extra_map["bass"].append("--daily-only")
+        # 自动策略（控制台「自动策略」面板保存一次即可）：这一轮顺带喂养、阶段满了怎么办、
+        # 领哪一档奖品。不读策略就等于回到「只领三档、不喂」的老行为。
+        pol = (load_policy().get("bass") or {})
+        feed = int(pol.get("feed") or 0)
+        if feed > 0 and feed_due(pol):
+            extra_map["bass"] += ["--feed", str(feed)]
+            feed_injected = True
+        full = str(pol.get("on_stage_full") or "stop")
+        if full == "claim":
+            extra_map["bass"].append("--auto-claim")
+        elif full == "continue":
+            extra_map["bass"].append("--continue-stage")
+        prize = str(pol.get("prize") or "fee")
+        if prize in ("fee", "flow", "discount"):
+            extra_map["bass"] += ["--prize", prize]
+        if pol.get("tasks"):
+            extra_map["bass"].append("--tasks")
+        if pol.get("fb_tasks"):
+            extra_map["bass"].append("--fb-tasks")
 
     # 只跑秒杀：不签到（资格由秒杀脚本自己补签），也不跑别的平台
     if args.seckill_only:
@@ -451,6 +499,11 @@ def main():
 
         results.extend(run_platform(key, confs, args.dry_run,
                                     extra_map[key], args.delay))
+
+    # 喂养成功才记「今天已喂」，失败（多半是票据过期）留到下一次补跑
+    if feed_injected and not args.dry_run and any(
+            k == "bass" and ok for k, _n, ok, _s in results):
+        mark_fed()
 
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))

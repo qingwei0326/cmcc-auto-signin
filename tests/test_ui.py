@@ -9,13 +9,20 @@
     python -m unittest discover -s tests -v
 """
 
+import io
 import json
 import re
+import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
+import common
 import dashboard
+import run_all
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -253,6 +260,116 @@ class TestMonthSums(unittest.TestCase):
         """history 保留条数必须够覆盖一整月（31 天都活跃也不能丢月初）。"""
         src = (ROOT / "dashboard.py").read_text(encoding="utf-8")
         self.assertIn("hist[-45:]", src)
+
+
+class TestPolicyPersistence(unittest.TestCase):
+    """「设置一次、长期生效」：策略存盘，定时任务照它执行。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.real = common.POLICY_FILE
+        common.POLICY_FILE = self.dir / "policy.json"
+
+    def tearDown(self):
+        common.POLICY_FILE = self.real
+        self.tmp.cleanup()
+
+    def test_defaults_when_missing(self):
+        p = common.load_policy()
+        self.assertEqual(p["bass"]["on_stage_full"], "stop")
+        self.assertEqual(p["bass"]["feed"], 0, "默认不自动喂养，别偷用饲料")
+
+    def test_save_merges_and_persists(self):
+        common.save_policy({"bass": {"feed": 3}})
+        p = common.load_policy()
+        self.assertEqual(p["bass"]["feed"], 3)
+        # 没传的键必须保留默认值，不能被整体覆盖掉
+        self.assertEqual(p["bass"]["prize"], "fee")
+        self.assertEqual(p["xxl"]["times"], 5)
+
+    def test_broken_file_falls_back(self):
+        common.POLICY_FILE.write_text("{ 坏 json", encoding="utf-8")
+        self.assertEqual(common.load_policy()["bass"]["feed"], 0)
+
+
+class TestPolicyAppliesToScheduledRun(unittest.TestCase):
+    """每日奖励那一轮必须按策略注入喂养/领奖参数。"""
+
+    def _run(self, policy, argv=("run_all.py", "--daily-only")):
+        captured = []
+
+        def fake_run_script(script, conf, args, timeout, name="", idx=0, total=0):
+            captured.append(list(args))
+            return (conf.stem, True, 1.0, "ok")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            platforms = {k: dict(v) for k, v in run_all.PLATFORMS.items()}
+            for name, sub in (("qwhd", "configs"), ("bass", "configs_fj")):
+                d = Path(tmp) / sub
+                d.mkdir()
+                (d / "1234.json").write_text(json.dumps({"phone": "13800001234"}), encoding="utf-8")
+                platforms[name]["dir"] = d
+            with mock.patch.object(run_all, "PLATFORMS", platforms), \
+                    mock.patch.object(run_all, "load_policy", return_value=policy), \
+                    mock.patch.object(run_all, "feed_due", return_value=True), \
+                    mock.patch.object(run_all, "mark_fed"), \
+                    mock.patch.object(run_all, "run_script", side_effect=fake_run_script), \
+                    mock.patch.object(sys, "argv", list(argv)), \
+                    mock.patch.object(run_all, "notify"), \
+                    redirect_stdout(io.StringIO()):
+                run_all.main()
+        self.assertTrue(captured, "应该跑了至少一个账号")
+        return captured[0]
+
+    def test_feed_injected_with_stage_policy(self):
+        args = self._run({"bass": {"feed": 4, "feed_hour": 12, "on_stage_full": "claim",
+                                   "prize": "flow"}})
+        self.assertIn("--daily-only", args)
+        self.assertEqual(args[args.index("--feed") + 1], "4")
+        self.assertIn("--auto-claim", args)
+        self.assertEqual(args[args.index("--prize") + 1], "flow")
+
+    def test_continue_stage_is_exclusive(self):
+        args = self._run({"bass": {"feed": 2, "on_stage_full": "continue", "prize": "fee"}})
+        self.assertIn("--continue-stage", args)
+        self.assertNotIn("--auto-claim", args)
+
+    def test_feed_zero_means_no_feed_flag(self):
+        args = self._run({"bass": {"feed": 0, "on_stage_full": "stop", "prize": "fee"}})
+        self.assertNotIn("--feed", args)
+        self.assertNotIn("--auto-claim", args)
+
+    def test_fake_browsing_stays_off_by_default(self):
+        args = self._run({"bass": {"feed": 0}})
+        self.assertNotIn("--tasks", args)
+        self.assertNotIn("--fb-tasks", args)
+
+
+class TestFeedOncePerDay(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real = run_all.FEED_STATE
+        run_all.FEED_STATE = Path(self.tmp.name) / "feed_state.json"
+
+    def tearDown(self):
+        run_all.FEED_STATE = self.real
+        self.tmp.cleanup()
+
+    def test_due_only_in_configured_hour(self):
+        hour = datetime.now().hour
+        self.assertTrue(run_all.feed_due({"feed_hour": hour}))
+        self.assertFalse(run_all.feed_due({"feed_hour": (hour + 3) % 24}))
+
+    def test_second_run_same_day_is_skipped(self):
+        """计划任务补跑不能重复烧饲料。"""
+        hour = datetime.now().hour
+        self.assertTrue(run_all.feed_due({"feed_hour": hour}))
+        run_all.mark_fed()
+        self.assertFalse(run_all.feed_due({"feed_hour": hour}))
+
+    def test_bad_hour_never_due(self):
+        self.assertFalse(run_all.feed_due({}))
 
 
 if __name__ == "__main__":

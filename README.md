@@ -274,6 +274,19 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 `GET /stage/batchFeed`：一次消耗 250 饲料、算 5 次喂食、阶段进度 +250。属游戏内正常消耗。
 阶段将满时会自动停手（避免错过领奖），加 `--auto-claim` 可自动领奖续喂。
 
+**自动策略（设一次，长期生效）**：控制台「BASS 任务 → 自动策略」面板保存一次即可，
+存在 `gui_data/policy.json`，由每小时那次 `MobileDailyReward` 读取执行：
+
+| 字段 | 含义 |
+|---|---|
+| `feed` / `feed_hour` | 每天在指定小时那一轮喂几轮（每轮 250 饲料，0 = 不喂）；**一天只喂一次**，任务补跑不会重复消耗 |
+| `on_stage_full` | `stop` 停手 / `claim` 领本阶奖品后继续喂 / `continue` 放弃奖品直接升阶 |
+| `prize` | 领奖档位：`fee` 话费 / `flow` 流量 / `discount` 折扣 |
+| `tasks` / `fb_tasks` | 空报浏览类，默认 `false` |
+
+命令行等价写法：`python run_all.py --daily-only` 会自动读取该策略并注入
+`--feed N --auto-claim --prize flow` 等参数；想让某一轮不按策略走，直接调 `cmcc_fj.py` 传显式参数即可。
+
 ### 流量银行
 
 `POST /flowBank/doTask`，body `{appId, timestamp, taskId}`。

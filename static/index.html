@@ -248,6 +248,38 @@ select.inp{cursor:pointer}
       <div class="page" id="p-bass">
         <div class="phead"><div><h2>BASS 任务</h2><div class="desc">cmcc_fj.py 参数化执行：签到、领奖、喂养、探测</div></div></div>
         <div class="panel">
+          <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span></h3>
+          <div class="infobox">这里定的是<b>自动任务</b>的行为，不用每次手动勾：
+            <br>· <b>每天自动喂养</b>：只在指定小时的那一轮喂，<b>一天最多喂一次</b>，饲料不足会自动停手
+            <br>· <b>阶段喂满时</b>：停手等你 / 领奖后继续喂 / 放弃本阶奖品直接升阶
+            <br>· <b>伪造类</b>默认关闭；打开等于让脚本空报浏览，自行判断
+            <br>保存后由 <code>MobileDailyReward</code>（每小时那次）读取执行，改完不用重启任何东西。</div>
+          <div class="frow"><label>每天自动喂养</label>
+            <input class="inp" id="pFeed" type="number" min="0" max="50" value="0" style="min-width:70px">
+            <span style="font-size:12px;color:var(--sub)">轮（每轮 250 饲料，0 = 不喂）</span>
+            <label style="min-width:auto">在</label>
+            <input class="inp" id="pFeedHour" type="number" min="0" max="23" value="12" style="min-width:64px">
+            <span style="font-size:12px;color:var(--sub)">点那一轮</span></div>
+          <div class="frow"><label>阶段喂满时</label>
+            <select class="inp" id="pFull" style="min-width:210px">
+              <option value="stop">停手，等我自己决定</option>
+              <option value="claim">领本阶奖品后继续喂</option>
+              <option value="continue">放弃本阶奖品，直接升阶</option>
+            </select>
+            <label style="min-width:auto">领奖档位</label>
+            <select class="inp" id="pPrize" style="min-width:110px">
+              <option value="fee">话费券</option>
+              <option value="flow">流量包</option>
+              <option value="discount">折扣券</option>
+            </select></div>
+          <div class="frow"><label style="color:var(--warn)">伪造类</label>
+            <label class="chk"><input type="checkbox" id="pTasks">养成浏览任务（空报）</label>
+            <label class="chk"><input type="checkbox" id="pFb">流量银行任务（空报）</label>
+          </div>
+          <div class="frow"><button class="btn pri" onclick="savePolicy()">保存策略</button>
+            <span style="font-size:12px;color:var(--sub)" id="pMeta">加载中…</span></div>
+        </div>
+        <div class="panel">
           <h3>BASS 附加动作</h3>
           <div class="frow"><label>账号</label><select class="inp" id="bassRunKey"></select></div>
           <div class="frow"><label>选项</label>
@@ -262,8 +294,8 @@ select.inp{cursor:pointer}
             <label class="chk"><input type="checkbox" id="bAuto" onchange="pickStage('auto')">--auto-claim 领本阶奖品后继续喂</label>
             <label class="chk"><input type="checkbox" id="bCont" onchange="pickStage('cont')">--continue-stage 放弃奖品直接升阶</label>
           </div>
-          <div class="infobox">两个选项<b>互斥</b>，只能选一个；都不勾时脚本喂到「下次会打满」就停手等你决定，
-            这也是默认行为。领奖要选对档位（话费/流量/折扣），升阶则本阶奖品作废。</div>
+          <div class="infobox"><b>这里的勾选只影响这一次手动执行</b>，不会记住；要长期自动请用上面的「自动策略」。
+            两个阶段选项<b>互斥</b>，都不勾时脚本喂到「下次会打满」就停手等你决定。领奖要选对档位（话费/流量/折扣），升阶则本阶奖品作废。</div>
           <div class="frow"><label style="color:var(--warn)">伪造类</label>
             <label class="chk"><input type="checkbox" id="bTasks">--tasks 养成浏览任务（空报）</label>
             <label class="chk"><input type="checkbox" id="bFb">--fb-tasks 流量银行任务（空报）</label>
@@ -611,6 +643,7 @@ function render(){
   renderFlowbank();
   renderDaily();
   renderLuck();
+  renderPolicy();
   renderTodo();
   updSched();
 }
@@ -732,6 +765,44 @@ function renderFlowbank(){
   }).join('');
 }
 function fillSel(id,vals){const s=$(id);if(!s)return;const cur=s.value;s.innerHTML=vals.map(v=>`<option>${v}</option>`).join('');if(vals.includes(cur))s.value=cur;}
+// ---------------- 自动策略：存一次，长期生效 ----------------
+let PREFS_ONCE=false;
+function renderPolicy(){
+  const p=(STATE&&STATE.policy)||{}, b=p.bass||{};
+  if(!$('pFeed'))return;
+  if(!PREFS_ONCE){
+    // 只在首次渲染时回填，之后不覆盖用户正在改的值
+    PREFS_ONCE=true;
+    $('pFeed').value=(b.feed!=null?b.feed:0);
+    $('pFeedHour').value=(b.feed_hour!=null?b.feed_hour:12);
+    $('pFull').value=b.on_stage_full||'stop';
+    $('pPrize').value=b.prize||'fee';
+    $('pTasks').checked=!!b.tasks;
+    $('pFb').checked=!!b.fb_tasks;
+    const x=p.xxl||{};
+    if($('xLevel'))$('xLevel').value=(x.level!=null?x.level:49);
+    if($('xStar'))$('xStar').value=(x.star!=null?x.star:3);
+    if($('xTimes'))$('xTimes').value=(x.times!=null?x.times:5);
+    if($('xGap'))$('xGap').value=(x.gap!=null?x.gap:12);
+    const sk=p.seckill||{};
+    if($('skAt')&&sk.at)$('skAt').value=sk.at;
+  }
+  const f=Number(b.feed)||0;
+  $('pMeta').textContent=f>0
+    ? `已保存：每天 ${b.feed_hour} 点喂 ${f} 轮（约 ${f*250} 饲料）· 阶段满时 ${({stop:'停手',claim:'领奖续喂',continue:'直接升阶'})[b.on_stage_full]||b.on_stage_full}`
+    : '已保存：不自动喂养（只领三档奖励）';
+}
+async function savePolicy(){
+  const body={action:'policy_save',
+    bass:{feed:Number(V('pFeed'))||0,feed_hour:Number(V('pFeedHour'))||0,
+          on_stage_full:V('pFull'),prize:V('pPrize'),
+          tasks:$('pTasks').checked,fb_tasks:$('pFb').checked},
+    xxl:{level:Number(V('xLevel'))||49,star:Number(V('xStar'))||3,
+         times:Number(V('xTimes'))||5,gap:Number(V('xGap'))||12},
+    seckill:{at:($('skAt')?V('skAt'):'')}};
+  const r=await act(body);
+  if(r&&r.ok&&r.policy){STATE.policy=r.policy;PREFS_ONCE=true;renderPolicy();}
+}
 // 下拉框：显示「尾号 · 手机号」，值仍是后端要的配置标识（各页原来一个显示路径、一个显示 fj1，容易看糊涂）
 function fillSelKV(id,items){
   const s=$(id);if(!s)return;const cur=s.value;

@@ -17,6 +17,7 @@ import re
 import sys
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -206,6 +207,53 @@ def find_har_files(extra_dirs=None):
         files.append(p)
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return files
+
+
+# ---------------------------------------------------------------- 自动策略
+
+POLICY_FILE = BASE / "gui_data" / "policy.json"
+
+# 「设置一次、长期生效」的默认值。键名与控制台、run_all 共用，改这里就全变了。
+POLICY_DEFAULT = {
+    "bass": {
+        "feed": 0,               # 每天自动喂几轮（每轮 250 饲料，0 = 不喂）
+        "feed_hour": 12,         # 只在几点那一轮喂（默认 12 点，与每日奖励任务同一次运行）
+        "on_stage_full": "stop",  # stop 停手 / claim 领奖续喂 / continue 放弃奖品升阶
+        "prize": "fee",          # 领奖档位 fee 话费 / flow 流量 / discount 折扣
+        "tasks": False,          # 养成浏览任务（空报，默认关）
+        "fb_tasks": False,       # 流量银行任务（空报，默认关）
+    },
+    "xxl": {"level": 49, "star": 3, "times": 5, "gap": 12},
+    "seckill": {"at": "11:59:50"},
+}
+
+
+def _deep_merge(base: dict, extra: dict) -> dict:
+    out = dict(base)
+    for k, v in (extra or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def load_policy() -> dict:
+    """读取自动策略；缺字段用默认值补齐，文件坏了也不影响运行。"""
+    try:
+        data = load_json(POLICY_FILE, default=None) or {}
+    except Exception:
+        data = {}
+    return _deep_merge(POLICY_DEFAULT, data if isinstance(data, dict) else {})
+
+
+def save_policy(patch: dict) -> dict:
+    """把 patch 合并进现有策略并落盘，返回合并后的完整策略。"""
+    merged = _deep_merge(load_policy(), patch or {})
+    merged["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    POLICY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(POLICY_FILE, merged, indent=2)
+    return merged
 
 
 # ---------------------------------------------------------------- 配置

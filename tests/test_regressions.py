@@ -1218,5 +1218,97 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
                 self.assertTrue(s.isascii(), f"rem 注释含非 ASCII：{s}")
 
 
+class TestHiddenTaskLauncher(unittest.TestCase):
+    """计划任务不该再闪黑窗口：走 pythonw + run_hidden.py。"""
+
+    def test_launcher_uses_create_no_window(self):
+        """启动器必须带 CREATE_NO_WINDOW，否则子进程还是会开控制台。"""
+        import run_hidden
+        self.assertEqual(run_hidden.CREATE_NO_WINDOW, 0x08000000)
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            seen["flags"] = kw.get("creationflags")
+            return FakeProc()
+
+        with mock.patch.object(run_hidden.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(sys, "argv", ["run_hidden.py", r"D:////x////run.bat"]):
+            rc = run_hidden.main()
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["cmd"][:2], ["cmd.exe", "/c"])
+        self.assertEqual(seen["flags"], run_hidden.CREATE_NO_WINDOW)
+
+    def test_dashboard_sched_uses_hidden_launcher(self):
+        """控制台注册任务时必须走 pythonw + run_hidden.py，而不是直接跑 bat。"""
+        captured = []
+
+        class FakeRunner:
+            def start(self, label, cmd, **kw):
+                captured.append(cmd[-1])
+                return {"ok": True}
+
+            def kill(self):
+                return {"ok": True}
+
+        real = dashboard.RUNNER
+        dashboard.RUNNER = FakeRunner()
+        try:
+            dashboard.do_action({"action": "sched_reg", "kind": "seckill", "time": "11:55"})
+        finally:
+            dashboard.RUNNER = real
+        self.assertTrue(captured)
+        ps = captured[-1]
+        self.assertIn("pythonw.exe", ps)
+        self.assertIn("run_hidden.py", ps)
+        self.assertNotIn("cmd.exe", ps)
+
+    def test_sched_kind_games_is_allowed(self):
+        """games 分支加过但曾漏进白名单，界面注册会直接报「未知任务类型」。"""
+        captured = []
+
+        class FakeRunner:
+            def start(self, label, cmd, **kw):
+                captured.append(cmd[-1])
+                return {"ok": True}
+
+            def kill(self):
+                return {"ok": True}
+
+        real = dashboard.RUNNER
+        dashboard.RUNNER = FakeRunner()
+        try:
+            r = dashboard.do_action({"action": "sched_reg", "kind": "games", "time": "12:05"})
+        finally:
+            dashboard.RUNNER = real
+        self.assertTrue(r.get("ok"), r)
+        self.assertTrue(captured)
+
+    def test_repeating_triggers_do_not_use_unwritable_property(self):
+        """PS 5.1 里 $tr.Repetition 不可写，用它等于没设重复（会退化成每天一次）。"""
+        captured = []
+
+        class FakeRunner:
+            def start(self, label, cmd, **kw):
+                captured.append(cmd[-1])
+                return {"ok": True}
+
+            def kill(self):
+                return {"ok": True}
+
+        real = dashboard.RUNNER
+        dashboard.RUNNER = FakeRunner()
+        try:
+            dashboard.do_action({"action": "sched_reg", "kind": "probe", "time": "00:00"})
+        finally:
+            dashboard.RUNNER = real
+        ps = captured[-1]
+        self.assertIn("RepetitionInterval", ps)
+        self.assertNotIn("$tr.Repetition=", ps)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

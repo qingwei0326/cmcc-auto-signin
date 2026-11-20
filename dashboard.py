@@ -140,7 +140,7 @@ def bump_daily(key: str, flow_mb: float = 0, tasks: int = 0, feeds: int = 0):
         row["flow_mb"] = round(row.get("flow_mb", 0) + flow_mb, 1)
         row["tasks"] = row.get("tasks", 0) + tasks
         row["feeds"] = row.get("feeds", 0) + feeds
-        a["history"] = hist[-30:]
+        a["history"] = hist[-45:]
         if flow_mb:
             a["flow_mb_total"] = round(a.get("flow_mb_total", 0) + flow_mb, 1)
         if tasks:
@@ -836,9 +836,31 @@ def do_action(body: dict):
 # HTTP 服务
 # ======================================================================
 
+def _month_sums(s: dict) -> dict:
+    """按 history 统计「本月」领取量与任务数。
+
+    界面原来只显示累计——数字只增不减，看着没意义（一天 1GB 和一天 0 都只是「更多」）。
+    月度量从 history 现算，不动历史数据结构，老数据也立刻可用；
+    history 保留 45 条，保证一整月都算得全。
+    """
+    prefix = datetime.now().strftime("%Y-%m")
+    flow = 0.0
+    tasks = 0
+    feeds = 0
+    for h in (s.get("history") or []):
+        if str(h.get("date") or "").startswith(prefix):
+            flow += h.get("flow_mb") or 0
+            tasks += h.get("tasks") or 0
+            feeds += h.get("feeds") or 0
+    return {"flow_mb_month": round(flow, 1), "tasks_month": tasks, "feeds_month": feeds}
+
+
 def build_state():
     st = load_stats()
     accts = scan_accounts()
+    for k, v in st.items():
+        if isinstance(v, dict):
+            v.update(_month_sums(v))
     # 按手机号分组
     phones = {}
     for a in accts:

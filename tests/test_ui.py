@@ -227,5 +227,33 @@ class TestSchedPlan(unittest.TestCase):
             self.assertIn(f"-TaskName '{name}'", ps)
 
 
+class TestMonthSums(unittest.TestCase):
+    """总览要显示「本月」而不是只增不减的累计。"""
+
+    def test_only_current_month_counted(self):
+        from datetime import datetime
+        cur = datetime.now().strftime("%Y-%m")
+        # 造一条上个月、一条本月（跨年也要正确，所以用去年 12 月做反例）
+        prev = "2020-12-31"
+        s = {"history": [
+            {"date": prev, "flow_mb": 999, "tasks": 9, "feeds": 9},
+            {"date": f"{cur}-01", "flow_mb": 100, "tasks": 2, "feeds": 3},
+            {"date": f"{cur}-02", "flow_mb": 50.5, "tasks": 1, "feeds": 0},
+        ]}
+        out = dashboard._month_sums(s)
+        self.assertEqual(out["flow_mb_month"], 150.5)
+        self.assertEqual(out["tasks_month"], 3)
+        self.assertEqual(out["feeds_month"], 3)
+
+    def test_empty_history_is_zero(self):
+        self.assertEqual(dashboard._month_sums({})["flow_mb_month"], 0)
+        self.assertEqual(dashboard._month_sums({"history": None})["tasks_month"], 0)
+
+    def test_history_keeps_full_month(self):
+        """history 保留条数必须够覆盖一整月（31 天都活跃也不能丢月初）。"""
+        src = (ROOT / "dashboard.py").read_text(encoding="utf-8")
+        self.assertIn("hist[-45:]", src)
+
+
 if __name__ == "__main__":
     unittest.main()

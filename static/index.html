@@ -314,9 +314,8 @@ select.inp{cursor:pointer}
             （<code>gui_data/seckill_session_&lt;尾号&gt;.json</code>）。实测<b>仅凭该 cookie 就能调用秒杀接口，
             完全不需要 app_token</b>。</div>
           <div class="warnbox"><b>会话只能活 2 小时</b>（实测：04:22 建立 → 06:22 服务端返回
-            <code>GOTO_LOGIN</code> 准时失效）。现在计划在 <b>11:54</b> 刷新会话、
-            <b>11:55</b> 启动秒杀，不再提前 90 分钟空等。
-            若 app_token 已过期，请在开抢前抓包导入；等待中的脚本会自动重读新配置。</div>
+            <code>GOTO_LOGIN</code> 准时失效），所以刷新时刻必须紧邻开抢，不能靠早上那次签到。
+            若 app_token 也已过期，请在开抢前抓包导入。</div>
         </div>
       </div>
 
@@ -404,7 +403,7 @@ select.inp{cursor:pointer}
 <script>
 const $=id=>document.getElementById(id), V=id=>$(id).value.trim();
 let logSeq=0, STATE=null;
-const TITLES={dash:'总览',token:'Token 管理',bass:'BASS 任务',xxl:'消消乐',seckill:'秒杀抢券',sched:'定时任务',logs:'日志'};
+const TITLES={dash:'总览',token:'Token 管理',bass:'BASS 任务',xxl:'消消乐',seckill:'秒杀抢券',games:'拓展活动',sched:'定时任务',logs:'日志'};
 function nav(b){document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));$('p-'+b.dataset.p).classList.add('on');
   $('pageTitle').textContent='签到控制台 / '+(TITLES[b.dataset.p]||'');
@@ -678,9 +677,9 @@ function renderFlowbank(){
     box.innerHTML='<div class="empty">还没有记录。在「执行」里勾上 --fb-tasks 跑一次，这里就会列出每个任务的周期、奖励和下次可做时间。</div>';
     return;
   }
-  const badge=s=>s==='1'?'<span class="badge signed">已完成</span>'
-    :(s==='2'?'<span class="badge" style="color:var(--warn)">进行中</span>'
-    :'<span class="badge bad">可做</span>');
+  const badge=s=>s==='1'?'<span class="badge ok">已完成</span>'
+    :(s==='2'?'<span class="badge" style="background:rgba(214,168,86,.16);color:var(--warn)">进行中</span>'
+    :'<span class="badge signed">可做</span>');
   box.innerHTML=keys.map(k=>{
     const acc=fb[k]||{},tasks=acc.tasks||{};
     const ids=Object.keys(tasks).sort((a,b)=>((tasks[a].cycle||9)-(tasks[b].cycle||9)));

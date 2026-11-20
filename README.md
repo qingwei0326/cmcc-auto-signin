@@ -118,6 +118,7 @@ dist\签到控制台.exe → 复制到项目根目录
 | `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
 | `MobileSessionRefresh` | 每天 **11:54** | `run_session_refresh.bat` | 只跑 qwhdhub 签到，建立新会话，为秒杀做准备 |
 | `MobileSeckill` | 每天 **11:55** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券；会话未就绪会每 15 秒重试 |
+| `MobileGames` | 每天 **12:05** | `run_games.bat` | 拓展活动三个：周六游戏中心 / 追剧领福利 / 玩游戏抽话费 |
 | `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**，全天覆盖 | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
 
 **为什么需要第二个任务**
@@ -360,6 +361,7 @@ python pull_token_phone.py --save     # Termux
 ├── run_daily_reward.bat    定时领每日奖励用
 ├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
 ├── run_seckill.bat         定时秒杀抢券（11:55 启动，等到 12:00）
+├── run_games.bat          定时拓展活动（12:05，周六游戏中心抽奖窗口）
 ├── common.py               共用基础设施：原子写、通知、会话、接口调用
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
 ├── cmcc_sign.py            qwhdhub 签到（全国）
@@ -484,6 +486,10 @@ python probe_token_life.py --report
 - BASS 签到在凌晨会返回 `1502 未到可签到时间`，属正常
 - 每日奖励三档之间必须间隔 60 分钟，靠 `MobileDailyReward` 每小时轮询领取；不装这个任务就只领得到第一档
 - 福建以外省份的 BASS 活动未适配（`wap.fj.10086.cn` 为福建站）
+- **拓展活动三个已启用**（`MobileGames` 任务 + 控制台「拓展活动」页）：
+  代码早写好了，但此前 `run_all` 从不传 `--games`、界面也没入口，等于从没跑过；
+  现在 12:05 每天跑一次 —— 周六游戏中心的游戏币抽奖窗口是**周六 12:00 起**，
+  追剧的抽奖只在**周日**开放，其它日子只报余额、不消耗
 - **周三充值日的抽奖与领券已实现**（`cmcc_wed.py`），但端点来自公开实现而非本地抓包，
   尚未用有效票据实测；任务类只做查询/浏览类，**邀请助力与真实充值一律不代做**
 - **秒杀的真正开抢时刻尚未实测**：每天只有 12:00 ~ 13:00 一次机会，

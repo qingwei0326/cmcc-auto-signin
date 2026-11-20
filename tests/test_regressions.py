@@ -1109,5 +1109,114 @@ class TestSeckillSessionRetry(unittest.TestCase):
                                  "重试时必须重读配置文件才能用上新票据")
 
 
+class TestExtendedActivitiesWiring(unittest.TestCase):
+    """拓展活动三个（周六游戏中心 / 追剧 / 玩游戏抽话费）此前写好却没人调用。"""
+
+    def test_games_only_passes_games_to_qwhd(self):
+        """--games-only 必须把 --games 透传给 cmcc_sign.py，否则等于没开。"""
+        cmds = []
+        fake = lambda cmd, **kw: (cmds.append(cmd),
+                                   types.SimpleNamespace(returncode=0, stdout="ok", stderr=""))[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            platforms = {k: dict(v) for k, v in run_all.PLATFORMS.items()}
+            platforms["qwhd"]["dir"] = _fake_config_dir(tmp, "configs")
+            platforms["bass"]["dir"] = _fake_config_dir(tmp, "configs_fj")
+            with mock.patch.object(run_all, "PLATFORMS", platforms), \
+                 mock.patch.object(run_all.subprocess, "run", fake), \
+                 mock.patch.object(sys, "argv", ["run_all.py", "--games-only"]), \
+                 mock.patch.object(run_all, "notify"), \
+                 redirect_stdout(io.StringIO()):
+                run_all.main()
+        self.assertTrue(cmds)
+        for c in cmds:
+            self.assertIn("cmcc_sign.py", c[1])
+            self.assertIn("--games", c)
+
+    def test_games_only_skips_bass(self):
+        """拓展活动只在 qwhdhub 侧，不能顺带把 BASS 也跑了。"""
+        cmds = []
+        fake = lambda cmd, **kw: (cmds.append(cmd),
+                                   types.SimpleNamespace(returncode=0, stdout="ok", stderr=""))[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            platforms = {k: dict(v) for k, v in run_all.PLATFORMS.items()}
+            platforms["qwhd"]["dir"] = _fake_config_dir(tmp, "configs")
+            platforms["bass"]["dir"] = _fake_config_dir(tmp, "configs_fj")
+            with mock.patch.object(run_all, "PLATFORMS", platforms), \
+                 mock.patch.object(run_all.subprocess, "run", fake), \
+                 mock.patch.object(sys, "argv", ["run_all.py", "--games-only"]), \
+                 mock.patch.object(run_all, "notify"), \
+                 redirect_stdout(io.StringIO()):
+                run_all.main()
+        self.assertFalse([c for c in cmds if "cmcc_fj.py" in c[1]],
+                         "--games-only 不应触发 BASS")
+
+    def test_lottery_respects_window(self):
+        """不在窗口期只报余额，不消耗抽奖次数。"""
+        import cmcc_extra as EX
+        calls = []
+
+        def fake_api_call(s, referer, method, path, body=None):
+            calls.append(path)
+            if path.startswith("/qwhdhub/diyLottery/period/remain/"):
+                return {"code": "SUCCESS", "data": {"remainGameVal": 100, "remain": 5}}
+            return {"code": "SUCCESS", "data": [{"prizeName": "x"}]}
+
+        cfg = {"component": "c", "wallet_key": "remainGameVal", "cost": 10,
+               "count_key": "remain", "weekday": 6, "start_hour": 12,
+               "label": "游戏币"}
+        with mock.patch.object(EX, "api_call", side_effect=fake_api_call), \
+                mock.patch.object(EX.time, "sleep"):
+            # 周三 10:00 → 未到窗口
+            with mock.patch.object(EX, "datetime") as fake_dt:
+                fake_dt.now.return_value = datetime(2026, 11, 18, 10, 0, 0)
+                out = EX.run_lottery(None, "ref", cfg, dry_run=False)
+        self.assertIn("未到窗口", out)
+        self.assertFalse([c for c in calls if "lotterySafely" in c],
+                         "窗口外不得消耗抽奖次数")
+
+    def test_lottery_draws_inside_window(self):
+        """窗口期内余额足够就要真的抽。"""
+        import cmcc_extra as EX
+        calls = []
+
+        def fake_api_call(s, referer, method, path, body=None):
+            calls.append(path)
+            if path.startswith("/qwhdhub/diyLottery/period/remain/"):
+                return {"code": "SUCCESS", "data": {"remainGameVal": 30, "remain": 5}}
+            return {"code": "SUCCESS", "data": [{"prizeName": "话费券"}]}
+
+        cfg = {"component": "c", "wallet_key": "remainGameVal", "cost": 10,
+               "count_key": "remain", "weekday": 6, "start_hour": 12,
+               "label": "游戏币"}
+        with mock.patch.object(EX, "api_call", side_effect=fake_api_call), \
+                mock.patch.object(EX.time, "sleep"), \
+                mock.patch.object(EX, "datetime") as fake_dt:
+            fake_dt.now.return_value = datetime(2026, 11, 21, 13, 0, 0)  # 周六 13:00
+            out = EX.run_lottery(None, "ref", cfg, dry_run=False)
+        self.assertIn("已抽", out)
+        self.assertEqual(len([c for c in calls if "lotterySafely" in c]), 3)
+
+    def test_dashboard_has_games_page_and_action(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="p-games"', html)
+        self.assertIn("games_run", html)
+        self.assertIn('id="gmFile"', html)
+        self.assertIn("MobileGames", html)
+        src = (ROOT / "dashboard.py").read_text(encoding="utf-8")
+        self.assertIn('act == "games_run"', src)
+        self.assertIn("MobileGames", src)
+
+    def test_games_bat_is_crlf_and_ascii_comments(self):
+        p = ROOT / "run_games.bat"
+        self.assertTrue(p.exists(), "缺少 run_games.bat")
+        data = p.read_bytes()
+        self.assertIn(b"\r\n", data)
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if s.lower().startswith("rem"):
+                self.assertTrue(s.isascii(), f"rem 注释含非 ASCII：{s}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

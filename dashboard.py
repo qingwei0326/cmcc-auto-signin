@@ -577,6 +577,19 @@ def do_action(body: dict):
             cmd += ["--at", at]
         return {"ok": RUNNER.start(f"签到秒杀 · {f.name}", cmd)}
 
+    if act == "games_run":
+        f = safe_conf_path(body.get("file"))
+        if f is None or not f.is_file():
+            return {"ok": False, "err": "配置文件非法或不存在"}
+        cmd = py("cmcc_sign.py", "--config", str(f))
+        if body.get("dry"):
+            cmd.append("--dry-run")
+        else:
+            cmd.append("--games")
+            if body.get("tasks"):
+                cmd.append("--tasks")
+        return {"ok": RUNNER.start(f"拓展活动 · {f.name}", cmd)}
+
     if act == "xxl_run":
         f = safe_conf_path(body.get("file"))
         if f is None or not f.is_file():
@@ -665,7 +678,7 @@ def do_action(body: dict):
 
     # ---- 定时任务 ----
     if act == "sched_query":
-        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill','MobileSessionRefresh','MobileTokenLifeProbe'){"
+        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill','MobileSessionRefresh','MobileTokenLifeProbe','MobileGames'){"
               "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
               "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
               "Write-Host ($n+'  状态='+$t.State+'  下次='+$i.NextRunTime+'  上次结果='+$i.LastTaskResult)}"
@@ -718,6 +731,14 @@ def do_action(body: dict):
                   f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行（脚本内部等到 12:00 开抢）'")
+        elif kind == "games":
+            # 拓展活动三个：周六游戏中心（周六 12:00 起可抽）/ 追剧领福利（周日）/ 玩游戏抽话费
+            name, bat = "MobileGames", "run_games.bat"
+            d = str(BASE)
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"Write-Host '{name} 已注册，每天 {t} 运行（拓展活动：游戏中心 / 追剧 / 抽话费）'")
         elif kind == "probe":
             # 票据寿命探测：每 2 分钟探一次，签发时刻取自 HAR，结论精确到分钟
             name, bat = "MobileTokenLifeProbe", "run_token_life.bat"
@@ -740,7 +761,8 @@ def do_action(body: dict):
     if act == "sched_unreg":
         name = body.get("name", "")
         if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
-                        "MobileSeckill", "MobileSessionRefresh", "MobileTokenLifeProbe"):
+                        "MobileSeckill", "MobileSessionRefresh", "MobileTokenLifeProbe",
+                        "MobileGames"):
             return {"ok": False, "err": "非法任务名"}
         ps = f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false; Write-Host '{name} 已注销'"
         return {"ok": RUNNER.start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}

@@ -371,6 +371,12 @@ def main():
                     help="额外跑周三充值日拼图任务、抽奖与领券")
     ap.add_argument("--wed-only", action="store_true",
                     help="只跑周三充值日，不跑其它平台")
+    ap.add_argument("--games", action="store_true",
+                    help="顺带跑拓展活动：周六游戏中心 / 追剧领福利 / 玩游戏抽话费")
+    ap.add_argument("--tasks", action="store_true",
+                    help="顺带跑签到页 AI豆任务")
+    ap.add_argument("--games-only", action="store_true",
+                    help="只跑拓展活动三个，不跑其它平台")
     args = ap.parse_args()
 
     # 额外参数按平台分发：--extra 是给 BASS 的，qwhd 的由模式开关自己决定。
@@ -404,6 +410,22 @@ def main():
         args.dry_run = False
         args.no_notify = True
         extra_map["qwhd"].append("--login-only")
+
+    # 拓展活动（周六游戏中心 / 追剧 / 玩游戏抽话费）需要透传 --games，
+    # 否则这些代码写好了却永远没人调用。
+    if args.games:
+        extra_map["qwhd"].append("--games")
+    if args.tasks:
+        extra_map["qwhd"].append("--tasks")
+
+    # 只跑拓展活动：qwhdhub 侧三个活动，不碰 BASS / 消消乐 / 秒杀
+    if args.games_only:
+        args.platform = "qwhd"
+        args.xxl = False
+        args.seckill = False
+        args.wed = False
+        if "--games" not in extra_map["qwhd"]:
+            extra_map["qwhd"].append("--games")
 
     log = RotatingLog(args.log)
     if log.enabled:

@@ -49,17 +49,15 @@ def main():
         _fail(f"找不到 dashboard.py，请把本程序放在项目根目录（与 cmcc_sign.py 同级）。\n\n{e}")
         return
 
-    from http.server import ThreadingHTTPServer
+    # exe 只是外壳，任务由系统 Python 跑：缺 Python / 缺依赖时先说人话，
+    # 而不是等用户点了签到才在日志里吐一个 WinError 2。
+    ok, msg = dashboard.preflight(force=True)
+    if not ok:
+        _fail(msg)
 
-    srv = None
-    for port in range(dashboard.PORT, dashboard.PORT + 11):
-        try:
-            srv = ThreadingHTTPServer(("127.0.0.1", port), dashboard.Handler)
-            break
-        except OSError:
-            continue
+    srv, err = dashboard.make_server()
     if srv is None:
-        _fail(f"端口 {dashboard.PORT}~{dashboard.PORT + 10} 均被占用，请关闭占用程序后重试。")
+        _fail(err)
         return
 
     import threading

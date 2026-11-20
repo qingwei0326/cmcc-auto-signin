@@ -1362,5 +1362,175 @@ class TestFlowbankCycleGate(unittest.TestCase):
         self.assertIn("fb_due_tasks(", src)
 
 
+# ======================================================================
+# 可用性审查（2026-11-20）：修掉「人用不了」的那一批
+# ======================================================================
+
+class TestUsabilityFixes(unittest.TestCase):
+    """每条对应审查里发现的一个真实阻断/困惑点。"""
+
+    def setUp(self):
+        with dashboard._SCHED_LOCK:
+            dashboard._SCHED_CACHE.update(at=0.0, data=[], ok=None, th=None)
+
+    # ---- 入口与环境 ----
+
+    def test_dashboard_has_runnable_entry(self):
+        """原先模块只有定义没有入口：python dashboard.py 秒退，run_gui.bat 是死路径。"""
+        src = (ROOT / "dashboard.py").read_text(encoding="utf-8")
+        self.assertIn('if __name__ == "__main__":', src)
+        self.assertTrue(callable(dashboard.main))
+        self.assertTrue(callable(dashboard.make_server))
+
+    def test_main_serves_and_opens_browser(self):
+        started = {}
+
+        class FakeSrv:
+            server_address = ("127.0.0.1", 8765)
+
+            def serve_forever(self):
+                started["served"] = True
+
+        with mock.patch.object(dashboard, "make_server", lambda: (FakeSrv(), "")), \
+                mock.patch.object(dashboard.webbrowser, "open", lambda u: started.update(url=u)), \
+                mock.patch.object(dashboard, "preflight", lambda force=False: (True, "")), \
+                redirect_stdout(io.StringIO()):
+            rc = dashboard.main()
+        self.assertEqual(rc, 0)
+        self.assertTrue(started.get("served"))
+        self.assertIn("8765", started.get("url", ""))
+
+    def test_run_gui_bat_checks_python_and_runs_entry(self):
+        data = (ROOT / "run_gui.bat").read_bytes()
+        self.assertIn(b"\r\n", data)
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+        text = data.decode("utf-8")
+        self.assertIn("where python", text)
+        self.assertIn("dashboard.py", text)
+
+    def test_preflight_reports_missing_python(self):
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": True, "msg": ""}), \
+                mock.patch("shutil.which", lambda n: None):
+            ok, msg = dashboard.preflight(force=True)
+        self.assertFalse(ok)
+        self.assertIn("Python", msg)
+        self.assertIn("PATH", msg)
+
+    def test_preflight_reports_missing_requests(self):
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": True, "msg": ""}), \
+                mock.patch("shutil.which", lambda n: r"C:\py\python.exe"), \
+                mock.patch.object(dashboard.subprocess, "run", lambda *a, **k: mock.Mock(returncode=1)):
+            ok, msg = dashboard.preflight(force=True)
+        self.assertFalse(ok)
+        self.assertIn("requests", msg)
+        self.assertIn("pip install", msg)
+
+    def test_preflight_skipped_when_running_from_source(self):
+        """源码运行时解释器与 requests 必然可用，不该白起子进程。"""
+        with mock.patch.object(dashboard.subprocess, "run", side_effect=AssertionError("不该调用")):
+            self.assertEqual(dashboard.preflight(force=True), (True, ""))
+
+    def test_frozen_pythonw_never_points_at_exe(self):
+        """冻结态拿 exe 当解释器，会让计划任务每 2 分钟弹一次控制台窗口而 bat 根本没跑。"""
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(sys, "executable", r"D:\app\签到控制台.exe"), \
+                mock.patch("shutil.which", lambda n: r"C:\py\python.exe" if n == "python" else None):
+            pyw = dashboard._pythonw()
+        self.assertNotIn("签到控制台.exe", pyw)
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch("shutil.which", lambda n: None):
+            self.assertEqual(dashboard._pythonw(), "")
+        with mock.patch.object(dashboard, "_pythonw", lambda: ""):
+            r = dashboard.do_action({"action": "sched_reg", "kind": "sign", "time": "08:30"})
+        self.assertFalse(r["ok"])
+        self.assertIn("pythonw", r["err"])
+
+    # ---- 忙 / 停止 / 错误文案 ----
+
+    def test_busy_action_names_the_running_task(self):
+        class BusyRunner:
+            running = True
+            label = "一键签到（全部平台）"
+
+            def start(self, *a, **k):
+                return False
+
+        real = dashboard.RUNNER
+        dashboard.RUNNER = BusyRunner()
+        try:
+            r = dashboard.do_action({"action": "run_all", "platform": "all"})
+        finally:
+            dashboard.RUNNER = real
+        self.assertFalse(r["ok"])
+        self.assertIn("一键签到", r["err"])
+        self.assertIn("停止", r["err"])
+
+    def test_stop_when_idle_says_so(self):
+        r = dashboard.do_action({"action": "stop"})
+        self.assertTrue(r["ok"])
+        self.assertIn("没有正在运行", r.get("msg", ""))
+
+    def test_kill_terminates_whole_tree_on_windows(self):
+        """只杀直接子进程时，run_all 起的孙子进程照样把请求发完。"""
+        r = dashboard.TaskRunner()
+        r.proc = mock.Mock(pid=999)
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(dashboard, "IS_WIN", True), \
+                mock.patch.object(dashboard.subprocess, "run", fake_run):
+            self.assertTrue(r.kill())
+        self.assertEqual(seen["cmd"][:3], ["taskkill", "/PID", "999"])
+        self.assertIn("/T", seen["cmd"])
+        self.assertTrue(r._cancel.is_set())
+
+    def test_cancelled_sequence_skips_remaining_steps(self):
+        """「刷新状态」是顺序多步：杀掉当前一步后不能接着跑下一个账号。"""
+        r = dashboard.TaskRunner()
+        r._cancel.set()
+        seen = []
+        with mock.patch.object(r, "_run_one", lambda cmd, shell: seen.append(cmd) or 0), \
+                mock.patch.object(dashboard, "append_run", lambda *a, **k: None):
+            r._run_steps([(["a"], None), (["b"], None)], shell=False)
+        self.assertEqual(seen, [])
+        self.assertFalse(r.running)
+        self.assertTrue(any("已停止" in l["line"] for l in r.logs))
+
+    def test_refresh_status_without_accounts_explains_next_step(self):
+        with mock.patch.object(dashboard, "scan_accounts", lambda: []):
+            r = dashboard.do_action({"action": "refresh_status"})
+        self.assertFalse(r["ok"])
+        self.assertIn("新建账号", r["err"])
+
+    # ---- 首屏不被 PowerShell 卡住 ----
+
+    def test_cold_sched_read_does_not_block_first_paint(self):
+        calls = []
+
+        def slow_run(*a, **k):
+            calls.append(1)
+            time.sleep(0.3)
+            return mock.Mock(stdout=b"[]")
+
+        with mock.patch.object(dashboard.subprocess, "run", slow_run):
+            t0 = time.time()
+            out = dashboard._sched_state(ttl=90)
+            elapsed = time.time() - t0
+            dashboard._sched_wait()
+        self.assertLess(elapsed, 0.2, "冷启动读取不能挡首屏")
+        self.assertEqual(out, [])
+        self.assertEqual(len(calls), 1)
+
+    def test_sched_read_failure_is_distinguishable_from_none_registered(self):
+        with mock.patch.object(dashboard.subprocess, "run", side_effect=OSError("blocked")):
+            dashboard._sched_state(ttl=0)
+        self.assertIs(dashboard._SCHED_CACHE["ok"], False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

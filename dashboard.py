@@ -32,7 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from common import atomic_write_json, parse_result, update_json
+from common import (atomic_write_json, load_policy, parse_result,
+                    save_policy, update_json)
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）
 if getattr(sys, "frozen", False):
@@ -751,6 +752,49 @@ def do_action(body: dict):
         return {"ok": True, "msg": f"已新建 configs_fj/{name}"}
 
     # ---- 定时任务 ----
+    if act == "policy_save":
+        # 「设置一次、长期生效」：喂养/领奖策略存盘，定时任务每轮读它执行
+        b = body.get("bass") or {}
+        try:
+            feed = int(b.get("feed") or 0)
+            hour = int(b.get("feed_hour") if b.get("feed_hour") is not None else 12)
+        except Exception:
+            return {"ok": False, "err": "喂养轮数/小时必须是数字"}
+        if not 0 <= feed <= 50:
+            return {"ok": False, "err": "喂养轮数应在 0~50（每轮 250 饲料）"}
+        if not 0 <= hour <= 23:
+            return {"ok": False, "err": "喂养小时应在 0~23"}
+        full = str(b.get("on_stage_full") or "stop")
+        if full not in ("stop", "claim", "continue"):
+            return {"ok": False, "err": "阶段满处理只能是 stop / claim / continue"}
+        prize = str(b.get("prize") or "fee")
+        if prize not in ("fee", "flow", "discount"):
+            return {"ok": False, "err": "奖品档位只能是 fee / flow / discount"}
+        patch = {"bass": {
+            "feed": feed, "feed_hour": hour, "on_stage_full": full, "prize": prize,
+            "tasks": bool(b.get("tasks")), "fb_tasks": bool(b.get("fb_tasks")),
+        }}
+        xxl = body.get("xxl")
+        if isinstance(xxl, dict):
+            try:
+                patch["xxl"] = {
+                    "level": max(1, int(xxl.get("level") or 49)),
+                    "star": min(3, max(0, int(xxl.get("star") or 3))),
+                    "times": min(20, max(1, int(xxl.get("times") or 5))),
+                    "gap": min(120, max(5, int(xxl.get("gap") or 12))),
+                }
+            except Exception:
+                return {"ok": False, "err": "消消乐参数必须是数字"}
+        sk = body.get("seckill")
+        if isinstance(sk, dict):
+            at = str(sk.get("at") or "").strip()
+            if at and not re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", at):
+                return {"ok": False, "err": "开抢时刻格式应为 HH:MM[:SS]"}
+            patch["seckill"] = {"at": at}
+        merged = save_policy(patch)
+        return {"ok": True, "policy": merged,
+                "msg": "策略已保存，定时任务下一轮就按这个执行"}
+
     if act == "sched_query":
         ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill','MobileSessionRefresh','MobileTokenLifeProbe','MobileGames'){"
               "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
@@ -881,6 +925,7 @@ def build_state():
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
         "sched": _sched_state(),
+        "policy": load_policy(),
     }
 
 

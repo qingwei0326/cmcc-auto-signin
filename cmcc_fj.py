@@ -336,6 +336,93 @@ def receive_stage_prize(s, cfg, kind):
     return r, pid, name
 
 
+def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
+    """执行喂养（batchFeed 循环），返回喂成功的次数。
+
+    独立成函数是因为它有两个入口：常规流程（--feed）和每日奖励那一轮
+    （--daily-only 时由自动策略决定要不要顺带喂），两处逻辑必须完全一样。
+    """
+    # ---------- 可选：喂养 ----------
+    # 抓包证实：GET /stage/batchFeed，无 body，一次耗 250 饲料 / 推进 250 阶段进度。
+    # 这是游戏内正常的资源消耗动作，非伪造行为。
+    if args.feed > 0:
+        done = 0
+        guard = 0
+        while done < args.feed and guard < args.feed * 3:
+            guard += 1
+            cur = call(s, cfg, "index_info")
+            fodder = int(((cur.get("data") or {}).get("fodderSurplus") or 0))
+            if fodder < 250:
+                print(f"  -  饲料不足 250（当前 {fodder}），停止喂养")
+                break
+            # 阶段将满保护：这一喂会让进度打满时，未开 --auto-claim 就停手
+            if not args.auto_claim:
+                stc = call(s, cfg, "stage_info")
+                sd = stc.get("data") or {}
+                prog = int(sd.get("feedFodders") or 0)
+                need = int((sd.get("stageInfo") or {}).get("feedNeedFodderCount") or 5000)
+                if prog > 0 and prog + 250 >= need:
+                    print(f"  !  再喂一次阶段就满（{prog}/{need}），已停手。")
+                    print(f"     去 App 手动喂这一手、顺手抓包看『选奖品』真实接口；")
+                    print(f"     若信任当前接口可加 --auto-claim 让脚本自动领奖续喂。")
+                    break
+            pause(1.2, 1.0)
+            r = call(s, cfg, "batch_feed")
+            if show(f"喂养 {done+1}/{args.feed}", r):
+                done += 1
+                continue
+            # 133 = 阶段进度已满，"请先选择阶段奖励或继续喂养"（不消耗次数）。
+            # 两条出路（2026-11-20 抓包实测）：
+            #   --continue-stage → continuousStage 放弃奖品直接升下一阶
+            #   否则            → receiveStagePrize 领本阶奖品
+            if str(r.get("code")) == "133":
+                if args.continue_stage:
+                    pause()
+                    cs = call(s, cfg, "continuous_stage")
+                    if show("继续喂养升阶(放弃本阶奖品)", cs):
+                        nxt = ((cs.get("data") or {}).get("stageInfo") or {}).get("stageName") or "下一阶"
+                        print(f"     已升到 {nxt}，继续喂养")
+                        continue
+                    print("  -  升阶失败，停止喂养")
+                    break
+                pause()
+                rp, pid, pname = receive_stage_prize(s, cfg, prize_kind)
+                if show(f"领阶段奖励(prizeId={pid})", rp):
+                    _got_prize(res, pname)
+                    continue
+                # 带 prizeId 不被服务端接受时，退回默认档，至少不卡住
+                print("     -  指定档位失败，退回默认档重试")
+                pause()
+                rp2, _pid2, pname2 = receive_stage_prize(s, cfg, "fee")
+                if show("领阶段奖励(默认档)", rp2):
+                    _got_prize(res, pname2)
+                    continue
+                print("  -  领阶段奖励失败，停止喂养")
+                break
+            break
+        # 喂完重新查阶段进度
+        res["feeds"] = done
+        st2 = call(s, cfg, "stage_info")
+        if st2["ok"] and isinstance(st2["data"], dict):
+            d2 = st2["data"]
+            si2 = d2.get("stageInfo") or {}
+            res["stage"] = f"{si2.get('stageName')} {d2.get('feedFodders')}/{si2.get('feedNeedFodderCount')}"
+            if d2.get("fodderSurplus") is not None:
+                res["fodder"] = d2["fodderSurplus"]
+            print(f"     阶段现为 {si2.get('stageName')}  饲料 {d2.get('feedFodders')}/{si2.get('feedNeedFodderCount')}")
+        # 喂养会推进福袋进度，顺手刷新
+        if done:
+            pause(0.6, 0.4)
+            lb2 = call(s, cfg, "lucky_bag")
+            if lb2["ok"] and isinstance(lb2["data"], dict):
+                d2l = lb2["data"]
+                flag = "  ⚑ 已触发可开！" if d2l.get("isNearTrigger") else ""
+                print(f"     福袋：{d2l.get('currentFeedCount')}/{d2l.get('nextTriggerCount')}"
+                      f"  还差 {d2l.get('needMoreFeeds')} 次喂食{flag}")
+                track_daily(key, None, d2l)
+    return res.get("feeds", 0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只查状态，不做改动")
@@ -526,6 +613,9 @@ def main():
         # 补签成功后要回写一次，否则面板上仍显示"未签"
         if sign_data is not None:
             track_daily(key, None, None, sign_data)
+        # 自动策略里开了每日喂养时，就在这一轮顺带喂（run_all 只在 feed_hour 那一轮注入 --feed）
+        if args.feed > 0:
+            run_feed(s, cfg, args, res, prize_kind, key, track_daily)
         print("\n[daily-only] 结束。")
         emit_result(res)
         return 0
@@ -552,84 +642,8 @@ def main():
         else:
             show("任务列表", tl)
 
-    # ---------- 可选：喂养 ----------
-    # 抓包证实：GET /stage/batchFeed，无 body，一次耗 250 饲料 / 推进 250 阶段进度。
-    # 这是游戏内正常的资源消耗动作，非伪造行为。
     if args.feed > 0:
-        done = 0
-        guard = 0
-        while done < args.feed and guard < args.feed * 3:
-            guard += 1
-            cur = call(s, cfg, "index_info")
-            fodder = int(((cur.get("data") or {}).get("fodderSurplus") or 0))
-            if fodder < 250:
-                print(f"  -  饲料不足 250（当前 {fodder}），停止喂养")
-                break
-            # 阶段将满保护：这一喂会让进度打满时，未开 --auto-claim 就停手
-            if not args.auto_claim:
-                stc = call(s, cfg, "stage_info")
-                sd = stc.get("data") or {}
-                prog = int(sd.get("feedFodders") or 0)
-                need = int((sd.get("stageInfo") or {}).get("feedNeedFodderCount") or 5000)
-                if prog > 0 and prog + 250 >= need:
-                    print(f"  !  再喂一次阶段就满（{prog}/{need}），已停手。")
-                    print(f"     去 App 手动喂这一手、顺手抓包看『选奖品』真实接口；")
-                    print(f"     若信任当前接口可加 --auto-claim 让脚本自动领奖续喂。")
-                    break
-            pause(1.2, 1.0)
-            r = call(s, cfg, "batch_feed")
-            if show(f"喂养 {done+1}/{args.feed}", r):
-                done += 1
-                continue
-            # 133 = 阶段进度已满，"请先选择阶段奖励或继续喂养"（不消耗次数）。
-            # 两条出路（2026-11-20 抓包实测）：
-            #   --continue-stage → continuousStage 放弃奖品直接升下一阶
-            #   否则            → receiveStagePrize 领本阶奖品
-            if str(r.get("code")) == "133":
-                if args.continue_stage:
-                    pause()
-                    cs = call(s, cfg, "continuous_stage")
-                    if show("继续喂养升阶(放弃本阶奖品)", cs):
-                        nxt = ((cs.get("data") or {}).get("stageInfo") or {}).get("stageName") or "下一阶"
-                        print(f"     已升到 {nxt}，继续喂养")
-                        continue
-                    print("  -  升阶失败，停止喂养")
-                    break
-                pause()
-                rp, pid, pname = receive_stage_prize(s, cfg, prize_kind)
-                if show(f"领阶段奖励(prizeId={pid})", rp):
-                    _got_prize(res, pname)
-                    continue
-                # 带 prizeId 不被服务端接受时，退回默认档，至少不卡住
-                print("     -  指定档位失败，退回默认档重试")
-                pause()
-                rp2, _pid2, pname2 = receive_stage_prize(s, cfg, "fee")
-                if show("领阶段奖励(默认档)", rp2):
-                    _got_prize(res, pname2)
-                    continue
-                print("  -  领阶段奖励失败，停止喂养")
-                break
-            break
-        # 喂完重新查阶段进度
-        res["feeds"] = done
-        st2 = call(s, cfg, "stage_info")
-        if st2["ok"] and isinstance(st2["data"], dict):
-            d2 = st2["data"]
-            si2 = d2.get("stageInfo") or {}
-            res["stage"] = f"{si2.get('stageName')} {d2.get('feedFodders')}/{si2.get('feedNeedFodderCount')}"
-            if d2.get("fodderSurplus") is not None:
-                res["fodder"] = d2["fodderSurplus"]
-            print(f"     阶段现为 {si2.get('stageName')}  饲料 {d2.get('feedFodders')}/{si2.get('feedNeedFodderCount')}")
-        # 喂养会推进福袋进度，顺手刷新
-        if done:
-            pause(0.6, 0.4)
-            lb2 = call(s, cfg, "lucky_bag")
-            if lb2["ok"] and isinstance(lb2["data"], dict):
-                d2l = lb2["data"]
-                flag = "  ⚑ 已触发可开！" if d2l.get("isNearTrigger") else ""
-                print(f"     福袋：{d2l.get('currentFeedCount')}/{d2l.get('nextTriggerCount')}"
-                      f"  还差 {d2l.get('needMoreFeeds')} 次喂食{flag}")
-                track_daily(key, None, d2l)
+        run_feed(s, cfg, args, res, prize_kind, key, track_daily)
 
     # ---------- 可选：流量银行浏览任务 ----------
     # 抓包证实：POST /flowBank/doTask body={appId,timestamp,taskId}，无签名无停留校验。

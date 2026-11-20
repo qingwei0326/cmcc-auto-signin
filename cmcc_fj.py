@@ -41,6 +41,8 @@ EP = {
     "stage_prizes":   "/bass-cultivateGameServer/stage/getStagePrizes",
     "stage_receive":  "/bass-cultivateGameServer/stage/receiveStagePrize",
     "batch_feed":     "/bass-cultivateGameServer/stage/batchFeed",
+    # 2026-11-20 12:36 抓包新发现：阶段满时「继续喂养」= 放弃本阶奖品直接升下一阶
+    "continuous_stage": "/bass-cultivateGameServer/stage/continuousStage",
     "lucky_bag":      "/bass-cultivateGameServer/luckyBag/nearTrigger",
     "task_list":      "/bass-cultivateGameServer/task/getUserTasks",
     # 红包宝
@@ -308,6 +310,9 @@ def main():
                          "（不传则读配置 prize_prefer，再不行默认 fee）")
     ap.add_argument("--auto-claim", action="store_true",
                     help="阶段将满时自动领奖并继续喂；不加则停手等人工（便于抓包）")
+    ap.add_argument("--continue-stage", action="store_true",
+                    help="阶段满时调用 continuousStage 直接升阶（放弃本阶奖品）。"
+                         "与 --auto-claim 互斥：领奖走 --auto-claim，升阶走本参数")
     ap.add_argument("--config", default="config_fj.json", help="配置文件路径")
     args = ap.parse_args()
 
@@ -316,6 +321,9 @@ def main():
     prize_kind = args.prize or cfg.get("prize_prefer") or "fee"
     if prize_kind not in PRIZE_KIND:
         print(f"未知奖品档位 {prize_kind}，可选：{'/'.join(PRIZE_KIND)}")
+        return 1
+    if args.continue_stage and args.auto_claim:
+        print("参数冲突：--continue-stage（升阶不领奖）与 --auto-claim（领奖）只能选一个")
         return 1
     if args.delay > 0 and not args.dry_run:
         w = random.randint(0, args.delay)
@@ -526,8 +534,20 @@ def main():
             if show(f"喂养 {done+1}/{args.feed}", r):
                 done += 1
                 continue
-            # 133 = 阶段进度已满，必须先领阶段奖励才能继续喂（不消耗次数）
+            # 133 = 阶段进度已满，"请先选择阶段奖励或继续喂养"（不消耗次数）。
+            # 两条出路（2026-11-20 抓包实测）：
+            #   --continue-stage → continuousStage 放弃奖品直接升下一阶
+            #   否则            → receiveStagePrize 领本阶奖品
             if str(r.get("code")) == "133":
+                if args.continue_stage:
+                    pause()
+                    cs = call(s, cfg, "continuous_stage")
+                    if show("继续喂养升阶(放弃本阶奖品)", cs):
+                        nxt = ((cs.get("data") or {}).get("stageInfo") or {}).get("stageName") or "下一阶"
+                        print(f"     已升到 {nxt}，继续喂养")
+                        continue
+                    print("  -  升阶失败，停止喂养")
+                    break
                 pause()
                 rp, pid, pname = receive_stage_prize(s, cfg, prize_kind)
                 if show(f"领阶段奖励(prizeId={pid})", rp):

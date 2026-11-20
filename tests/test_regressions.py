@@ -825,5 +825,39 @@ class TestFrozenPathGuards(unittest.TestCase):
         self.assertIn("实测登录", src)
 
 
+class TestContinuousStage(unittest.TestCase):
+    """2026-11-20 12:36 抓包发现的 continuousStage 升阶接口。"""
+
+    def test_endpoint_registered(self):
+        """continuousStage 端点必须注册，否则升阶分支拿不到 URL。"""
+        import cmcc_fj
+        self.assertIn("continuous_stage", cmcc_fj.EP)
+        self.assertTrue(cmcc_fj.EP["continuous_stage"].endswith("/stage/continuousStage"))
+
+    def test_flag_exists_and_is_exclusive(self):
+        """--continue-stage 与 --auto-claim 互斥，两个都传必须报错退出。"""
+        import cmcc_fj
+        src = (ROOT / "cmcc_fj.py").read_text(encoding="utf-8")
+        self.assertIn('--continue-stage', src)
+        self.assertIn("参数冲突", src)
+
+    def test_133_branch_has_continue_path(self):
+        """code=133 时若指定 --continue-stage，要调用升阶而不是领奖。"""
+        import inspect
+        import cmcc_fj
+        src = inspect.getsource(cmcc_fj)
+        i = src.find('str(r.get("code")) == "133"')
+        self.assertGreater(i, 0, "133 分支不能丢")
+        seg = src[i:i+700]
+        self.assertIn("continue_stage", seg, "133 分支里要有升阶路径")
+
+    def test_docs_record_prize_table(self):
+        """6 阶奖品表要归档，避免下次重新逆向。"""
+        doc = (ROOT / "docs" / "bass.md").read_text(encoding="utf-8")
+        self.assertIn("continuousStage", doc)
+        self.assertIn("10GB月包", doc)
+        self.assertIn("code=133", doc)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

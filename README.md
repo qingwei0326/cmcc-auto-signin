@@ -121,6 +121,10 @@ dist\签到控制台.exe → 复制到项目根目录
 | `MobileGames` | 每天 **12:05** | `run_games.bat` | 拓展活动三个：周六游戏中心 / 追剧领福利 / 玩游戏抽话费 |
 | `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**，全天覆盖 | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
 
+> **为什么任务不弹黑窗口**：所有计划任务都用 `pythonw.exe` + `run_hidden.py` 启动 bat，
+> 子进程带 `CREATE_NO_WINDOW`，桌面上不会出现任何控制台窗口。
+> （`MobileTokenLifeProbe` 每 2 分钟跑一次，早先一天要闪 720 次。）
+
 **为什么需要第二个任务**
 
 1. 每日奖励三档（150/250/350）之间必须间隔 60 分钟，一次运行只能领一档。
@@ -362,6 +366,7 @@ python pull_token_phone.py --save     # Termux
 ├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
 ├── run_seckill.bat         定时秒杀抢券（11:55 启动，等到 12:00）
 ├── run_games.bat          定时拓展活动（12:05，周六游戏中心抽奖窗口）
+├── run_hidden.py          无窗口启动器（计划任务用它跑 bat，不再闪黑窗口）
 ├── common.py               共用基础设施：原子写、通知、会话、接口调用
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
 ├── cmcc_sign.py            qwhdhub 签到（全国）

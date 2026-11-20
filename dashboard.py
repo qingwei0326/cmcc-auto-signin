@@ -162,6 +162,15 @@ def load_json(p: Path):
         return None
 
 
+def _pythonw() -> str:
+    """无窗口的 Python 解释器（pythonw.exe）；没有就退回 sys.executable。
+
+    计划任务用它 + run_hidden.py 启动 bat，桌面就不会再闪黑窗口。
+    """
+    cand = Path(sys.executable).with_name("pythonw.exe")
+    return str(cand) if cand.exists() else sys.executable
+
+
 def scan_accounts():
     """返回 [{key, plat, file, phone, token_state}]"""
     out = []
@@ -685,77 +694,81 @@ def do_action(body: dict):
               "else{Write-Host ($n+'  未注册')}}")
         return {"ok": RUNNER.start("查询计划任务", ["powershell", "-NoProfile", "-Command", ps])}
     if act == "sched_reg":
+        # 隐藏启动：无窗口 pythonw + run_hidden.py，避免任务跑起来时闪黑窗口
+        pyw = _pythonw()
+        launcher = str(BASE / "run_hidden.py")
         kind = body.get("kind", "sign")
         t = str(body.get("time") or "08:30").strip()
         # t 会插进单引号 PowerShell 字符串，不校验就能闭合引号注入任意命令
         if not re.fullmatch(r"\d{1,2}:\d{2}", t):
             return {"ok": False, "err": "时间格式应为 HH:MM"}
-        if kind not in ("sign", "daily", "keepalive", "sess", "seckill", "probe"):
+        if kind not in ("sign", "daily", "keepalive", "sess", "seckill", "games", "probe"):
             return {"ok": False, "err": "未知任务类型"}
         if kind == "daily":
             # 每小时轮询领每日奖励三档：06:00 起每 1 小时一次，持续 17 小时
             name, bat = "MobileDailyReward", "run_daily_reward.bat"
             d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"$r=(New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Hours 1) "
-                  f"-RepetitionDuration (New-TimeSpan -Hours 17)).Repetition;"
-                  f"$tr.Repetition=$r;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Hours 1) "
+                  f"-RepetitionDuration (New-TimeSpan -Hours 17);"
+                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每小时一次（持续 17 小时）'")
         elif kind == "keepalive":
             # qwhdhub 会话保活：每 90 分钟只试登录一次（--login-only，不签到）。
             # jwt 单独用服务端不认，续不了命；失败即代表 app_token 过期、该重新抓包
             name, bat = "MobileJwtKeepAlive", "run_jwt_keepalive.bat"
             d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"$r=(New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 90) "
-                  f"-RepetitionDuration (New-TimeSpan -Days 1)).Repetition;"
-                  f"$tr.Repetition=$r;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 90) "
+                  f"-RepetitionDuration (New-TimeSpan -Days 1);"
+                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每 90 分钟一次（全天覆盖）'")
         elif kind == "sess":
             # 会话刷新：11:54 建立新会话，供 11:55 启动的秒杀任务复用
             name, bat = "MobileSessionRefresh", "run_session_refresh.bat"
             d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
                   f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）'")
         elif kind == "seckill":
             # 秒杀抢券：11:55 启动；会话未就绪会重试，并自动读取新导入的配置。
             name, bat = "MobileSeckill", "run_seckill.bat"
             d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
                   f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行（脚本内部等到 12:00 开抢）'")
         elif kind == "games":
             # 拓展活动三个：周六游戏中心（周六 12:00 起可抽）/ 追剧领福利（周日）/ 玩游戏抽话费
             name, bat = "MobileGames", "run_games.bat"
             d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
                   f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行（拓展活动：游戏中心 / 追剧 / 抽话费）'")
         elif kind == "probe":
             # 票据寿命探测：每 2 分钟探一次，签发时刻取自 HAR，结论精确到分钟
             name, bat = "MobileTokenLifeProbe", "run_token_life.bat"
             d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
-                  f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"$r=(New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 2) "
-                  f"-RepetitionDuration (New-TimeSpan -Days 1)).Repetition;"
-                  f"$tr.Repetition=$r;"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
+                  f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' -RepetitionInterval (New-TimeSpan -Minutes 2) "
+                  f"-RepetitionDuration (New-TimeSpan -Days 1);"
+                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每 2 分钟一次（全天覆盖）'")
         else:
             name, bat = "MobileSignIn", "run_scheduled.bat"
             d = str(BASE)
-            ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
+            ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' -Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
                   f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
+                  f"$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew;"
+                  f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Settings $s -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行'")
         return {"ok": RUNNER.start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
     if act == "sched_unreg":

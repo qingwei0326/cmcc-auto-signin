@@ -412,6 +412,13 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
             break
         # 喂完重新查阶段进度
         res["feeds"] = done
+        # 余额必须用 index_info 复核：stage_info 不带 fodderSurplus，
+        # 只靠它会把喂前的旧余额报给控制台（实测喂掉 250 后仍报 250）
+        cur2 = call(s, cfg, "index_info")
+        if cur2["ok"] and isinstance(cur2.get("data"), dict):
+            fv = cur2["data"].get("fodderSurplus")
+            if fv is not None:
+                res["fodder"] = int(fv)
         st2 = call(s, cfg, "stage_info")
         if st2["ok"] and isinstance(st2["data"], dict):
             d2 = st2["data"]

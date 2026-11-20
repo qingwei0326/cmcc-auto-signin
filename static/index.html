@@ -299,9 +299,9 @@ select.inp{cursor:pointer}
           <div class="infobox">流程：校服务器时间 → 拉场次 → 查当日签到资格 → 等到点 → 密集重试 <code>redeem</code>。
             开抢时会<b>提前 0.4 秒</b>出手以抵消网络延迟，被拒后每 2 秒核对一次库存，没货立刻停手。
             抢到的券进 App「我的奖品」核销，脚本会推送到手机。</div>
-          <div class="warnbox"><b>真正的前提是「早上那次签到跑过」</b>——它会自动备好活动会话，
-            12 点就能直接用。如果某号从没签到过、且 app_token 也已过期，
-            脚本会提示「请重新抓包」并推送通知。</div>
+          <div class="warnbox"><b>只需要提前几分钟准备</b>——会话刷新 11:54 执行，秒杀 11:55 启动。
+            如果启动时会话未就绪，脚本会每 15 秒重试并重新读取配置；
+            等待期间重新导入 HAR 也能被自动识别，不会在启动时直接退出。</div>
           <div class="frow"><label>会话就绪</label><span style="font-size:13px" id="skSess">加载中…</span></div>
           <div class="frow"><label>票据寿命</label><span style="font-size:13px" id="tlBox">加载中…</span></div>
           <div class="infobox">票据寿命由计划任务 <code>MobileTokenLifeProbe</code> 每 2 分钟探测一次
@@ -312,11 +312,9 @@ select.inp{cursor:pointer}
             （<code>gui_data/seckill_session_&lt;尾号&gt;.json</code>）。实测<b>仅凭该 cookie 就能调用秒杀接口，
             完全不需要 app_token</b>。</div>
           <div class="warnbox"><b>会话只能活 2 小时</b>（实测：04:22 建立 → 06:22 服务端返回
-            <code>GOTO_LOGIN</code> 准时失效）。所以要赶上 12:00 开抢，
-            必须在 <b>10:00 之后</b>再签到一次；早上 08:30 那次签到的会话 10:30 就过期了。
-            计划任务 <b>MobileSessionRefresh</b>（10:15）就是干这个的——
-            它建立的新会话能撑到 12:15，覆盖开抢时刻。<br>
-            若那时 app_token 也过期了（票据约 30~40 分钟），仍需你抓一次包导入。</div>
+            <code>GOTO_LOGIN</code> 准时失效）。现在计划在 <b>11:54</b> 刷新会话、
+            <b>11:55</b> 启动秒杀，不再提前 90 分钟空等。
+            若 app_token 已过期，请在开抢前抓包导入；等待中的脚本会自动重读新配置。</div>
         </div>
       </div>
 
@@ -338,11 +336,11 @@ select.inp{cursor:pointer}
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'keepalive',time:V('tKeep')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileJwtKeepAlive？',()=>act({action:'sched_unreg',name:'MobileJwtKeepAlive'}))">注销</button></div>
           <div class="frow"><label>会话刷新任务</label><span style="font-size:13px">MobileSessionRefresh → run_session_refresh.bat，每天</span>
-            <input class="inp" id="tSess" value="10:15" style="min-width:80px">
+            <input class="inp" id="tSess" value="11:54" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'sess',time:V('tSess')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileSessionRefresh？',()=>act({action:'sched_unreg',name:'MobileSessionRefresh'}))">注销</button></div>
           <div class="frow"><label>秒杀抢券任务</label><span style="font-size:13px">MobileSeckill → run_seckill.bat，脚本内等到 12:00</span>
-            <input class="inp" id="tSeckill" value="10:30" style="min-width:80px">
+            <input class="inp" id="tSeckill" value="11:55" style="min-width:80px">
             <button class="btn pri sm" onclick="act({action:'sched_reg',kind:'seckill',time:V('tSeckill')})">注册/更新</button>
             <button class="btn sm danger" onclick="cf('注销 MobileSeckill？',()=>act({action:'sched_unreg',name:'MobileSeckill'}))">注销</button></div>
           <div class="frow"><label>票据寿命探测</label><span style="font-size:13px">MobileTokenLifeProbe → run_token_life.bat，每 2 分钟</span>

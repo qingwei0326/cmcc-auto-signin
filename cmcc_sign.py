@@ -120,6 +120,7 @@ def assert_safe_url(url: str, allowed_hosts: set[str] | None = None):
 class Config:
     def __init__(self, path: str | None):
         file_cfg = {}
+        self.config_path = str(Path(path).resolve()) if path else ""
         if path and Path(path).exists():
             file_cfg = json.loads(Path(path).read_text(encoding="utf-8"))
         env = os.environ

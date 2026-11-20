@@ -703,7 +703,7 @@ def do_action(body: dict):
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，{t} 起每 90 分钟一次（全天覆盖）'")
         elif kind == "sess":
-            # 会话刷新：活动会话寿命 2 小时，10:15 建立的新会话覆盖 12:00 开抢
+            # 会话刷新：11:54 建立新会话，供 11:55 启动的秒杀任务复用
             name, bat = "MobileSessionRefresh", "run_session_refresh.bat"
             d = str(BASE)
             ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"
@@ -711,8 +711,7 @@ def do_action(body: dict):
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $tr -Force | Out-Null;"
                   f"Write-Host '{name} 已注册，每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）'")
         elif kind == "seckill":
-            # 秒杀抢券：10:30 启动，脚本内部等到 12:00 再出手。
-            # 靠的是 10:15 那次签到建立的活动会话（2 小时寿命），不是 app_token
+            # 秒杀抢券：11:55 启动；会话未就绪会重试，并自动读取新导入的配置。
             name, bat = "MobileSeckill", "run_seckill.bat"
             d = str(BASE)
             ps = (f"$a=New-ScheduledTaskAction -Execute '{d}\\{bat}' -WorkingDirectory '{d}';"

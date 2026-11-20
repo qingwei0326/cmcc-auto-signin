@@ -78,8 +78,79 @@ STOP_STATUSES = {
 # 同一时段库存仍从 0.165 继续掉到 0，是被别人抢走的，不是被这次请求打掉的。
 # 所以它应当落进「已开抢」的常规重试分支继续打，而不是当作终态停手。
 
-# 会话 cookie 滑动过期，长等时用心跳续住
+# 会话 cookie 固定 2 小时硬过期，心跳只用于尽早发现失效
 KEEPALIVE_INTERVAL = 480
+# 启动时没有会话不直接退出：临近开抢持续重试，给用户重新导入 HAR 的时间
+SESSION_RETRY_INTERVAL = 15
+SESSION_GRACE_AFTER_FIRE = 60
+DEFAULT_SESSION_WAIT = 300
+
+
+def parse_fire_at(at: str, now: datetime | None = None) -> float:
+    """把 --at 的北京时间转成本地时间戳；日期取今天。"""
+    hh, mm, *ss = at.split(":")
+    target = (now or datetime.now(TZ_CN)).replace(
+        hour=int(hh), minute=int(mm), second=int(ss[0]) if ss else 0,
+        microsecond=0)
+    return target.timestamp()
+
+
+def session_deadline_for(at: str, now: float | None = None) -> float:
+    """会话重试的截止时刻：--at 出手时刻 + 宽限；未指定 --at 则等 5 分钟。"""
+    now = time.time() if now is None else now
+    if at:
+        return parse_fire_at(at) + SESSION_GRACE_AFTER_FIRE
+    return now + DEFAULT_SESSION_WAIT
+
+
+def reload_config(cfg: Config) -> Config:
+    """每次重试前重读配置，等待期间导入的新 HAR 才能被当前进程看到。"""
+    path = getattr(cfg, "config_path", "")
+    return Config(path) if path else cfg
+
+
+def obtain_session(cfg: Config):
+    """优先复用有效活动会话，否则用当前 app_token 建立并保存。"""
+    cached = load_session(cfg)
+    if cached:
+        s, referer = cached
+        if session_alive(s, referer):
+            log.info("复用已保存的活动会话成功（无需 app_token）")
+            return s, referer
+        log.info("已保存会话已失效，尝试用 app_token 重新登录")
+    s, referer = exchange_session(cfg)
+    save_session(s, referer, cfg)
+    return s, referer
+
+
+def acquire_session_with_retry(cfg: Config, deadline: float,
+                               retry_interval: float = SESSION_RETRY_INTERVAL,
+                               now_fn=None, sleep_fn=None):
+    """在 deadline 前反复尝试会话；每轮重读配置，成功返回最新配置。
+
+    返回 (session, referer, latest_cfg)。超时抛 RuntimeError，由统一入口告警。
+    """
+    now_fn = now_fn or time.time
+    sleep_fn = sleep_fn or time.sleep
+    last_error = "未知错误"
+    attempt = 0
+    while True:
+        attempt += 1
+        cfg = reload_config(cfg)
+        try:
+            s, referer = obtain_session(cfg)
+            if attempt > 1:
+                log.info("第 %d 次尝试后会话就绪", attempt)
+            return s, referer, cfg
+        except Exception as e:
+            last_error = str(e).split("——")[0].strip()
+        remain = deadline - now_fn()
+        if remain <= 0:
+            raise RuntimeError(f"直到开抢仍未取得可用会话；最后错误：{last_error}")
+        pause = min(retry_interval, remain)
+        log.info("会话未就绪：%s；%.0f 秒后重试（每次都会重读 HAR 导入的配置）",
+                 last_error, pause)
+        sleep_fn(pause)
 
 
 def save_session(s, referer: str, cfg: Config = None) -> None:
@@ -320,33 +391,21 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
 def run(cfg: Config, dry_run: bool, once: bool, at: str,
         interval: float, lead: float, max_attempts: int,
         pre_window_s: float = 60.0) -> int:
-    # ① 优先复用已保存的活动会话（实测：仅 cookie 即可调通接口，不依赖 app_token）
-    #    但会话寿命只有 2 小时，所以必须靠「10 点后那次签到」来建立新会话。
-    s = referer = None
-    cached = load_session(cfg)
-    if cached:
-        s, referer = cached
-        if session_alive(s, referer):
-            log.info("复用已保存的活动会话成功（无需 app_token）")
-        else:
-            log.info("已保存会话已失效，尝试用 app_token 重新登录")
-            s = referer = None
-
-    # ② 没有可用会话 → 用 app_token 重新建立
-    if s is None:
-        try:
-            s, referer = exchange_session(cfg)
-        except Exception as e:
-            # 会话复用失败且 app_token 也不可用 → 明确提示，别抛栈
-            log.error("没有可用会话，且 app_token 已失效：%s", str(e).split("——")[0].strip())
-            log.error("活动会话实测只能活 2 小时，需在 10:00 之后重新签到一次；")
-            log.error("若 app_token 也过期了，请重新抓一次 HAR 并导入。")
-            notify(cfg, "移动秒杀：会话缺失",
-                   "既无可复用的活动会话，app_token 也已失效\n"
-                   "活动会话只能活 2 小时，请用该账号重新抓包导入\n"
-                   "手机尾号 %s" % (cfg.phone[-4:] if cfg.phone else "????"))
-            return 1
-        save_session(s, referer, cfg)
+    # ① 启动时拿不到会话不再退出。计划任务只需提前几分钟启动，
+    #    在等待期间导入新 HAR 也会被下一轮重试读到。
+    at_target_s = parse_fire_at(at) if at else None
+    session_deadline = session_deadline_for(at)
+    if dry_run or once:
+        session_deadline = time.time()
+    try:
+        s, referer, cfg = acquire_session_with_retry(cfg, session_deadline)
+    except Exception as e:
+        log.error("没有可用会话：%s", e)
+        log.error("请在开抢前重新抓包导入；脚本运行期间导入也会被自动识别。")
+        notify(cfg, "移动秒杀：会话缺失",
+               f"{e}\n请在开抢前重新抓包导入\n"
+               "手机尾号 %s" % (cfg.phone[-4:] if cfg.phone else "????"))
+        return 1
 
     srv_ms = server_now_ms(s, referer)
     offset_ms = srv_ms - time.time() * 1000
@@ -407,10 +466,8 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
 
     if at:
         # --at 指定「何时开始出手」，通常给提前量（如 11:59:50）
-        hh, mm, *ss = at.split(":")
-        target = datetime.now(TZ_CN).replace(
-            hour=int(hh), minute=int(mm), second=int(ss[0]) if ss else 0, microsecond=0)
-        fire_at_local_s = target.timestamp()
+        fire_at_local_s = at_target_s
+        target = datetime.fromtimestamp(at_target_s, TZ_CN)
         active = False
         log.info("开抢出手时刻被 --at 覆盖为 %s（场次本身 %s 开始）",
                  target.strftime("%H:%M:%S"), st.strftime("%H:%M:%S"))

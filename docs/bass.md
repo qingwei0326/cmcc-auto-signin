@@ -6,12 +6,35 @@
 ## 鉴权
 
 - 凭证：`Authorization: Bearer <36 位 UUID>`，取自任意 `wap.fj.10086.cn` 请求头
-- 有效期数小时
+- **有效期实测：至少 20.6 小时仍在存活**（fj1 于 11-19 11:13 抓取，
+  11-20 07:46 实测 `code=0000` 依然有效；fj2 于 11-19 23:34 抓取，
+  11-20 07:46 仍有效，已存活 8.2 小时）
+  → BASS 是本项目里**寿命最长、最不需要频繁抓包**的凭证
 - **多个子服务共用同一套 bass 鉴权**：`bass-cultivateGameServer`（养成）、
   `bass-commonActServer`（流量银行）、`bass-preferentialAreaServer`（抽奖）
   用同一个 token 都能调通
 - 例外：`luck/index` 的请求头 Bearer 只能调 `luck/index` 本身，调其他接口一律 `401 未登陆`；
   业务接口要用 `loginByHangYan` 返回的那个 token
+
+### 换票接口（实测可用，但依赖已失效的上游 token）
+
+BASS 的 bearer 并不是 App 直接下发的，而是**用 App 的「航眼 token」换来的**：
+
+```
+POST /bass-applet-authServer/auth/loginByHangYan
+{"appId":26,"timestamp":<13位毫秒>,"openId":"1231","token":"YZsidssolg<40位hex>"}
+→ {"code":"0000","data":{"bind":true,"token":"<36位UUID>","phone":"184****3239","userId":"..."}}
+```
+
+航眼 token 来自中国移动 App 的 `p.10086.cn/wap/v1/entrance/login`（`authToken` 字段）。
+
+**实测结论（2026-11-20 07:46）**：
+- 拿 11-19 抓的航眼 token 去换 → `code=1001`，**失败**（航眼 token 本身已过期）
+- 拿**现有的有效 bearer** 调 `auth/pageInit` → `code=0000`，返回同一个 token，`bind:true`
+  → 说明 bearer 可以自我续命，只要它还活着就一直有效
+
+**结论**：换票路径本身是通的，但航眼 token 比 bearer 短命，
+所以**长期仍以「HAR 导入 bearer」为主**；换票接口目前无法独立于抓包使用。
 
 ---
 

@@ -7,8 +7,26 @@ JSESSIONID=<uuid>; UID=<32位hex>; Comment=SessionServer-unity; Path=/;HTTPOnly;
 ```
 
 - 有效期约 **30 分钟**，实测 jwt 续期失败，只能重新获取
+- **精确寿命探测**：`probe_token_life.py` 每 2 分钟探一次（计划任务 `MobileTokenLifeProbe`），
+  签发时刻取自 HAR 里 `appTokenLogin` 的时间戳，结论精确到分钟。
+  看结论：`python probe_token_life.py --report`
 - `ticketID` 是城市标识（如 `NingBo`、`Luoyang`、`POD9`）
 - `province_code` / `city_code` / `carrier_operator` 等字段从登录响应里取
+
+### app_token 本质是「中国移动 App 自己的会话 cookie」
+
+HAR 里 appTokenLogin 的请求体 token 形如：
+
+```
+JSESSIONID=<uuid>; UID=<32位hex>; Comment=SessionServer-unity; Path=/;HTTPOnly; ticketID=ShanDong; Secure
+```
+
+这与 App 访问 `client.app.coc.10086.cn` 时的 Cookie **完全同格式**（同 UID、同 ticketID 体系）。
+即：qwhdhub 的票据 = 中国移动 App 的主站会话，服务端只认它。
+
+**实测（2026-11-20 07:49）**：把 HAR 里 App 主站会话 cookie 直接喂给 `/qwhdsso/appTokenLogin`
+→ 一律 `FAILED APP登录状态已过期`。App 主站会话过期后，qwhdhub 票据同样作废，
+两者寿命是**同一条**曲线，不存在「App 会话还活着但 qwhdhub 票据先死」的情况。
 
 ## 登录
 

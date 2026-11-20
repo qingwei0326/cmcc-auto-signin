@@ -13,6 +13,7 @@ har_import.py —— 从 HAR 里同时提取 qwhdhub app_token 与 BASS Bearer t
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from common import atomic_write_json
 
@@ -39,6 +40,23 @@ def _phone_from_user_check(uc):
     except Exception:
         return ""
     return p if PHONE_RE.fullmatch(p) else ""
+
+
+def _issued_local(ts: str) -> str:
+    """HAR 的 startedDateTime（UTC）→ 本地时间 ISO 字符串。
+
+    HAR 里的时间形如 2026-11-20T04:09:25.123456Z，是 UTC。
+    签发时刻是算票据寿命的起点，必须换算到本地时间，否则会差 8 小时。
+    """
+    if not ts:
+        return ""
+    try:
+        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None).isoformat(timespec="seconds")
+    except Exception:
+        return ""
 
 
 def parse_har_text(text):
@@ -143,6 +161,17 @@ def apply(text, key=None):
         cfg.setdefault("channel_id", "P00000109876")
         _write_json(out, cfg)
         report.append(f"qwhdhub {phone} → configs/{out.name}（token {len(a['token'])} 字符）")
+
+        # 记录签发时刻，让寿命探测能算出精确分钟数
+        # HAR 的 startedDateTime 是 UTC（如 2026-11-20T04:09:25.123Z），要 +8 小时转本地时间
+        issued = _issued_local(a.get("ts"))
+        if issued:
+            try:
+                import probe_token_life as PT
+                PT.mark_issued(issued)
+                report.append(f"  ↳ 票据签发时刻 {issued}，已写入寿命探测记录")
+            except Exception as e:
+                report.append(f"  ↳ 记录签发时刻失败：{e}")
 
     if not p["qwhd"]:
         hint = "（未找到 appTokenLogin 请求）"

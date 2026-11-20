@@ -24,9 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import collect_notify_settings, load_json, notify
-
-sys.stdout.reconfigure(encoding="utf-8")
+from common import collect_notify_settings, load_json, notify   # 导入即固定 UTF-8 输出
 
 BASE = Path(__file__).parent
 
@@ -253,29 +251,9 @@ def run_xxl(dry_run: bool, times: int) -> list:
     print("=" * 66)
 
     def one(conf):
-        cmd = [sys.executable, str(script), "--config", str(conf),
-               "--star", "3", "--times", str(times), "--gap", "15"]
-        cmd.append("--dry-run" if dry_run else "--detect-level")
-        t0 = time.time()
-        ok = False
-        buf = []
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True,
-                                 encoding="utf-8", errors="ignore", timeout=900)
-            out = (res.stdout or "").strip()
-            err = (res.stderr or "").strip()
-            if out:
-                buf.append(out[-1500:])
-            ok = res.returncode == 0
-            if not ok:
-                msg = brief_error(err) or brief_error(out)
-                if msg:
-                    buf.append(f"  ↑ 失败原因：{msg}")
-        except subprocess.TimeoutExpired:
-            buf.append("超时，跳过")
-        except Exception as e:
-            buf.append(f"异常：{e}")
-        return label_of(conf, "phone"), ok, round(time.time() - t0, 1), "\n".join(buf)
+        args = ["--star", "3", "--times", str(times), "--gap", "15",
+                "--dry-run" if dry_run else "--detect-level"]
+        return run_script(script, conf, args, 900)
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(confs))) as ex:
         futs = [ex.submit(one, c) for c in confs]

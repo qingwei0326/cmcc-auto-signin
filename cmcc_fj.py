@@ -14,24 +14,21 @@ cmcc_fj.py —— 福建移动 BASS 活动平台自动化
 
 import argparse
 import datetime
-import json
 import random
+import re
 import sys
 import time
 from pathlib import Path
 
-import requests
+from common import (api_get, api_post, emit_result, load_config as _load_config,
+                    load_json, make_session, now_ms, setup_utf8, show, update_json)
 
-from common import atomic_write_json, load_json
-
-sys.stdout.reconfigure(encoding="utf-8")
+setup_utf8()
 
 BASE = Path(__file__).parent
 CONFIG_PATH = BASE / "config_fj.json"
 
 HOST = "https://wap.fj.10086.cn"
-UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
-      "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/wkwebview")
 
 EP = {
     # 养成游戏
@@ -58,17 +55,11 @@ EP = {
 }
 
 
-def now_ms():
-    return str(int(time.time() * 1000))
-
-
 def load_config(path: Path):
-    if not path.exists():
-        print(f"缺少配置文件：{path}")
-        sys.exit(1)
-    cfg = json.loads(path.read_text(encoding="utf-8"))
-    tk = cfg.get("bearer_token", "")
-    if not tk or "把你的" in tk or tk.lower().startswith("bearer"):
+    """读 BASS 配置；bearer 必须是抓包取来的那串，不能是模板占位符。"""
+    cfg = _load_config(path, required=("bearer_token",), template="config_fj.example.json")
+    tk = str(cfg.get("bearer_token", ""))
+    if "把你的" in tk or tk.lower().startswith("bearer"):
         print(f"{path.name} 的 bearer_token 还没填对。")
         print("从抓包任一 wap.fj.10086.cn 请求的 Authorization 头取 Bearer 后面那串。")
         sys.exit(1)
@@ -76,82 +67,55 @@ def load_config(path: Path):
 
 
 def new_session(cfg):
-    s = requests.Session()
-    s.trust_env = False
-    s.headers.update({
-        "Authorization": f"Bearer {cfg['bearer_token']}",
-        "User-Agent": UA,
-        "Accept": "*/*",
-        "Accept-Language": "zh-CN,zh-Hans;q=0.9",
-        "Referer": cfg.get("referer") or f"{HOST}/bass-cultivateGameServer/",
-    })
-    return s
+    return make_session(token=cfg["bearer_token"],
+                        referer=cfg.get("referer") or f"{HOST}/bass-cultivateGameServer/")
 
 
 def call(s, cfg, key, retries=1, extra=None):
-    """GET 调用，返回 {ok, code, msg, data}；对限流做一次重试。"""
-    url = HOST + EP[key]
+    """GET 调用，返回 {ok, code, msg, data}；-100 限流退避重试。"""
     params = {"appId": cfg.get("app_id", "0"), "timestamp": now_ms()}
     if extra:
         params.update(extra)
-    last = None
-    for attempt in range(retries + 1):
-        try:
-            r = s.get(url, params=params, timeout=25)
-            if r.status_code == 401:
-                return {"ok": False, "code": 401,
-                        "msg": "token 失效，需重新抓包更新 bearer_token", "data": None}
-            if r.status_code != 200:
-                last = {"ok": False, "code": r.status_code, "msg": f"HTTP {r.status_code}", "data": None}
-            else:
-                j = r.json()
-                ok = bool(j.get("success")) or str(j.get("code")) in ("0", "0000", "200")
-                res = {"ok": ok, "code": j.get("code"), "msg": j.get("msg"), "data": j.get("data")}
-                # -100 = 限流，稍等重试
-                if not ok and str(j.get("code")) == "-100" and attempt < retries:
-                    time.sleep(2.5)
-                    continue
-                return res
-        except Exception as e:
-            last = {"ok": False, "code": -1, "msg": f"网络异常: {e}", "data": None}
-        if attempt < retries:
-            time.sleep(1.5)
-    return last
+    return api_get(s, HOST + EP[key], params=params, retries=retries)
 
 
 def call_post(s, cfg, path, retries=1, extra=None):
-    """POST 调用（task/doTask 用），body = {appId, timestamp} + extra。
+    """POST 调用（task/doTask、flowBank/doTask），body = {appId, timestamp} + extra。
 
-    extra 可加 taskId 等字段。对 1006（操作太快）做退避重试。
+    -100 限流 / 1006 操作太快：退避重试并刷新时间戳（统一在 common.api_post 里做）。
     """
-    url = HOST + path
     body = {"appId": int(cfg.get("app_id", "0") or 0), "timestamp": int(now_ms())}
     if extra:
         body.update(extra)
-    last = None
-    for attempt in range(retries + 1):
-        try:
-            r = s.post(url, json=body, timeout=25)
-            if r.status_code == 401:
-                return {"ok": False, "code": 401, "msg": "token 失效", "data": None}
-            j = r.json()
-            ok = bool(j.get("success")) or str(j.get("code")) in ("0", "0000", "200")
-            res = {"ok": ok, "code": j.get("code"), "msg": j.get("msg"), "data": j.get("data")}
-            # -100 限流 / 1006 操作太快：退避重试
-            if not ok and str(j.get("code")) in ("-100", "1006") and attempt < retries:
-                time.sleep(3.5)
-                body["timestamp"] = int(now_ms())  # 重试时刷新时间戳
-                continue
-            return res
-        except Exception as e:
-            last = {"ok": False, "code": -1, "msg": f"网络异常: {e}", "data": None}
-        if attempt < retries:
-            time.sleep(1.5)
-    return last
+    return api_post(s, HOST + path, body=body, retries=retries)
 
 
 def pause(s=1.0, jitter=1.2):
     time.sleep(s + random.random() * jitter)
+
+
+def _note_token(res, r):
+    """接口回 401 就把结果里的 token 标成失效，供控制台亮红灯。"""
+    if str((r or {}).get("code")) == "401":
+        res["token"] = "expired"
+
+
+def flow_mb_of(text):
+    """奖品文案折算成 MB（「1.5GB」→1536）；话费券不计流量，与统计口径一致。"""
+    text = str(text or "")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*GB", text, re.I)
+    if m:
+        return float(m.group(1)) * 1024
+    m = re.search(r"(\d+(?:\.\d+)?)\s*MB", text, re.I)
+    return float(m.group(1)) if m else 0.0
+
+
+def _got_prize(res, name):
+    """打印并登记领到的奖品：流量折算 MB，话费券只记名字。"""
+    print(f"     领到：{name or '接口未返回奖品名'}")
+    res["flow_mb"] += flow_mb_of(name)
+    if name:
+        res["last_reward"] = name
 
 
 # 阶段奖励每阶固定 3 档：1=话费券 2=流量券 3=折扣券
@@ -177,14 +141,23 @@ def track_daily(key, daily_list=None, lucky=None, sign=None):
     签到靠 sign/getSignInfo：signBeginHour=6 才开放，signDateList 给连续 N 天的
     累进奖励（实测 600 → 900 → 1200g），断签会重置回第一天。
     福袋靠 luckyBag/nearTrigger：每累计喂食 nextTriggerCount(300) 次触发一次。
+
+    整份文件是多个账号共用的，读-改-写必须加跨进程锁：run_all 默认并发跑号，
+    计划任务与一键签到又是不同进程，不加锁会互相整份覆盖。
     """
-    try:
-        DAILY_STATE.parent.mkdir(parents=True, exist_ok=True)
-        st = json.loads(DAILY_STATE.read_text(encoding="utf-8")) if DAILY_STATE.exists() else {}
-    except Exception:
-        st = {}
-    acc = st.setdefault(key, {})
     now = datetime.datetime.now()
+
+    def mutate(st):
+        _apply_daily(st.setdefault(key, {}), daily_list, lucky, sign, now)
+
+    try:
+        update_json(DAILY_STATE, mutate)
+    except Exception:
+        pass
+
+
+def _apply_daily(acc, daily_list, lucky, sign, now):
+    """把一次观测结果合并进某账号的记录（就地修改 acc）。"""
     stamp = now.strftime("%Y-%m-%d %H:%M")
 
     if daily_list is not None:
@@ -236,10 +209,6 @@ def track_daily(key, daily_list=None, lucky=None, sign=None):
         }
 
     acc["updated"] = stamp
-    try:
-        atomic_write_json(DAILY_STATE, st)
-    except Exception:
-        pass
 
 
 def daily_nothing_to_do(key):
@@ -266,16 +235,23 @@ def track_fb_tasks(key, tasks):
       · 第一次看到完成（或从「未做」变完成）→ 记 last_done = 现在
       · 看到「未做」→ 说明周期已重置，清空 last_done
     这样跑几次之后就能反推出真实的周期起点。
+
+    与 track_daily 同理：多账号共用一份文件，读-改-写要加跨进程锁。
     """
-    p = FB_STATE
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        st = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    except Exception:
-        st = {}
-    acc = st.setdefault(key, {})
-    rec = acc.setdefault("tasks", {})
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def mutate(st):
+        _apply_fb(st.setdefault(key, {}), tasks, stamp)
+
+    try:
+        update_json(FB_STATE, mutate)
+    except Exception:
+        pass
+
+
+def _apply_fb(acc, tasks, stamp):
+    """把流量银行任务的一次观测合并进某账号的记录（就地修改 acc）。"""
+    rec = acc.setdefault("tasks", {})
 
     for t in tasks:
         tid = str(t.get("id"))
@@ -299,10 +275,6 @@ def track_fb_tasks(key, tasks):
         rec[tid] = row
 
     acc["updated"] = stamp
-    try:
-        atomic_write_json(p, st)
-    except Exception:
-        pass
 
 
 def receive_stage_prize(s, cfg, kind):
@@ -315,12 +287,6 @@ def receive_stage_prize(s, cfg, kind):
     if isinstance(r.get("data"), dict):
         name = (r["data"].get("prizeDto") or {}).get("prizeName") or ""
     return r, pid, name
-
-
-def show(label, r, extra=""):
-    flag = "OK " if r["ok"] else "!! "
-    print(f"  {flag}{label:<22} code={r['code']}  {r['msg'] or ''}{extra}")
-    return r["ok"]
 
 
 def main():
@@ -359,9 +325,17 @@ def main():
     s = new_session(cfg)
     print(f"目标 {HOST}  appId={cfg.get('app_id', '0')}")
 
+    # 结构化结果：控制台据此取数，不再正则解析下面那些中文日志
+    res = {"plat": "bass", "key": key, "token": "ok", "dry_run": bool(args.dry_run),
+           "fodder": None, "stage": "", "fb_exchange": "", "today_signed": False,
+           "flow_mb": 0.0, "tasks": 0, "feeds": 0, "last_reward": ""}
+
     # 轮询短路：今天该领的都领完了，就不必再调接口
     if args.daily_only and not args.dry_run and daily_nothing_to_do(key):
         print("  今日三档奖励已领完、签到也已完成，本轮无事可做（1 秒退出）。")
+        res["today_signed"] = True
+        res["idle"] = True
+        emit_result(res)
         return 0
 
     # ---------- 状态总览 ----------
@@ -369,9 +343,11 @@ def main():
     info = call(s, cfg, "index_info")
     if info["ok"] and isinstance(info["data"], dict):
         d = info["data"]
+        res["fodder"] = d.get("fodderSurplus")
         print(f"  饲料 {d.get('fodderSurplus')}  今日已喂 {d.get('feedCountToday')} 次")
     else:
         show("首页信息", info)
+        _note_token(res, info)
 
     pause()
     si = call(s, cfg, "sign_info")
@@ -397,9 +373,13 @@ def main():
                 extra += f" · 明日 {next_g}g"
         print(f"  签到：今日{'已签' if signed else '未签'}  连签第 {d.get('cycleToday')} 天  "
               f"{'可签' if sign_open else '未到开放时间(%s点)' % (d.get('signBeginHour') or 6)}{extra}")
+        res["today_signed"] = signed
+        res["sign_cycle"] = d.get("cycleToday")
     else:
         show("签到状态", si)
+        _note_token(res, si)
         print("  状态查询失败，终止以免误操作。")
+        emit_result(res)
         return 1
 
     pause()
@@ -433,17 +413,20 @@ def main():
     if st["ok"] and isinstance(st["data"], dict):
         d = st["data"]
         si2 = d.get("stageInfo") or {}
+        res["stage"] = f"{si2.get('stageName')} {d.get('feedFodders')}/{si2.get('feedNeedFodderCount')}"
         print(f"  阶段：{si2.get('stageName')}  饲料 {d.get('feedFodders')}/{si2.get('feedNeedFodderCount')}")
 
     pause()
     fb = call(s, cfg, "fb_index")
     if fb["ok"] and isinstance(fb["data"], dict):
         d = fb["data"]
+        res["fb_exchange"] = f"{d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"
         print(f"  流量银行：可兑 {d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"
               f"（{d.get('exchangeFlowValue')} 点）  有待做任务={d.get('hasTaskToDo')}")
 
     if args.dry_run:
         print("\n（--dry-run，到此为止，未做任何改动）")
+        emit_result(res)
         return 0
 
     # ---------- 签到 ----------
@@ -461,6 +444,7 @@ def main():
             if isinstance(r["data"], dict) and r["data"].get("fodder"):
                 print(f"     获得饲料 {r['data'].get('fodder')}")
             signed = True
+            res["today_signed"] = True
             if sign_data is not None:
                 sign_data["todaySign"] = True
 
@@ -488,6 +472,7 @@ def main():
         if sign_data is not None:
             track_daily(key, None, None, sign_data)
         print("\n[daily-only] 结束。")
+        emit_result(res)
         return 0
 
     # ---------- 可选：完成 VISIT 任务 ----------
@@ -506,7 +491,9 @@ def main():
                 tid = t.get("id")
                 pause(1.2, 1.0)
                 r = call_post(s, cfg, f"/bass-cultivateGameServer/task/doTask/{tid}")
-                show(f"doTask/{tid} {t.get('taskName')}", r)
+                if show(f"doTask/{tid} {t.get('taskName')}", r):
+                    res["tasks"] += 1
+                _note_token(res, r)
         else:
             show("任务列表", tl)
 
@@ -544,23 +531,27 @@ def main():
                 pause()
                 rp, pid, pname = receive_stage_prize(s, cfg, prize_kind)
                 if show(f"领阶段奖励(prizeId={pid})", rp):
-                    print(f"     领到：{pname or '接口未返回奖品名'}")
+                    _got_prize(res, pname)
                     continue
                 # 带 prizeId 不被服务端接受时，退回默认档，至少不卡住
                 print("     -  指定档位失败，退回默认档重试")
                 pause()
                 rp2, _pid2, pname2 = receive_stage_prize(s, cfg, "fee")
                 if show("领阶段奖励(默认档)", rp2):
-                    print(f"     领到：{pname2 or '接口未返回奖品名'}")
+                    _got_prize(res, pname2)
                     continue
                 print("  -  领阶段奖励失败，停止喂养")
                 break
             break
         # 喂完重新查阶段进度
+        res["feeds"] = done
         st2 = call(s, cfg, "stage_info")
         if st2["ok"] and isinstance(st2["data"], dict):
             d2 = st2["data"]
             si2 = d2.get("stageInfo") or {}
+            res["stage"] = f"{si2.get('stageName')} {d2.get('feedFodders')}/{si2.get('feedNeedFodderCount')}"
+            if d2.get("fodderSurplus") is not None:
+                res["fodder"] = d2["fodderSurplus"]
             print(f"     阶段现为 {si2.get('stageName')}  饲料 {d2.get('feedFodders')}/{si2.get('feedNeedFodderCount')}")
         # 喂养会推进福袋进度，顺手刷新
         if done:
@@ -593,7 +584,9 @@ def main():
                     time.sleep(random.uniform(3.5, 5.5))  # 避开 1006 频控
                     r = call_post(s, cfg, EP["fb_do_task"], retries=3,
                                   extra={"taskId": tid})
-                    show(f"fb任务 {tid} {title} ({round_no}/{len(rounds)})", r)
+                    if show(f"fb任务 {tid} {title} ({round_no}/{len(rounds)})", r):
+                        res["tasks"] += 1
+                    _note_token(res, r)
                     if not r["ok"] and str(r.get("code")) == "1006":
                         print("     -  频控未过，跳过该轮")
         else:
@@ -603,6 +596,7 @@ def main():
         fb2 = call(s, cfg, "fb_index")
         if fb2["ok"] and isinstance(fb2["data"], dict):
             d2 = fb2["data"]
+            res["fb_exchange"] = f"{d2.get('exchangeFlow')}{d2.get('exchangeFlowUnit')}"
             print(f"     流量银行现可兑 {d2.get('exchangeFlow')}{d2.get('exchangeFlowUnit')}"
                   f"（{d2.get('exchangeFlowValue')} 点）")
 
@@ -616,12 +610,12 @@ def main():
         if status == "1":
             r, pid, pname = receive_stage_prize(s, cfg, prize_kind)
             if show(f"领阶段奖励(prizeId={pid})", r):
-                print(f"     领到：{pname or '接口未返回奖品名'}")
+                _got_prize(res, pname)
             else:
                 pause()
                 r2c, _p, pname2 = receive_stage_prize(s, cfg, "fee")
                 if show("领阶段奖励(默认档)", r2c):
-                    print(f"     领到：{pname2 or '接口未返回奖品名'}")
+                    _got_prize(res, pname2)
         else:
             fodders = ((stc.get("data") or {}).get("feedFodders"))
             print(f"  -  阶段未满（{fodders}），暂无可领奖励")
@@ -655,6 +649,7 @@ def main():
             show("骰子余额", bal)
 
     print("\n完成。")
+    emit_result(res)
     return 0
 
 

@@ -182,7 +182,58 @@ def scan_accounts():
 # 输出解析 —— 把脚本 stdout 变成统计数字
 # ======================================================================
 
+def _apply_qwhd_result(key: str, r: dict):
+    """用脚本输出的结构化结果更新统计（首选路径，不依赖日志文案）。"""
+    upd = {"last_run": datetime.now().strftime("%m-%d %H:%M")}
+    if r.get("sign_days") is not None:
+        upd["sign_days"] = r["sign_days"]
+    if r.get("today_signed"):
+        upd["today_signed_qwhd"] = TODAY()
+    if r.get("last_reward"):
+        upd["last_reward"] = r["last_reward"]
+    # token=error 是网络/入口异常，不能据此判凭证失效
+    if r.get("token") in ("ok", "expired"):
+        upd["token_qwhd"] = r["token"]
+    update_stats(key, **upd)
+    flow = float(r.get("flow_mb") or 0)
+    if flow > 0 and r.get("today_signed"):
+        bump_daily(key, flow_mb=flow)
+
+
+def _apply_bass_result(key: str, r: dict):
+    """用脚本输出的结构化结果更新统计（首选路径，不依赖日志文案）。"""
+    upd = {"last_run": datetime.now().strftime("%m-%d %H:%M")}
+    if r.get("fodder") is not None:
+        upd["fodder"] = r["fodder"]
+    if r.get("stage"):
+        upd["stage"] = r["stage"]
+    if r.get("fb_exchange"):
+        upd["fb_exchange"] = r["fb_exchange"]
+    if r.get("today_signed"):
+        upd["today_signed_bass"] = TODAY()
+    if r.get("last_reward"):
+        upd["last_reward"] = r["last_reward"]
+    # idle=本地短路，本轮根本没发请求，不能据此说 token 有效
+    if r.get("token") in ("ok", "expired") and not r.get("idle"):
+        upd["token_bass"] = r["token"]
+    update_stats(key, **upd)
+    flow = float(r.get("flow_mb") or 0)
+    tasks = int(r.get("tasks") or 0)
+    feeds = int(r.get("feeds") or 0)
+    if flow or tasks or feeds:
+        bump_daily(key, flow_mb=flow, tasks=tasks, feeds=feeds)
+
+
 def parse_qwhd_output(key: str, text: str):
+    r = parse_result(text)
+    if r and r.get("plat") == "qwhd":
+        _apply_qwhd_result(key, r)
+        return
+    _parse_qwhd_legacy(key, text)
+
+
+def _parse_qwhd_legacy(key: str, text: str):
+    """兜底：旧版脚本没有 @@RESULT 行时，仍按日志文案解析。"""
     upd = {}
     m = re.search(r"当前累计签到 (\S+) 天，今日(已签|未签)", text)
     if m:
@@ -223,6 +274,15 @@ def parse_qwhd_output(key: str, text: str):
 
 
 def parse_bass_output(key: str, text: str):
+    r = parse_result(text)
+    if r and r.get("plat") == "bass":
+        _apply_bass_result(key, r)
+        return
+    _parse_bass_legacy(key, text)
+
+
+def _parse_bass_legacy(key: str, text: str):
+    """兜底：旧版脚本没有 @@RESULT 行时，仍按日志文案解析。"""
     upd = {}
     m = re.search(r"饲料\s*(\d+)\s+今日已喂\s*(\d+) 次", text)
     if m:
@@ -258,10 +318,10 @@ def parse_bass_output(key: str, text: str):
         mm = re.search(r"(\d+(?:\.\d+)?)\s*GB", line, re.I)
         if mm:
             flow += float(mm.group(1)) * 1024
-    # 完成任务计数（doTask / fb任务 OK 行）
-    tasks = len(re.findall(r"OK\s+(?:doTask|fb任务)", text))
-    # 喂养次数（「OK 喂养 1/11」这类行）
-    feeds = len(re.findall(r"OK\s+喂养", text))
+    # 完成任务计数（doTask / fb任务 成功行；common.show 用 ✓，旧版用 OK）
+    tasks = len(re.findall(r"(?:OK|✓)\s+(?:doTask|fb任务)", text))
+    # 喂养次数（「✓ 喂养 1/11」这类行）
+    feeds = len(re.findall(r"(?:OK|✓)\s+喂养", text))
     upd["last_run"] = datetime.now().strftime("%m-%d %H:%M")
     if upd:
         update_stats(key, **upd)
@@ -288,21 +348,25 @@ class TaskRunner:
         self.logs.append({"seq": self.seq, "t": datetime.now().strftime("%H:%M:%S"), "line": line.rstrip("\n")})
 
     def start(self, label, cmd, parser=None, shell=False):
+        return self.start_sequence(label, [(cmd, parser)], shell=shell)
+
+    def start_sequence(self, label, steps, shell=False):
+        """顺序跑多条命令，共用一个运行槽与日志缓冲。
+
+        steps = [(cmd, parser), ...]，parser 为 (fn, key) 或 None。
+        「刷新全部账号状态」就是逐号 dry-run，不必再另起一套线程去掏内部字段。
+        """
         if self.running:
             return False
         self.running = True
         self.label = label
-        self._parser = parser
-        self._buf = []
         self.push(f"▶ {label}")
-        self.push("$ " + (" ".join(map(str, cmd)) if isinstance(cmd, list) else str(cmd)))
-        threading.Thread(target=self._run, args=(cmd, shell), daemon=True).start()
+        threading.Thread(target=self._run_steps, args=(steps, shell), daemon=True).start()
         return True
 
-    def _run(self, cmd, shell):
-        rc = -1
-        t0 = time.time()
-        label = self.label
+    def _run_one(self, cmd, shell) -> int:
+        """跑一条命令并把输出推进日志；返回退出码。"""
+        self.push("$ " + (" ".join(map(str, cmd)) if isinstance(cmd, list) else str(cmd)))
         try:
             self.proc = subprocess.Popen(cmd, cwd=str(BASE), shell=shell,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -312,22 +376,33 @@ class TaskRunner:
                 self._buf.append(line)
                 self.push(line)
             self.proc.wait()
-            rc = self.proc.returncode
+            return self.proc.returncode
         except Exception as e:
             self.push(f"[异常] {e}")
+            return -1
         finally:
-            text = "".join(self._buf)
-            if self._parser and text:
-                try:
-                    fn, key = self._parser
-                    fn(key, text)
-                except Exception as e:
-                    self.push(f"[解析统计失败] {e}")
+            self.proc = None
+
+    def _run_steps(self, steps, shell):
+        rc = -1
+        t0 = time.time()
+        label = self.label
+        try:
+            for cmd, parser in steps:
+                self._buf = []
+                rc = self._run_one(cmd, shell)
+                text = "".join(self._buf)
+                if parser and text:
+                    try:
+                        fn, key = parser
+                        fn(key, text)
+                    except Exception as e:
+                        self.push(f"[解析统计失败] {e}")
+        finally:
             try:
                 append_run(label, time.time() - t0, rc == 0)
             except Exception:
                 pass
-            self.proc = None
             self.running = False
             self.push(f"■ 完成（退出码 {rc}，耗时 {time.time()-t0:.1f}s）\n")
             self.label = ""
@@ -396,67 +471,21 @@ def act_refresh_status():
     """逐个账号 dry-run，拉取实时状态刷新仪表盘。"""
     if RUNNER.running:
         return False
-    accts = scan_accounts()
-    def run_all_dry():
-        for a in accts:
-            if RUNNER._stop_seq:
-                break
-        # 顺序执行在单独线程里
-    def worker():
-        for a in accts:
-            if a["plat"] == "qwhdhub":
-                if a["token_state"] == "empty":
-                    RUNNER.push(f"⚠ {a['key']}（{a['plat']}）token 未配置，跳过")
-                    update_stats(a["key"], token_qwhd="empty")
-                    continue
-                cmd = py("cmcc_sign.py", "--config", a["file"], "--dry-run")
-                parser = (parse_qwhd_output, a["key"])
-            else:
-                if a["token_state"] == "empty":
-                    RUNNER.push(f"⚠ {a['key']}（{a['plat']}）token 未配置，跳过")
-                    update_stats(a["key"], token_bass="empty")
-                    continue
-                cmd = py("cmcc_fj.py", "--config", a["file"], "--dry-run")
-                parser = (parse_bass_output, a["key"])
-            RUNNER.push(f"\n—— 刷新 {a['key']}（{a['plat']}）——")
-            RUNNER._parser = parser
-            RUNNER._buf = []
-            try:
-                p = subprocess.Popen(cmd, cwd=str(BASE), stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
-                RUNNER.proc = p
-                for raw in iter(p.stdout.readline, b""):
-                    line = raw.decode("utf-8", errors="replace")
-                    RUNNER._buf.append(line)
-                    RUNNER.push(line)
-                p.wait()
-                text = "".join(RUNNER._buf)
-                fn, key = parser
-                fn(key, text)
-            except Exception as e:
-                RUNNER.push(f"[异常] {e}")
-        RUNNER.push("\n■ 状态刷新完成")
-    # 借用 runner 的 running 标志与日志，但自管线程
-    RUNNER.running = True
-    RUNNER.label = "刷新状态"
-    RUNNER.push("▶ 刷新全部账号状态（dry-run 只读）")
-    def wrap():
-        t0 = time.time()
-        try:
-            worker()
-        finally:
-            try:
-                append_run("刷新全部账号状态", time.time() - t0, True)
-            except Exception:
-                pass
-            RUNNER.running = False
-            RUNNER.proc = None
-            RUNNER.label = ""
-    threading.Thread(target=wrap, daemon=True).start()
-    return True
-
-
-RUNNER._stop_seq = False  # 兼容占位
+    steps = []
+    for a in scan_accounts():
+        is_qwhd = a["plat"] == "qwhdhub"
+        field = "token_qwhd" if is_qwhd else "token_bass"
+        if a["token_state"] == "empty":
+            RUNNER.push(f"⚠ {a['key']}（{a['plat']}）token 未配置，跳过")
+            update_stats(a["key"], **{field: "empty"})
+            continue
+        script = "cmcc_sign.py" if is_qwhd else "cmcc_fj.py"
+        parser = (parse_qwhd_output if is_qwhd else parse_bass_output, a["key"])
+        steps.append((py(script, "--config", a["file"], "--dry-run"), parser))
+    if not steps:
+        RUNNER.push("没有可刷新的账号（token 都为空）")
+        return False
+    return RUNNER.start_sequence("刷新全部账号状态（dry-run 只读）", steps)
 
 
 def do_action(body: dict):

@@ -358,6 +358,17 @@ def parse_prize(mark_result: dict) -> str:
     return " ".join(p for p in parts if p)
 
 
+def prize_flow_mb(mark_result: dict) -> float:
+    """奖品里的流量折算成 MB；话费券不算流量（与控制台统计口径一致）。"""
+    prize = (mark_result.get("data") or {}).get("markPrize") or {}
+    if prize.get("prizeCategory") != "FLOW":
+        return 0.0
+    try:
+        return float(prize.get("prizeValue") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # ---------------------------------------------------------------- 会话持久化
 
 # 活动会话 cookie 的实测寿命（2026-11-20：04:22:27 建立 → 06:22:39 服务端
@@ -487,14 +498,21 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
     )
     log.info("当前累计签到 %s 天，今日%s", acc, "已签" if signed_today else "未签")
 
+    # 结构化结果：控制台据此取数，不再正则解析上面那行中文日志
+    res = {"plat": "qwhd", "token": "ok", "sign_days": acc,
+           "today_signed": bool(signed_today), "flow_mb": 0.0,
+           "last_reward": "", "dry_run": bool(dry_run)}
+
     # 保存活动会话 cookie：实测仅凭该 cookie 即可调用 markSeckill 接口，
     # 不依赖 app_token。有了它，12 点秒杀不必重新登录。
     save_activity_session(s, referer, cfg)
 
     # 仅登录模式：会话已建立成功，jwt 已由 exchange_session 写回缓存。
-    # 用于定时保活——只要在 jwt 失效前跑一次，凭证链就能无限延长。
+    # 用于定时保活——票据有效期内多跑几次，失败即代表该重新抓包。
     if login_only:
-        log.info("仅登录模式：会话正常，jwt 已续期（不执行签到与后续动作）")
+        log.info("仅登录模式：会话正常（不执行签到与后续动作）")
+        res["login_only"] = True
+        emit_result(res)
         return 0
 
     lines = []
@@ -515,10 +533,15 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
                 acc = (new_data.get("userinfo") or {}).get("accumulateTimes", acc)
             except Exception:
                 pass
+            res["today_signed"] = True
+            res["sign_days"] = acc
             if status == "HAVE_MARKED":
                 lines.append(f"今日已签到过（服务端幂等），累计 {acc} 天")
             else:
                 lines.append(f"签到成功！累计 {acc} 天")
+                # 幂等命中时不重复计流量，否则同一天会累加两次
+                res["flow_mb"] = prize_flow_mb(result)
+                res["last_reward"] = prize
                 if prize:
                     lines.append(f"获得奖品: {prize}")
                 elif status == "PRIZE_NO_CONFIG":
@@ -527,6 +550,8 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
             detail = f"签到失败: {code} / {status} / {msg}"
             notify(cfg, "移动签到失败", f"{detail}\n手机尾号 {cfg.phone[-4:]}")
             log.error(detail)
+            res["error"] = detail
+            emit_result(res)
             return 1
 
     if claim and not dry_run:
@@ -566,6 +591,7 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
     summary = "\n".join(lines)
     log.info("\n%s", summary)
     notify(cfg, "移动签到通知", f"{summary}\n手机尾号 {cfg.phone[-4:]}")
+    emit_result(res)
     return 0
 
 
@@ -611,6 +637,9 @@ def main() -> int:
         else:
             log.error("执行失败: %s", e)
         notify(cfg, "移动签到异常", f"{e}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
+        emit_result({"plat": "qwhd",
+                     "token": "expired" if "appTokenLogin" in str(e) else "error",
+                     "error": str(e)[:200]})
         return 1
 
 

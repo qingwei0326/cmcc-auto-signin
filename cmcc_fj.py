@@ -37,6 +37,7 @@ EP = {
     "do_sign":        "/bass-cultivateGameServer/sign/doSign",
     "daily_list":     "/bass-cultivateGameServer/index/getDailyReceiveTask",
     "daily_receive":  "/bass-cultivateGameServer/index/dailyReceive",
+    "next_receive":   "/bass-cultivateGameServer/index/getNextReceiveTask",
     "stage_info":     "/bass-cultivateGameServer/stage/getUserStageInfo",
     "stage_prizes":   "/bass-cultivateGameServer/stage/getStagePrizes",
     "stage_receive":  "/bass-cultivateGameServer/stage/receiveStagePrize",
@@ -135,7 +136,36 @@ DAILY_STATE = BASE / "gui_data" / "daily_state.json"
 CYCLE_NAME = {1: "每月一次", 2: "每周一次", 0: "不限次"}
 
 
-def track_daily(key, daily_list=None, lucky=None, sign=None):
+def feed_reward_state(s, cfg):
+    """「喂养累计」次日奖励（App 里的「昨日投喂奖励」）：可领未领时返回描述，否则 None。
+
+    它在 getNextReceiveTask 里：taskStatus=COMPLETED、currentTask=False，
+    与每日三档（getDailyReceiveTask）不是一套；expireTime 当晚 24 点作废。
+    领取端点尚未抓包确认（实测 dailyReceive 不认 recordId、POST 该路径回 code=1），
+    所以这里只观测、不领取，先把「漏领」变成看得见。
+    """
+    r = call(s, cfg, "next_receive")
+    d = r.get("data") if r.get("ok") else None
+    if not isinstance(d, dict):
+        return None
+    if str(d.get("taskStatus") or "").upper() != "COMPLETED":
+        return None
+    expire = str(d.get("expireTime") or "")
+    if expire:
+        try:
+            if datetime.datetime.strptime(expire, "%Y-%m-%d %H:%M:%S") <= datetime.datetime.now():
+                return None
+        except ValueError:
+            pass
+    return {"name": str(d.get("taskName") or "喂养累计"),
+            "fodder": d.get("fodder"),
+            "record_id": str(d.get("recordId") or ""),
+            "expire": expire,
+            "from": str(d.get("limitReceiveTime") or "")}
+
+
+def track_daily(key, daily_list=None, lucky=None, sign=None,
+                feed_reward=None, feed_reward_checked=False):
     """记录每日三档奖励（150/250/350 饲料）、连续签到与福袋进度，供控制台展示。
 
     每日奖励靠 getDailyReceiveTask：currentTask=True 表示当前该领那档，
@@ -150,7 +180,8 @@ def track_daily(key, daily_list=None, lucky=None, sign=None):
     now = datetime.datetime.now()
 
     def mutate(st):
-        _apply_daily(st.setdefault(key, {}), daily_list, lucky, sign, now)
+        _apply_daily(st.setdefault(key, {}), daily_list, lucky, sign, now,
+                     feed_reward, feed_reward_checked)
 
     try:
         update_json(DAILY_STATE, mutate)
@@ -158,9 +189,14 @@ def track_daily(key, daily_list=None, lucky=None, sign=None):
         pass
 
 
-def _apply_daily(acc, daily_list, lucky, sign, now):
+def _apply_daily(acc, daily_list, lucky, sign, now,
+                 feed_reward=None, feed_reward_checked=False):
     """把一次观测结果合并进某账号的记录（就地修改 acc）。"""
     stamp = now.strftime("%Y-%m-%d %H:%M")
+
+    if feed_reward_checked:
+        # 观测过就整份覆盖：None 表示「已领/已过期」，要清掉旧提醒而不是留着
+        acc["feed_reward"] = feed_reward
 
     if daily_list is not None:
         old = {t.get("name"): t for t in (acc.get("tiers") or [])}
@@ -569,8 +605,16 @@ def main():
         flag = "  ⚑ 已触发可开！" if d.get("isNearTrigger") else ""
         print(f"  福袋：{d.get('currentFeedCount')}/{d.get('nextTriggerCount')}"
               f"  还差 {d.get('needMoreFeeds')} 次喂食{flag}")
+    pause()
+    fr = feed_reward_state(s, cfg)
+    if fr:
+        print(f"  投喂累计奖励：{fr['fodder']} 饲料可领未领，{fr['expire']} 过期"
+              f"（领取端点待抓包确认，先在 App 领）")
+    else:
+        print("  投喂累计奖励：无待领")
+    res["feed_reward"] = fr
     track_daily(key, dl["data"] if dl["ok"] and isinstance(dl["data"], list) else None,
-                lucky_data, sign_data)
+                lucky_data, sign_data, feed_reward=fr, feed_reward_checked=True)
 
     pause()
     st = call(s, cfg, "stage_info")
@@ -636,7 +680,8 @@ def main():
     if args.daily_only:
         # 补签成功后要回写一次，否则面板上仍显示"未签"
         if sign_data is not None:
-            track_daily(key, None, None, sign_data)
+            track_daily(key, None, None, sign_data,
+                        feed_reward=fr, feed_reward_checked=True)
         # 自动策略里开了每日喂养时，就在这一轮顺带喂（run_all 只在 feed_hour 那一轮注入）
         if args.feed > 0 or args.feed_all:
             run_feed(s, cfg, args, res, prize_kind, key, track_daily)

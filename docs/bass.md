@@ -97,6 +97,32 @@ POST /bass-cultivateGameServer/index/dailyReceive
 - 判断该领哪一档看 `currentTask: true`，**不是** `taskStatus`
 - `taskStatus` 只有 `RECEIVED`（已领）和 `UN_DO`（未领），**不存在 `COMPLETED`**
   （早期版本用 `COMPLETED` 判断，导致每次只能领到一档）
+  ——注意这条结论**只适用于三档列表**，见下节
+
+### 喂养累计（App 里的「昨日投喂奖励」）
+
+```
+GET /bass-cultivateGameServer/index/getNextReceiveTask
+```
+
+```json
+{"id": 5, "recordId": 499520178, "taskName": "喂养累计", "fodder": 950,
+ "taskStatus": "COMPLETED", "currentTask": false,
+ "limitInfo": {"limit": 1, "limitType": "DAILY"},
+ "limitReceiveTime": "2026-11-20 06:00:00", "expireTime": "2026-11-21 00:00:00"}
+```
+
+**实测要点（2026-11-20）**
+
+- 与三档**不是一套**：三档在 `getDailyReceiveTask`、看 `currentTask`；
+  这条在 `getNextReceiveTask`、看 `taskStatus=COMPLETED`（可领未领）
+- `expireTime` **当晚 24 点作废**，隔日补领无效；`limitReceiveTime` 为次日 06:00 起可领
+- 达标条件见 `getIndexInfo` 的 `nextReceiveNeedFeedCount` / `nextReceiveGetFodder`
+- **领取端点未确认**：`GET /index/dailyReceive` 带 `recordId`/`id` 仍回
+  `1503 当日领取奖励已全部领取`（只认三档、忽略 recordId）；
+  `POST /index/dailyReceive` 回 `code=1 接口请求失败`。
+  需要一次 App 领取动作的抓包才能写自动领取；在此之前脚本只观测，
+  并在控制台「每日奖励 & 福袋」面板与总览待办条提醒，避免静默漏领
 - 没到间隔时间返回 `1504 不要着急!还未到可领取时间`
 - 服务端直接给 `limitReceiveTime`（该档可领时刻）和 `surplusTime`（剩余秒数），
   不需要自己按 60 分钟推算

@@ -905,6 +905,8 @@ function renderDaily(){
     }).join('');
     const lk=a.lucky||{};
     const sg=a.sign||{};
+    const fr=a.feed_reward;
+    const frLine=fr?`<div style="font-size:13px;margin-bottom:7px;color:var(--warn)">⚑ 投喂累计奖励 <b>${esc(fr.fodder)}</b> 饲料可领未领 · ${esc(fr.expire)} 过期（领取端点待确认，先在 App 领）</div>`:'';
     const pct=lk.need?Math.min(100,Math.round((lk.current/lk.need)*100)):0;
     const bar=lk.need?`<div style="height:6px;background:var(--line);border-radius:3px;margin-top:7px;max-width:440px">
         <div style="height:6px;width:${pct}%;background:${lk.triggered?'var(--ok)':'var(--acc)'};border-radius:3px"></div></div>`:'';
@@ -914,6 +916,7 @@ function renderDaily(){
       </div>`:'';
     return `<div style="margin-bottom:16px">
       <div class="fbhead">${k} · 已领 ${got}/${tiers.length} 档${nt?`　下一档 <b style="color:var(--warn)">${nt}</b>`:'　今日已领完'}</div>
+      ${frLine}
       ${signLine}
       <div style="font-size:12.5px">${chips}</div>
       <div style="font-size:12px;color:var(--sub);margin-top:8px">福袋 ${lk.current||0}/${lk.need||0}${lk.more!=null?`　还差 ${lk.more} 次喂食`:''}${lk.triggered?'　<b style="color:var(--ok)">已触发！</b>':''}</div>
@@ -1049,6 +1052,8 @@ function renderTodo(){
   const ss=STATE.seckill_sessions||[];
   const dead=ss.filter(x=>x.left_min!=null&&x.left_min<=0);
   if(dead.length)items.push(['warn',`秒杀会话已过期（${dead.map(x=>mask(x.phone||'')||x.file).join('、')}）—— 11:54 的刷新任务会重建，前提是那一刻票据还活着`]);
+  const frs=Object.entries(STATE.daily||{}).filter(([k,v])=>v&&v.feed_reward);
+  if(frs.length)items.push(['warn',`<b>投喂累计奖励可领未领</b>：${frs.map(([k,v])=>`${esc(k)} ${esc(v.feed_reward.fodder)} 饲料（${esc(v.feed_reward.expire)} 过期）`).join('、')} —— 当晚作废，先在 App 领掉`]);
   let noSign=[];
   (STATE.accounts||[]).forEach(g=>Object.entries(g.plats||{}).forEach(([plat,a])=>{
     const st=a.stats||{};

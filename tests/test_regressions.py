@@ -556,6 +556,9 @@ class TestEndToEndResult(unittest.TestCase):
                            "feedFodders": 250},
             "fb_index": {"exchangeFlow": 1.5, "exchangeFlowUnit": "GB",
                          "exchangeFlowValue": 1536, "hasTaskToDo": False},
+            "next_receive": {"taskName": "喂养累计", "taskStatus": "COMPLETED",
+                             "fodder": 950, "recordId": 499520178,
+                             "expireTime": "2999-01-01 00:00:00"},
         }
 
         def fake_call(s, cfg, key, retries=1, extra=None):
@@ -583,6 +586,8 @@ class TestEndToEndResult(unittest.TestCase):
                 self.assertIsNotNone(r, "main() 必须输出 @@RESULT 行")
                 self.assertEqual(r["plat"], "bass")
                 self.assertEqual(r["fodder"], 750)
+                self.assertEqual(r["feed_reward"]["fodder"], 950,
+                                 "可领未领的投喂累计奖励要进结构化结果")
                 # 控制台拿同一份输出解析，统计要真的落库。
                 # 必须在 mock 作用域内调用，否则会写到真实的 gui_data/stats.json
                 dashboard.parse_bass_output("fj1", text)
@@ -1768,6 +1773,51 @@ class TestFeedAll(unittest.TestCase):
             dashboard.RUNNER = real
         self.assertIn("--feed-all", cmds[-1])
         self.assertNotIn("--feed", cmds[-1])
+
+
+# ======================================================================
+# 喂养累计（昨日投喂奖励）：先看见，别再静默漏领
+# ======================================================================
+
+class TestFeedReward(unittest.TestCase):
+    def _state(self, payload):
+        import cmcc_fj as FJ
+        with mock.patch.object(FJ, "call",
+                               lambda s, c, k, **kw: {"ok": True, "code": "0000", "data": payload}):
+            return FJ.feed_reward_state(None, {})
+
+    def test_completed_is_claimable(self):
+        fr = self._state({"taskStatus": "COMPLETED", "fodder": 950, "recordId": 1,
+                          "expireTime": "2999-01-01 00:00:00"})
+        self.assertEqual(fr["fodder"], 950)
+        self.assertEqual(fr["record_id"], "1")
+
+    def test_received_is_none(self):
+        self.assertIsNone(self._state({"taskStatus": "RECEIVED", "fodder": 950}))
+
+    def test_expired_is_none(self):
+        self.assertIsNone(self._state({"taskStatus": "COMPLETED",
+                                       "expireTime": "2020-01-01 00:00:00"}))
+
+    def test_query_error_is_none(self):
+        import cmcc_fj as FJ
+        with mock.patch.object(FJ, "call",
+                               lambda *a, **k: {"ok": False, "code": "1503", "data": None}):
+            self.assertIsNone(FJ.feed_reward_state(None, {}))
+
+    def test_checked_observation_clears_stale_reminder(self):
+        import cmcc_fj as FJ
+        acc = {"feed_reward": {"fodder": 950}}
+        FJ._apply_daily(acc, None, None, None, datetime(2026, 11, 20, 20, 0), None, True)
+        self.assertIsNone(acc["feed_reward"], "已领/已过期要清掉旧提醒")
+        FJ._apply_daily(acc, None, None, None, datetime(2026, 11, 20, 20, 0), {"fodder": 950}, True)
+        self.assertEqual(acc["feed_reward"]["fodder"], 950)
+
+    def test_unchecked_keeps_previous(self):
+        import cmcc_fj as FJ
+        acc = {"feed_reward": {"fodder": 950}}
+        FJ._apply_daily(acc, None, None, None, datetime(2026, 11, 20, 20, 0))
+        self.assertEqual(acc["feed_reward"]["fodder"], 950)
 
 
 if __name__ == "__main__":

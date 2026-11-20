@@ -345,10 +345,20 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
     # ---------- 可选：喂养 ----------
     # 抓包证实：GET /stage/batchFeed，无 body，一次耗 250 饲料 / 推进 250 阶段进度。
     # 这是游戏内正常的资源消耗动作，非伪造行为。
-    if args.feed > 0:
+    if args.feed > 0 or args.feed_all:
+        target = args.feed
+        if args.feed_all:
+            # 「喂到用完」：轮数不用人填，按当前饲料算；循环里不足 250 仍会停手
+            cur0 = call(s, cfg, "index_info")
+            fodder0 = int(((cur0.get("data") or {}).get("fodderSurplus") or 0))
+            target = fodder0 // 250
+            print(f"  喂到用完：当前饲料 {fodder0} → 本轮喂 {target} 轮（每轮 250）")
+            if target <= 0:
+                print("  -  饲料不足 250，本轮不喂")
+                return 0
         done = 0
         guard = 0
-        while done < args.feed and guard < args.feed * 3:
+        while done < target and guard < target * 3 + 3:
             guard += 1
             cur = call(s, cfg, "index_info")
             fodder = int(((cur.get("data") or {}).get("fodderSurplus") or 0))
@@ -368,7 +378,7 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
                     break
             pause(1.2, 1.0)
             r = call(s, cfg, "batch_feed")
-            if show(f"喂养 {done+1}/{args.feed}", r):
+            if show(f"喂养 {done+1}/{target}", r):
                 done += 1
                 continue
             # 133 = 阶段进度已满，"请先选择阶段奖励或继续喂养"（不消耗次数）。
@@ -430,6 +440,8 @@ def main():
     ap.add_argument("--roll", action="store_true", help="额外掷骰子（消耗次数）")
     ap.add_argument("--feed", type=int, default=0,
                     help="喂养次数（每次耗 250 饲料、推进 250 阶段进度），0=不喂")
+    ap.add_argument("--feed-all", action="store_true",
+                    help="喂到饲料不足 250 为止：轮数按当前饲料自动算，不用手填。与 --feed 互斥")
     ap.add_argument("--tasks", action="store_true",
                     help="完成 UN_DO 的 VISIT 类任务（等价于空报浏览，默认关闭）")
     ap.add_argument("--fb-tasks", action="store_true",
@@ -458,6 +470,9 @@ def main():
         return 1
     if args.continue_stage and args.auto_claim:
         print("参数冲突：--continue-stage（升阶不领奖）与 --auto-claim（领奖）只能选一个")
+        return 1
+    if args.feed_all and args.feed > 0:
+        print("参数冲突：--feed-all（喂到用完）与 --feed（指定轮数）只能选一个")
         return 1
     if args.delay > 0 and not args.dry_run:
         w = random.randint(0, args.delay)
@@ -567,6 +582,8 @@ def main():
               f"（{d.get('exchangeFlowValue')} 点）  有待做任务={d.get('hasTaskToDo')}")
 
     if args.dry_run:
+        if args.feed_all and res.get("fodder") is not None:
+            print(f"  喂到用完：按当前饲料 {res['fodder']} 计，会喂 {int(res['fodder']) // 250} 轮")
         print("\n（--dry-run，到此为止，未做任何改动）")
         emit_result(res)
         return 0
@@ -613,8 +630,8 @@ def main():
         # 补签成功后要回写一次，否则面板上仍显示"未签"
         if sign_data is not None:
             track_daily(key, None, None, sign_data)
-        # 自动策略里开了每日喂养时，就在这一轮顺带喂（run_all 只在 feed_hour 那一轮注入 --feed）
-        if args.feed > 0:
+        # 自动策略里开了每日喂养时，就在这一轮顺带喂（run_all 只在 feed_hour 那一轮注入）
+        if args.feed > 0 or args.feed_all:
             run_feed(s, cfg, args, res, prize_kind, key, track_daily)
         print("\n[daily-only] 结束。")
         emit_result(res)
@@ -642,7 +659,7 @@ def main():
         else:
             show("任务列表", tl)
 
-    if args.feed > 0:
+    if args.feed > 0 or args.feed_all:
         run_feed(s, cfg, args, res, prize_kind, key, track_daily)
 
     # ---------- 可选：流量银行浏览任务 ----------

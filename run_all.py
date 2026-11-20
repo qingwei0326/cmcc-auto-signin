@@ -422,8 +422,10 @@ def main():
         # 领哪一档奖品。不读策略就等于回到「只领三档、不喂」的老行为。
         pol = (load_policy().get("bass") or {})
         feed = int(pol.get("feed") or 0)
-        if feed > 0 and feed_due(pol):
-            extra_map["bass"] += ["--feed", str(feed)]
+        feed_all = bool(pol.get("feed_all"))
+        if (feed > 0 or feed_all) and feed_due(pol):
+            # 喂到用完时轮数由脚本按当前饲料算，这里不传数字
+            extra_map["bass"] += ["--feed-all"] if feed_all else ["--feed", str(feed)]
             feed_injected = True
         full = str(pol.get("on_stage_full") or "stop")
         if full == "claim":

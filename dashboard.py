@@ -723,6 +723,7 @@ def do_action(body: dict):
         feed = int(body.get("feed") or 0)
         if feed: cmd += ["--feed", str(feed)]
         if body.get("prize"): cmd += ["--prize", str(body["prize"])]
+        if body.get("feed_all"): cmd.append("--feed-all")
         if body.get("auto_claim"): cmd.append("--auto-claim")
         # 阶段满时的另一条路：放弃本阶奖品直接升阶（与 --auto-claim 互斥）
         if body.get("continue_stage"): cmd.append("--continue-stage")
@@ -887,6 +888,7 @@ def do_action(body: dict):
             return {"ok": False, "err": "奖品档位只能是 fee / flow / discount"}
         patch = {"bass": {
             "feed": feed, "feed_hour": hour, "on_stage_full": full, "prize": prize,
+            "feed_all": bool(b.get("feed_all")),
             "tasks": bool(b.get("tasks")), "fb_tasks": bool(b.get("fb_tasks")),
         }}
         xxl = body.get("xxl")

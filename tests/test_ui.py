@@ -349,6 +349,18 @@ class TestPolicyAppliesToScheduledRun(unittest.TestCase):
         self.assertNotIn("--tasks", args)
         self.assertNotIn("--fb-tasks", args)
 
+    def test_feed_all_injected_without_number(self):
+        """「喂到用完」不传轮数，由脚本按当天饲料算。"""
+        args = self._run({"bass": {"feed": 0, "feed_all": True, "feed_hour": 12}})
+        self.assertIn("--feed-all", args)
+        self.assertNotIn("--feed", args)
+
+    def test_fixed_rounds_still_work(self):
+        args = self._run({"bass": {"feed": 3, "feed_all": False, "feed_hour": 12}})
+        self.assertIn("--feed", args)
+        self.assertEqual(args[args.index("--feed") + 1], "3")
+        self.assertNotIn("--feed-all", args)
+
 
 class TestFeedOncePerDay(unittest.TestCase):
     def setUp(self):

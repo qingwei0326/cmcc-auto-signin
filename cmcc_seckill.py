@@ -19,6 +19,7 @@ redeem 响应判定：
   status=ZONE_TODAY_COMPLETE 今日已中过（停手）
   status=PRIZE_LIMIT_*      限次（停手）
   status=WORK_ORDER_RESTRIC_LIMIT  风控（停手）
+  status=TRAFFIC_LIMITED    参与人数太多（**瞬时限流，不消耗库存，继续重试**）
 
 抢到后奖品进 App「我的奖品」核销，脚本会推送到手机。
 
@@ -71,6 +72,11 @@ STOP_STATUSES = {
     # 属于配置错误，重试无意义，直接停手
     "NET_ERROR": "场次或奖品参数无效",
 }
+
+# 注意：TRAFFIC_LIMITED（"参与人数太多"）**故意不放在 STOP_STATUSES 里**。
+# 实测（2026-11-20 12:03 真实开抢）它只是瞬时限流，**不消耗库存**——
+# 同一时段库存仍从 0.165 继续掉到 0，是被别人抢走的，不是被这次请求打掉的。
+# 所以它应当落进「已开抢」的常规重试分支继续打，而不是当作终态停手。
 
 # 会话 cookie 滑动过期，长等时用心跳续住
 KEEPALIVE_INTERVAL = 480

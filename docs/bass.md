@@ -107,13 +107,55 @@ POST /bass-cultivateGameServer/index/dailyReceive
 ```
 GET  /bass-cultivateGameServer/stage/getUserStageInfo
 GET  /bass-cultivateGameServer/stage/getStagePrizes
+GET  /bass-cultivateGameServer/stage/feed            ← 单次喂养（一次 50 饲料）
+GET  /bass-cultivateGameServer/stage/continuousStage  ← ★ 阶段满后"继续喂养"升阶
 POST /bass-cultivateGameServer/stage/receiveStagePrize
-POST /bass-cultivateGameServer/stage/batchFeed
+POST /bass-cultivateGameServer/stage/batchFeed        ← 批量喂养（一次 250 饲料）
 ```
 
 - `batchFeed` 一次消耗 250 饲料、算 **5 次**喂食、阶段进度 +250
-- 阶段：`stageInfo.stageName` + `feedNeedFodderCount`（如一阶 5000），当前进度 `feedFodders`
+- `feed` 一次消耗 50 饲料、算 **1 次**喂食（App 上点一次就是它）
+- **每日喂食上限 50 次**（`index_info.feedCountToday` 到 50 就不再增长），
+  即 `batchFeed` 约 10 次 / `feed` 约 50 次
+- 阶段：`stageInfo.stageName` + `feedNeedFodderCount`（一阶 5000、二阶 10000…），当前进度 `feedFodders`
 - 每阶 3 档奖品：`1=话费券 2=流量券 3=折扣券`，奖品 id = `(阶段-1)*3 + 档位`
+
+#### ★ 阶段满时的 `code=133` 与两条出路（2026-11-20 12:36 抓包实测）
+
+阶段进度打满后，再点喂养会返回：
+
+```json
+{"code":"133","msg":"请先选择阶段奖励或继续喂养","data":null}
+```
+
+服务端给了**两条路**：
+
+1. **领阶段奖励**：`GET /stage/receiveStagePrize?prizeId=<id>`（当前实现走这条）
+2. **继续喂养升阶**：`GET /stage/continuousStage`（**本次新发现**，无参数）
+
+`continuousStage` 实测响应：
+
+```json
+{"code":"0000","data":{"recordId":6133490,
+  "stageInfo":{"stage":1,"stageName":"二阶","feedNeedFodderCount":10000,"reselect":0},
+  "status":0,"feedFodders":0,"prizeDto":null},"success":true}}
+```
+
+→ 调用后**直接升到下一阶、进度归零**，等价于放弃本阶奖品换取继续喂养。
+这是 `--auto-claim` 之外处理"阶段满"的第二种选择，适合不想要奖品、只想冲高阶的情况。
+
+#### 完整奖品表（6 阶，getStagePrizes 实测）
+
+| 阶段 | 话费券(id) | 流量券(id) | 折扣券(id) |
+|---|---|---|---|
+| 一阶 | 0.5元 (1) | 500MB月包 (2) | 9.9折 (3) |
+| 二阶 | 1元 (4) | 1GB日包 (5) | 9.8折 (6) |
+| 三阶 | 2元 (7) | 1GB月包 (8) | 9.7折 (9) |
+| 四阶 | 4元 (10) | 2GB月包 (11) | 9.5折 (12) |
+| 五阶 | 7元 (13) | 5GB月包 (14) | 9.3折 (15) |
+| 六阶 | 10元 (16) | 10GB月包 (17) | 9折 (18) |
+
+每项都带 `stockEnough` / `expire` / `weigh`（权重 1/2/3 对应话费/流量/折扣）。
 
 ### 福袋
 
@@ -222,9 +264,39 @@ GET /bass-commonAreaServer/H5Api/hmxb/treasure/open
 
 | 端点 | 说明 |
 |---|---|
-| `POST /bass-unifyDocsConfigServer/client/getDocsConfig` | 统一文档配置（新发现，未实现） |
-| `POST /bass-scatteredAdsServer/H5Api/scatteredAds/advertise/space/detail/lis` | 广告位详情（新发现） |
+| `POST /bass-unifyDocsConfigServer/client/getDocsConfig` | 统一文档配置（configKey 见下表） |
+| `POST /bass-scatteredAdsServer/H5Api/scatteredAds/advertise/space/detail/list/get` | 广告位详情（key=`QLSJZMDQLS` 本次返回"key 不存在"） |
 | `GET /bass-activityH5/pages/nationalDay2026/index` | **国庆活动页**（2026 新活动，未实现） |
+| `GET /bass-equityServer/H5/user/getUserMemberInfo` | 会员信息：`opened=false` 表示未开会员 |
+| `GET /bass-commonAreaServer/marathon/H5Api/getTaskInfo` | 任务详情，body `{"appId":26,"timestamp":ms,"id":"100106"}`（浏览天天大转盘） |
+
+### 12:36 抓包新发现的其他接口（未实现，价值低）
+
+| 端点 | 实测结果 | 价值 |
+|---|---|---|
+| `GET /stage/feed` | `code=133 请先选择阶段奖励或继续喂养` | 单次喂养（50 饲料），已由 batchFeed 覆盖 |
+| `GET /stage/continuousStage` | `code=0000` 升到二阶、进度归零 | **有用**，见上文"阶段满两条路" |
+| `GET /returnReward/getReturnRewardInfo` | `showPopup=false, days=[]` | 回流奖励，本号无数据 |
+| `GET /interaction/getInteractionInfo` | 返回饥饿/OTHER/满足三类宠物台词 | 纯文案，无价值 |
+| `GET /index/getMeetTask` | `code=1606 非新人` | 新人任务，本号不适用 |
+| `GET /luck/qrySubscription` | `subscriptionStatus=false` | 抽奖订阅状态 |
+
+#### unifyDocsConfig 的 configKey（本次抓到）
+
+本次 18 次调用全是这几个 key：
+
+- `TTZPHD01` = 大转盘配置（含 cover / originUrl 等，configContent 是 JSON 字符串）
+- `TTZPHD02` = 不存在
+- `QLSJHDGZ` = 券来世界活动规则（活动至 2026-11-30）
+- `QLSJHDFX` = 活动分享文案
+- `QLSJHDZL` = 活动助力文案
+- `SSETTCHLGZ` / `SSETTCHLHB` / `SSETTCHLH5` / `SSETTCHLZL` / `SSETTCHLLX` = 双十二天天抽好礼（规则/红包/H5分享/助力/拉新）
+- `ZGYDKHFWXY` = 中国移动客户服务协议
+- `H5YSZC` = H5 隐私政策入口文案
+- `TTZPPZZLFX` = 天天转盘膨胀助力分享
+
+> 活动规则里写明：券来世界 / 双十二活动都到 **2026-11-30** 结束。
+> 这些是运营配置，不是可自动化的领奖接口，归档备查。
 
 ---
 

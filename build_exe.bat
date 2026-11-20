@@ -38,9 +38,9 @@ if errorlevel 1 (
 :BUILD
 echo.
 echo [2/3] 开始打包（首次约 2-5 分钟，请耐心等待）...
-set ICONFLAG=
-if exist app.ico set ICONFLAG=--icon app.ico
-python -m PyInstaller --noconfirm --clean --onefile --windowed %ICONFLAG% --name 签到控制台 --collect-all webview app_desktop.py
+rem Build from the spec: it is the single source of truth for packaging.
+rem Building from script args would regenerate the spec and drop hand-edited config.
+python -m PyInstaller --noconfirm --clean 签到控制台.spec
 if errorlevel 1 (
     echo [错误] 打包失败，请把上方报错信息发给助手
     pause

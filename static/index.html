@@ -259,8 +259,9 @@ select.inp{cursor:pointer}
         </div>
         <div class="panel">
           <h3>流量银行任务周期 <span class="hint">每周一次 / 每月一次，记录上次完成时间并推算下次可做</span></h3>
-          <div class="infobox">服务端只返回「已完成 / 未做」，不提供完成时间。这里记录脚本每次观测到的状态变化，
-            跑满一个周期后就能反推真实重置点。<b>下次可做为估算值</b>，实际以服务端重置为准。</div>
+          <div class="infobox">服务端只返回「已完成 / 未做」，不提供完成时间，这里按本地记录的上次完成时间推算周期。
+            <br><b>周任务只在周一之后、月任务只在 1 号之后才尝试</b>——没到周期直接跳过，不空发请求（这个接口有频控）；
+            做了一半的（进行中）不受周期限制，会先收尾。</div>
           <div id="fbTasks"></div>
         </div>
       </div>
@@ -659,9 +660,12 @@ function nextRun(cycle,lastDone){
   if(cycle===0)return '不限';
   const d=new Date(lastDone.replace(' ','T'));
   if(isNaN(d.getTime()))return '—';
-  if(cycle===2)d.setDate(d.getDate()+7);
-  else if(cycle===1)d.setMonth(d.getMonth()+1);
-  else return '—';
+  if(cycle===2){                 // 下一个周一：周一之后才算新周期
+    const wd=(d.getDay()+6)%7;
+    d.setDate(d.getDate()-wd+7);
+  } else if(cycle===1){          // 下月 1 号
+    d.setMonth(d.getMonth()+1,1);
+  } else return '—';
   const now=new Date();
   const k=ymd(d);
   return k<=todayLocal()?'<span style="color:var(--ok)">今天可做</span>':k;

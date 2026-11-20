@@ -1310,5 +1310,57 @@ class TestHiddenTaskLauncher(unittest.TestCase):
         self.assertNotIn("$tr.Repetition=", ps)
 
 
+class TestFlowbankCycleGate(unittest.TestCase):
+    """流量银行周任务只在周初、月任务只在月初才尝试。"""
+
+    def test_weekly_task_due_after_monday(self):
+        import cmcc_fj as FJ
+        # 本周五完成 → 本周内都不该再试
+        fri = datetime(2026, 11, 20, 0, 55)
+        self.assertFalse(FJ.fb_due(2, "2026-11-20 00:55", datetime(2026, 11, 20, 19, 0)))
+        self.assertFalse(FJ.fb_due(2, "2026-11-20 00:55", datetime(2026, 11, 22, 23, 0)))
+        # 下周一 → 新周期，可做
+        self.assertTrue(FJ.fb_due(2, "2026-11-20 00:55", datetime(2026, 11, 23, 0, 5)))
+        # 周五做、下周一还没到就重复跑，不应误判
+        self.assertFalse(FJ.fb_due(2, "2026-11-23 09:00", datetime(2026, 11, 27, 9, 0)))
+
+    def test_monthly_task_due_on_first_day(self):
+        import cmcc_fj as FJ
+        self.assertFalse(FJ.fb_due(1, "2026-11-20 00:55", datetime(2026, 11, 30, 23, 0)))
+        self.assertTrue(FJ.fb_due(1, "2026-11-20 00:55", datetime(2026, 12, 1, 0, 5)))
+
+    def test_unknown_or_missing_record_is_due(self):
+        import cmcc_fj as FJ
+        self.assertTrue(FJ.fb_due(1, None))                 # 没记录：保守地试
+        self.assertTrue(FJ.fb_due(2, "坏格式"))
+        self.assertTrue(FJ.fb_due(0, "2026-11-20 00:55"))   # 不限次
+
+    def test_due_tasks_skips_off_cycle_but_finishes_in_progress(self):
+        import cmcc_fj as FJ
+        recs = {"1": {"last_done": "2026-11-20 08:00"}}
+        tasks = [
+            {"id": 1, "taskCycle": 2, "completeStatus": "0"},   # 本周已做 → 跳过
+            {"id": 2, "taskCycle": 2, "completeStatus": "2"},   # 进行中 → 必须收尾
+            {"id": 3, "taskCycle": 1, "completeStatus": "1"},   # 已完成 → 不碰
+            {"id": 4, "taskCycle": 1, "completeStatus": "0"},   # 无记录 → 可做
+        ]
+        todo, skipped = FJ.fb_due_tasks(tasks, recs, now=datetime(2026, 11, 20, 19, 0))
+        self.assertEqual([t["id"] for t in todo], [2, 4])
+        self.assertEqual([t["id"] for t in skipped], [1])
+
+    def test_force_ignores_cycle(self):
+        import cmcc_fj as FJ
+        recs = {"1": {"last_done": "2026-11-20 08:00"}}
+        tasks = [{"id": 1, "taskCycle": 2, "completeStatus": "0"}]
+        todo, skipped = FJ.fb_due_tasks(tasks, recs, now=datetime(2026, 11, 20, 19, 0), force=True)
+        self.assertEqual(len(todo), 1)
+        self.assertEqual(skipped, [])
+
+    def test_cli_has_fb_all(self):
+        src = (ROOT / "cmcc_fj.py").read_text(encoding="utf-8")
+        self.assertIn('"--fb-all"', src)
+        self.assertIn("fb_due_tasks(", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

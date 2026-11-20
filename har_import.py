@@ -13,11 +13,12 @@ har_import.py —— 从 HAR 里同时提取 qwhdhub app_token 与 BASS Bearer t
 
 import json
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from common import atomic_write_json
+from common import atomic_write_json, app_base, find_har_files
 
-BASE = Path(__file__).parent
+BASE = app_base()
 
 QWH_MARK = "appTokenLogin"
 BASS_HOSTS = ("wap.fj.10086.cn", "app.fmcc.com.cn")
@@ -119,6 +120,27 @@ def _read_json(path):
 def _write_json(path, obj):
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, obj, indent=2)
+    # 写完立刻复读校验：曾出现过「报告说导入成功、实际写到 exe 临时解包目录」的情况，
+    # 那个目录随进程退出消失，用户看到的却是"导入完成"。这里把问题挡在写入这一刻。
+    if not _read_json(path):
+        raise RuntimeError(f"写入后复读失败：{path}")
+
+
+def _assert_writable():
+    """确认配置目录落在项目目录里，而不是 exe 的临时解包目录。
+
+    冻结成 onefile exe 后模块的 __file__ 指向 PyInstaller 的 _MEIxxxx 临时目录，
+    写在那里的配置在 exe 关闭后就消失了。冻结时必须用 exe 所在目录。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    want = Path(sys.executable).resolve().parent
+    got = BASE.resolve()
+    if got != want:
+        raise RuntimeError(
+            f"配置目录指向错误：当前 {got}，应为 exe 所在目录 {want}"
+            "（onefile exe 解包到临时目录，配置会随进程退出丢失）"
+        )
 
 
 def _fj_targets():
@@ -143,6 +165,10 @@ def apply(text, key=None):
         return [f"解析失败：{e}"]
 
     report = []
+    try:
+        _assert_writable()
+    except RuntimeError as e:
+        return [f"导入中止：{e}"]
 
     # ---- qwhdhub 写 configs/<尾号>.json ----
     for phone, a in sorted(p["qwhd"].items()):
@@ -176,7 +202,10 @@ def apply(text, key=None):
     if not p["qwhd"]:
         hint = "（未找到 appTokenLogin 请求）"
         if p["mobiles"]:
-            hint += "，HAR 里出现的号码：" + "、".join(p["mobiles"])
+            # 只显示前几个，否则 HAR 里几百个号码会刷屏
+            shown = "、".join(p["mobiles"][:3])
+            more = f" 等 {len(p['mobiles'])} 个" if len(p["mobiles"]) > 3 else ""
+            hint += f"，HAR 里出现的号码：{shown}{more}"
         report.append("qwhdhub 无可用 token " + hint)
 
     # ---- BASS 写 configs_fj ----
@@ -209,7 +238,37 @@ def apply(text, key=None):
     else:
         report.append("BASS 无可用 token（未找到 wap.fj.10086.cn 的 Authorization: Bearer）")
 
+    report.extend(_verify(report))
     return report
+
+
+def _verify(report):
+    """导入后实测一次，让「导入成功」不等于「票能用」。
+
+    用户反馈过「界面显示导入了，但配置没变、任务还是失败」的情况，
+    根因是 onefile exe 把配置写到了临时解包目录。
+    所以这里真登录一次：能登录才算真的导入成功。
+    """
+    out = []
+    touched = []
+    for line in report:
+        if line.startswith("qwhdhub ") and "→ configs/" in line:
+            name = line.split("→ configs/")[1].split("（")[0].strip()
+            touched.append(BASE / "configs" / name)
+
+    for path in touched:
+        try:
+            import cmcc_sign as CS
+            cfg = CS.Config(str(path))
+            CS.exchange_session(cfg)
+            out.append(f"✓ {path.name} 实测登录成功，票据可用")
+        except Exception as e:
+            msg = str(e).split("——")[0].strip()[:110]
+            out.append(f"✗ {path.name} 实测登录失败：{msg}")
+
+    if touched and not out:
+        out.append("（未能实测验证，请到总览页刷新状态复核）")
+    return out
 
 
 def scan_dir(directory=None):
@@ -217,11 +276,22 @@ def scan_dir(directory=None):
 
     按修改时间**升序**处理（旧 → 新）：后写的覆盖先写的，所以必须让最新的
     HAR 最后落地。早先是倒序，目录里放两份 HAR 时旧 token 会覆盖新 token。
+
+    directory 为 None 且没指定时，会自动去「项目目录 / 下载 / 微信接收目录」
+    找候选 HAR —— 抓包文件从微信直接拖过来时也能用，不必再手动挪位置。
     """
-    d = Path(directory) if directory else BASE
-    files = sorted([f for f in d.glob("*.har")], key=lambda p: p.stat().st_mtime)
-    if not files:
-        return [f"{d} 下没有 .har 文件，请把抓包文件放到该目录，或用「选择文件」导入。"], 0
+    if directory:
+        d = Path(directory)
+        files = sorted([f for f in d.glob("*.har")], key=lambda p: p.stat().st_mtime)
+        if not files:
+            return [f"{d} 下没有 .har 文件，请把抓包文件放到该目录，或用「选择文件」导入。"], 0
+    else:
+        files = find_har_files()
+        if not files:
+            return ["没找到 HAR 文件（已查：项目目录 / 下载 / 微信接收目录），"
+                    "请用「选择文件」导入。"], 0
+        # 升序处理，最新的最后落地 → 覆盖旧 token
+        files = list(reversed(files))
 
     lines = []
     used = 0

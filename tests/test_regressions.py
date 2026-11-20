@@ -688,5 +688,142 @@ class TestPython39Compat(unittest.TestCase):
             ast.parse(p.read_text(encoding="utf-8"), filename=str(p), feature_version=(3, 9))
 
 
+class TestFrozenPathGuards(unittest.TestCase):
+    """onefile exe 解包到临时目录，配置不能写到那里。
+
+    真实故障：界面显示「HAR 导入完成」，但 configs/*.json 一个字节没变——
+    因为冻结后模块的 __file__ 指向 _MEIxxxx 临时目录，写进去的配置随进程退出消失。
+    """
+
+    def test_app_base_uses_exe_dir_when_frozen(self):
+        """冻结时 app_base() 必须指向 exe 所在目录，而不是 __file__ 的临时目录。"""
+        import common
+        import sys
+        with tempfile.TemporaryDirectory() as d:
+            fake_exe = Path(d) / "签到控制台.exe"
+            fake_exe.write_text("x", encoding="utf-8")
+            old_frozen = getattr(sys, "frozen", None)
+            old_exe = sys.executable
+            try:
+                sys.frozen = True
+                sys.executable = str(fake_exe)
+                self.assertEqual(common.app_base().resolve(), Path(d).resolve())
+            finally:
+                if old_frozen is None:
+                    del sys.frozen
+                else:
+                    sys.frozen = old_frozen
+                sys.executable = old_exe
+
+    def test_har_import_base_is_app_base(self):
+        """har_import 与 probe_token_life 会被 exe 动态导入，BASE 必须用 app_base()。"""
+        import har_import
+        import probe_token_life
+        import common
+        self.assertEqual(har_import.BASE.resolve(), common.app_base().resolve())
+        self.assertEqual(probe_token_life.BASE.resolve(), common.app_base().resolve())
+
+    def test_no_module_writes_to_frozen_tempdir(self):
+        """凡是会被 exe 动态导入的模块，都不能用 Path(__file__).parent 当数据目录。"""
+        import ast
+        # 这些模块跑在 exe 里（dashboard 动态 import 它们）
+        for name in ("har_import.py", "probe_token_life.py", "common.py"):
+            src = (ROOT / name).read_text(encoding="utf-8")
+            tree = ast.parse(src)
+            for node in tree.body:
+                # 只看模块顶层的 BASE = ... 赋值
+                if isinstance(node, ast.Assign):
+                    targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                    if "BASE" in targets:
+                        seg = ast.get_source_segment(src, node.value) or ""
+                        self.assertNotIn(
+                            "__file__",
+                            seg,
+                            f"{name} 的 BASE 不能用 __file__（冻结后指向临时目录），"
+                            "应改用 common.app_base()")
+
+    def test_write_json_verifies_readback(self):
+        """写完必须复读校验，避免'报告成功但文件没落盘'。"""
+        import har_import
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "x.json"
+            har_import._write_json(p, {"a": 1})
+            self.assertTrue(p.is_file())
+            self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"a": 1})
+
+    def test_max_body_allows_large_har(self):
+        """抓包 HAR 常在 20~70MB，64MB 上限会把正常文件直接拒掉（413）。"""
+        import dashboard
+        self.assertGreaterEqual(
+            dashboard.MAX_BODY, 128 * 1024 * 1024,
+            "MAX_BODY 太小，大 HAR 上传会返回 413")
+
+    def test_find_har_files_covers_wechat(self):
+        """微信接收目录必须被纳入搜索范围（抓包文件常从微信直接拖过来）。"""
+        import common
+        src = (ROOT / "common.py").read_text(encoding="utf-8")
+        self.assertIn("msg/file", src)
+        self.assertIn("xwechat_files", src)
+
+    def test_frontend_shows_import_error(self):
+        """导入失败原因要留在页面上，不能只靠一闪而过的 toast。"""
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("harOut", html)
+        # afterHar 里必须有 err 分支
+        i = html.find("function afterHar")
+        j = html.find("function importHar")
+        seg = html[i:j]
+        self.assertIn("err", seg)
+    def test_import_writes_into_project_dir_not_temp(self):
+        """导入必须写进项目目录 —— 这正是「显示导入了但配置没变」的根因。
+
+        真实故障复现步骤：
+          1. exe 冻结，模块 __file__ 指向 _MEIxxxx 临时目录
+          2. 导入写进临时目录
+          3. exe 关闭，临时目录被清理，configs/*.json 从未变过
+        这里直接断言：apply() 之后，项目目录下的 configs 真的变了。
+        """
+        import har_import
+        with tempfile.TemporaryDirectory() as d:
+            fake_cfg_dir = Path(d) / "configs"
+            fake_cfg_dir.mkdir()
+            target = fake_cfg_dir / "1234.json"  # 合成号 13800001234 的尾号
+            target.write_text(json.dumps({
+                "app_token": "old", "phone": "13800001234",
+            }), encoding="utf-8")
+
+            real_base = har_import.BASE
+            real_apply = har_import.apply
+            try:
+                har_import.BASE = Path(d)
+                har = {"log": {"entries": [{
+                    "startedDateTime": "2026-11-20T11:40:00.000000Z",
+                    "request": {
+                        "url": "https://wx.10086.cn/qwhdsso/appTokenLogin?sid=X",
+                        "method": "POST",
+                        "headers": [{"name": "Cookie", "value": "x"}],
+                        "postData": {"text": json.dumps({
+                            "token": "JSESSIONID=NEWTOKEN; UID=u; ticketID=ShanDong; Secure",
+                            "provinceCode": "591", "cityCode": "0596",
+                            "carrierOperator": "002", "appVersionCode": "12.5.7",
+                            "userCheckId": "3368b4ed2"})},
+                    }}]}}
+                har_import.apply(json.dumps(har))
+                after = json.loads(target.read_text(encoding="utf-8"))
+                self.assertIn("NEWTOKEN", after["app_token"],
+                              "导入没有写进 configs 目录 —— 又退回了临时目录的老问题")
+            finally:
+                har_import.BASE = real_base
+
+    def test_verify_reports_login_failure(self):
+        """导入后必须实测登录一次，假票不能报「导入成功」。"""
+        import har_import
+        import inspect
+        src = inspect.getsource(har_import)
+        self.assertIn("exchange_session", src)
+        self.assertIn("实测登录", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

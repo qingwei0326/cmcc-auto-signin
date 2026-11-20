@@ -609,7 +609,18 @@ def do_action(body: dict):
                     root = BASE.resolve()
                     if dp != root and root not in dp.parents:
                         return {"ok": False, "err": "扫描目录必须在项目内"}
-                rep, used = HI.scan_dir(d)
+                if body.get("latest"):
+                    # 只处理最新的一份，避免旧 HAR 里的过期票据覆盖新的
+                    from common import find_har_files
+                    cands = find_har_files()
+                    if not cands:
+                        return {"ok": False, "err": "没找到 HAR 文件（已查：项目目录 / 下载 / 微信接收目录）"}
+                    newest = cands[0]
+                    text = newest.read_text(encoding="utf-8", errors="ignore")
+                    rep = [f"—— {newest.name}（{newest.stat().st_size // 1048576}MB）——"] + HI.apply(text, key=(body.get("key") or None))
+                    used = 1
+                else:
+                    rep, used = HI.scan_dir(d)
         except Exception as e:
             return {"ok": False, "err": f"导入失败：{e}"}
         for line in rep:
@@ -841,7 +852,9 @@ def _load_json_safe(p: Path):
 
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
-MAX_BODY = 64 * 1024 * 1024   # HAR 可能很大，但也要有个上限
+# HAR 走浏览器上传时会被 JSON 包裹（体积再涨一点），实测抓包文件常在 20~70MB。
+# 64MB 上限会把正常 HAR 直接拒掉（413），所以放宽到 256MB。
+MAX_BODY = 256 * 1024 * 1024
 
 
 def _host_of(value) -> str:

@@ -1,5 +1,6 @@
 @echo off
-rem 启动 Web 图形控制台（自动打开浏览器 http://127.0.0.1:8765）
+chcp 65001 >nul
+rem Launch the web dashboard (opens http://127.0.0.1:8765 in the browser).
 cd /d "%~dp0"
 start "" pythonw dashboard.py
 if errorlevel 1 (

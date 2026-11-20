@@ -1,0 +1,673 @@
+"""回归测试：守住 2026-11-20 代码审查修掉的那批「静默失效」缺陷。
+
+每个用例都对应一个真实 bug —— 把代码改回去就会红。
+这些缺陷的共同点是「不报错、但功能没在干它声称的事」，所以只测返回值/命令/文件内容，
+不去 grep 源码文本。
+
+运行：
+    python -m unittest discover -s tests -v
+"""
+
+import ast
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import types
+import unittest
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from unittest import mock
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import cmcc_sign
+import common
+import dashboard
+import har_import
+import probe_token_life as PT
+import run_all
+
+ROOT = Path(__file__).resolve().parent.parent
+
+try:
+    import cmcc_xiaoxiaole as XXL
+    HAS_CRYPTO = True
+except SystemExit:          # 模块在缺 pycryptodome 时会 sys.exit(1)
+    HAS_CRYPTO = False
+
+
+def _fake_config_dir(tmp, name):
+    d = Path(tmp) / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "1234.json").write_text(json.dumps({"phone": "13800001234"}), encoding="utf-8")
+    return d
+
+
+# ======================================================================
+# run_all 的参数分发与超时
+# ======================================================================
+
+class TestRunAllRouting(unittest.TestCase):
+    def _run(self, argv):
+        cmds = []
+
+        def fake(cmd, **kw):
+            cmds.append(cmd)
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            platforms = {k: dict(v) for k, v in run_all.PLATFORMS.items()}
+            platforms["qwhd"]["dir"] = _fake_config_dir(tmp, "configs")
+            platforms["bass"]["dir"] = _fake_config_dir(tmp, "configs_fj")
+            with mock.patch.object(run_all, "PLATFORMS", platforms), \
+                 mock.patch.object(run_all.subprocess, "run", fake), \
+                 mock.patch.object(sys, "argv", ["run_all.py", *argv]), \
+                 mock.patch.object(run_all, "notify"), \
+                 redirect_stdout(io.StringIO()):
+                run_all.main()
+        return cmds
+
+    def test_keepalive_passes_login_only(self):
+        """保活必须只登录不签到：extra 曾只透传给 bass，qwhd 的 --login-only 被丢掉。"""
+        cmds = self._run(["--keepalive"])
+        self.assertTrue(cmds)
+        for c in cmds:
+            self.assertIn("cmcc_sign.py", c[1])
+            self.assertIn("--login-only", c)
+            self.assertNotIn("--dry-run", c)
+
+    def test_daily_only_passes_flag_to_bass(self):
+        cmds = self._run(["--daily-only"])
+        self.assertTrue(cmds)
+        for c in cmds:
+            self.assertIn("cmcc_fj.py", c[1])
+            self.assertIn("--daily-only", c)
+
+    def test_extra_only_goes_to_bass(self):
+        """--extra 是给 BASS 的，不能塞给 qwhd（argparse 会直接报错）。
+
+        注意必须写成 --extra=--roll：值以 -- 开头时 argparse 不接受空格分隔形式。
+        """
+        cmds = self._run(["--extra=--roll"])
+        qwhd = [c for c in cmds if "cmcc_sign.py" in c[1]]
+        bass = [c for c in cmds if "cmcc_fj.py" in c[1]]
+        self.assertTrue(qwhd and bass)
+        self.assertTrue(all("--roll" in c for c in bass))
+        self.assertTrue(all("--roll" not in c for c in qwhd))
+
+    def test_seckill_timeout_covers_the_wait(self):
+        """10:30 启动等到 12:00 约 90 分钟，超时上限必须覆盖，否则开抢前就被 kill。"""
+        fixed = datetime(2026, 11, 20, 10, 30, 0)
+        fake_dt = types.SimpleNamespace(now=lambda: fixed)
+        with mock.patch.object(run_all.datetime, "datetime", fake_dt):
+            self.assertGreater(run_all.seckill_timeout("11:59:50"), 5000)
+        self.assertEqual(run_all.seckill_timeout(""), 6 * 3600)
+        self.assertGreaterEqual(run_all.seckill_timeout("00:00:00"), 900)
+
+    def test_run_script_reports_nonzero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "a.json"
+            conf.write_text("{}", encoding="utf-8")
+            fake = lambda cmd, **kw: types.SimpleNamespace(
+                returncode=1, stdout="", stderr="[ERROR] token 过期")
+            with mock.patch.object(run_all.subprocess, "run", fake):
+                name, ok, sec, text = run_all.run_script(ROOT / "cmcc_sign.py", conf, [], 10)
+            self.assertFalse(ok)
+            self.assertIn("token 过期", text)
+
+    def test_run_script_reports_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "a.json"
+            conf.write_text("{}", encoding="utf-8")
+
+            def fake(cmd, **kw):
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 1))
+
+            with mock.patch.object(run_all.subprocess, "run", fake):
+                name, ok, sec, text = run_all.run_script(ROOT / "cmcc_sign.py", conf, [], 1)
+            self.assertFalse(ok)
+            self.assertIn("超时", text)
+
+
+# ======================================================================
+# 消消乐退出码
+# ======================================================================
+
+@unittest.skipUnless(HAS_CRYPTO, "需要 pycryptodome")
+class TestXxlExitCode(unittest.TestCase):
+    def _run(self, limit, ends, times=2):
+        calls = {"n": 0}
+
+        def fake_post(s, path, body=None, retries=1):
+            if path == "getDailyPlayLimit":
+                return limit
+            if path == "playEnd":
+                r = ends[min(calls["n"], len(ends) - 1)]
+                calls["n"] += 1
+                return r
+            return {"code": "0000", "data": []}
+
+        fake_time = types.SimpleNamespace(sleep=lambda *_: None,
+                                          strftime=time.strftime, time=time.time)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "fj.json"
+            cfg.write_text(json.dumps({"bearer_token": "x" * 36}), encoding="utf-8")
+            argv = ["cmcc_xiaoxiaole.py", "--config", str(cfg),
+                    "--times", str(times), "--gap", "0"]
+            with mock.patch.object(XXL, "post", fake_post), \
+                 mock.patch.object(XXL, "time", fake_time), \
+                 mock.patch.object(sys, "argv", argv), \
+                 redirect_stdout(io.StringIO()):
+                return XXL.main()
+
+    def test_success_is_zero(self):
+        limit = {"code": "0000", "data": {"playToken": "t", "reachedLimit": False}}
+        ends = [{"code": "0000", "data": {"prizeName": "500MB月包券"}}]
+        self.assertEqual(self._run(limit, ends), 0)
+
+    def test_daily_limit_reached_is_zero(self):
+        """次数用尽是预期内收尾，不该天天触发失败推送。"""
+        limit = {"code": "0000", "data": {"reachedLimit": True}}
+        self.assertEqual(self._run(limit, [{"code": "0000"}]), 0)
+
+    def test_stamina_exhausted_is_zero(self):
+        limit = {"code": "0000", "data": {"playToken": "t"}}
+        ends = [{"code": "-100", "msg": "您的体力不足，无法进行挑战"}]
+        self.assertEqual(self._run(limit, ends), 0)
+
+    def test_token_expired_is_one(self):
+        self.assertEqual(self._run({"code": "401"}, [{"code": "0000"}]), 1)
+
+    def test_gateway_block_is_one(self):
+        limit = {"code": "0000", "data": {"playToken": "t"}}
+        ends = [{"code": "-100", "msg": "当前查询人数过多，请稍后再试"}]
+        self.assertEqual(self._run(limit, ends, times=2), 1)
+
+    def test_missing_play_token_is_one(self):
+        limit = {"code": "0000", "data": {"playToken": ""}}
+        self.assertEqual(self._run(limit, [{"code": "0000"}]), 1)
+
+    def test_exit_code_propagates_to_process(self):
+        """main() 的返回值必须经 sys.exit 传出去，否则 run_all 永远看到 0。"""
+        p = subprocess.run([sys.executable, str(ROOT / "cmcc_xiaoxiaole.py"),
+                            "--config", str(ROOT / "no_such_config.json")],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120)
+        self.assertEqual(p.returncode, 1)
+
+
+# ======================================================================
+# 会话寿命
+# ======================================================================
+
+class TestSessionExpiry(unittest.TestCase):
+    def test_heartbeat_does_not_extend_expiry(self):
+        """同一个 cookie 心跳回写不能刷新 expires_at —— 服务端是 2 小时硬过期。"""
+        import requests
+        cfg = types.SimpleNamespace(phone="13800001234")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "s.json"
+            s = requests.Session()
+            s.cookies.set("QWHD_SESSION_TOKEN", "AAA", domain="wx.10086.cn", path="/")
+            with mock.patch.object(cmcc_sign, "activity_session_file", lambda c: path):
+                cmcc_sign.save_activity_session(s, "ref", cfg)
+                first = json.loads(path.read_text(encoding="utf-8"))
+                time.sleep(1.1)
+                cmcc_sign.save_activity_session(s, "ref", cfg)      # 心跳
+                again = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(again["at"], first["at"])
+                self.assertEqual(again["expires_at"], first["expires_at"])
+                # 换了新 cookie（重新登录）才重新起算
+                s.cookies.set("QWHD_SESSION_TOKEN", "BBB", domain="wx.10086.cn", path="/")
+                cmcc_sign.save_activity_session(s, "ref", cfg)
+                fresh = json.loads(path.read_text(encoding="utf-8"))
+                self.assertNotEqual(fresh["at"], first["at"])
+
+    def test_dashboard_computes_left_min(self):
+        """datetime.datetime 笔误会让剩余分钟永远是 null（异常被吞掉）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            now = datetime.now()
+            (d / "seckill_session_1234.json").write_text(json.dumps({
+                "cookie": {"QWHD_SESSION_TOKEN": "x"}, "referer": "r",
+                "at": now.isoformat(timespec="seconds"),
+                "expires_at": (now + timedelta(minutes=90)).isoformat(timespec="seconds"),
+            }), encoding="utf-8")
+            with mock.patch.object(dashboard, "DATA", d):
+                out = dashboard._list_seckill_sessions()
+            self.assertEqual(len(out), 1)
+            self.assertIsNotNone(out[0]["left_min"])
+            self.assertTrue(88 <= out[0]["left_min"] <= 90)
+
+
+# ======================================================================
+# 票据寿命探测
+# ======================================================================
+
+class TestTokenLifeProbe(unittest.TestCase):
+    def test_mark_issued_only_touches_matching_account(self):
+        """给 3239 导入 HAR 不能清空 4167 的样本、写上 3239 的签发时刻。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            a, b = d / "3239.json", d / "4167.json"
+            for p, ph in ((a, "18405963239"), (b, "17359634167")):
+                p.write_text(json.dumps({"phone": ph, "state": "expired",
+                                         "samples": [{"at": "x", "ok": False}]}),
+                             encoding="utf-8")
+            with mock.patch.object(PT, "OUT_DIR", d), \
+                 mock.patch.object(PT, "_accounts", lambda: [a, b]):
+                PT.mark_issued("2026-11-20T10:00:00", phone="18405963239")
+            ra = json.loads(a.read_text(encoding="utf-8"))
+            rb = json.loads(b.read_text(encoding="utf-8"))
+            self.assertEqual(ra["state"], "unknown")
+            self.assertEqual(ra["samples"], [])
+            self.assertEqual(ra["issued_at"], "2026-11-20T10:00:00")
+            self.assertEqual(rb["state"], "expired")
+            self.assertEqual(len(rb["samples"]), 1)
+            self.assertNotIn("issued_at", rb)
+
+    def test_network_error_is_not_expiry(self):
+        with mock.patch.object(PT.CS, "exchange_session",
+                               side_effect=RuntimeError("网络异常: timed out")):
+            self.assertEqual(PT._probe(None)[0], "error")
+        with mock.patch.object(PT.CS, "exchange_session",
+                               side_effect=RuntimeError("登录页未返回 sid，SSO 入口可能已变更")):
+            self.assertEqual(PT._probe(None)[0], "error")
+        with mock.patch.object(PT.CS, "exchange_session",
+                               side_effect=RuntimeError(
+                                   "appTokenLogin 失败: FAILED APP登录状态已过期 —— 请重新抓包")):
+            self.assertEqual(PT._probe(None)[0], "expired")
+        with mock.patch.object(PT.CS, "exchange_session", return_value=None):
+            self.assertEqual(PT._probe(None)[0], "alive")
+
+    def test_error_sample_does_not_poison_conclusion(self):
+        rec = {"issued_at": "2026-11-20T08:00:00", "samples": [
+            {"at": "2026-11-20T08:30:00", "ok": True, "kind": "alive"},
+            {"at": "2026-11-20T08:32:00", "ok": False, "kind": "error"},
+            {"at": "2026-11-20T09:05:00", "ok": False, "kind": "expired"}]}
+        text = PT._conclude(rec)
+        self.assertIn("09:05:00", text)
+        self.assertNotIn("08:32:00", text)
+
+
+# ======================================================================
+# HAR 导入
+# ======================================================================
+
+class TestHarImport(unittest.TestCase):
+    def _har(self, token, ts):
+        return json.dumps({"log": {"entries": [{
+            "startedDateTime": ts,
+            "request": {"url": "https://wx.10086.cn/qwhdsso/appTokenLogin.do",
+                        "headers": [],
+                        "postData": {"text": json.dumps({
+                            "token": token,
+                            "userCheckId": format(18405963239, "X")})}}}]}})
+
+    def test_newest_har_wins(self):
+        """目录里放两份 HAR 时，必须让最新那份最后落地（曾按倒序处理，旧的覆盖新的）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            old, new = d / "old.har", d / "new.har"
+            old.write_text(self._har("JSESSIONID=OLD; UID=1; ticketID=x",
+                                     "2026-11-20T01:00:00Z"), encoding="utf-8")
+            new.write_text(self._har("JSESSIONID=NEW; UID=1; ticketID=x",
+                                     "2026-11-20T02:00:00Z"), encoding="utf-8")
+            os.utime(old, (1000000, 1000000))
+            os.utime(new, (2000000, 2000000))
+            with mock.patch.object(har_import, "BASE", d), \
+                 mock.patch.object(PT, "OUT_DIR", d / "life"), \
+                 mock.patch.object(PT, "_accounts", lambda: []):
+                lines, used = har_import.scan_dir(d)
+            self.assertEqual(used, 2)
+            cfg = json.loads((d / "configs" / "3239.json").read_text(encoding="utf-8"))
+            self.assertTrue(cfg["app_token"].startswith("JSESSIONID=NEW"), cfg["app_token"])
+
+    def test_mark_issued_receives_phone(self):
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(har_import, "BASE", Path(tmp)), \
+                 mock.patch.object(PT, "mark_issued",
+                                   lambda ts, phone=None: seen.update(ts=ts, phone=phone)):
+                har_import.apply(self._har("JSESSIONID=A; UID=1; ticketID=x",
+                                           "2026-11-20T04:09:25Z"))
+        self.assertEqual(seen["phone"], "18405963239")
+        self.assertEqual(seen["ts"], "2026-11-20T12:09:25")   # UTC → 本地 +8
+
+
+# ======================================================================
+# 跨进程状态写入
+# ======================================================================
+
+class TestCrossProcessState(unittest.TestCase):
+    def test_update_json_does_not_lose_updates(self):
+        """4 个进程同时改同一份 json，各自的 key 都要留下（原子写防不了丢更新）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "state.json"
+            code = (
+                "import sys,time;sys.path.insert(0,r'%s');import common;"
+                "common.update_json(r'%s', lambda st: (time.sleep(0.2), st.update({sys.argv[1]:1})))"
+            ) % (ROOT, p)
+            procs = [subprocess.Popen([sys.executable, "-c", code, f"k{i}"],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                     for i in range(4)]
+            for pr in procs:
+                out, err = pr.communicate(timeout=120)
+                self.assertEqual(pr.returncode, 0, err.decode("utf-8", "replace"))
+            st = json.loads(p.read_text(encoding="utf-8"))
+            self.assertEqual(sorted(st), ["k0", "k1", "k2", "k3"])
+
+
+# ======================================================================
+# 控制台安全边界
+# ======================================================================
+
+class TestDashboardGuards(unittest.TestCase):
+    def test_safe_conf_path_rejects_escape(self):
+        for bad in ("../config.json", "configs/../../x.json", "C:/Windows/win.ini",
+                    "/etc/passwd", "configs/.hidden.json", "configs/sub/a.json",
+                    "configs_fj/..\\evil.json", "", None):
+            self.assertIsNone(dashboard.safe_conf_path(bad), bad)
+        ok = dashboard.safe_conf_path("configs/3239.json")
+        self.assertIsNotNone(ok)
+        self.assertEqual(ok.parent.name, "configs")
+
+    def test_sched_reg_rejects_injected_time(self):
+        """time 会插进单引号 PowerShell 串，不校验就能闭合引号执行任意命令。"""
+        r = dashboard.do_action({"action": "sched_reg", "kind": "sign",
+                                 "time": "08:30'; Start-Process calc; '"})
+        self.assertFalse(r["ok"])
+
+    def test_bass_token_new_rejects_traversal(self):
+        r = dashboard.do_action({"action": "bass_token_new", "name": "..\\..\\evil"})
+        self.assertFalse(r["ok"])
+
+    def test_run_actions_reject_bad_config_path(self):
+        for act in ("seckill_run", "xxl_run"):
+            r = dashboard.do_action({"action": act, "file": "../config.json"})
+            self.assertFalse(r["ok"], act)
+
+    def test_host_of(self):
+        self.assertEqual(dashboard._host_of("127.0.0.1:8765"), "127.0.0.1")
+        self.assertEqual(dashboard._host_of("http://localhost:8765"), "localhost")
+        self.assertEqual(dashboard._host_of("https://evil.example"), "evil.example")
+        self.assertEqual(dashboard._host_of("[::1]:8765"), "[::1]")
+
+    def test_local_only(self):
+        def h(headers):
+            obj = dashboard.Handler.__new__(dashboard.Handler)
+            obj.headers = headers
+            return obj
+        self.assertTrue(h({"Host": "127.0.0.1:8765"})._local_only())
+        self.assertTrue(h({"Host": "localhost:8765",
+                           "Origin": "http://localhost:8765"})._local_only())
+        self.assertFalse(h({"Host": "evil.example:8765"})._local_only())
+        self.assertFalse(h({"Host": "127.0.0.1:8765",
+                            "Origin": "https://evil.example"})._local_only())
+
+    def test_http_guards_end_to_end(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+        def status(req):
+            try:
+                with urlopen(req, timeout=10) as r:
+                    return r.status
+            except HTTPError as e:
+                return e.code
+
+        try:
+            # 会明文吐 app_token 的死端点必须已经不存在
+            self.assertEqual(status(base + "/api/bass_cfg?file=configs/3239.json"), 404)
+            # 恶意网页的跨站 POST → 403
+            self.assertEqual(status(Request(
+                base + "/api/action", data=b'{"action":"stop"}',
+                headers={"Content-Type": "application/json",
+                         "Origin": "https://evil.example"})), 403)
+            # text/plain 属「简单请求」不触发预检 → 必须被 415 挡住
+            self.assertEqual(status(Request(
+                base + "/api/action", data=b'{"action":"stop"}',
+                headers={"Content-Type": "text/plain"})), 415)
+            # 正常本机请求仍能拿到页面
+            self.assertEqual(status(base + "/"), 200)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            th.join(timeout=10)
+
+
+# ======================================================================
+# 结构化结果（取代正则解析日志）
+# ======================================================================
+
+class TestStructuredResults(unittest.TestCase):
+    def test_emit_parse_roundtrip(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            common.emit_result({"plat": "qwhd", "sign_days": 12})
+        self.assertEqual(common.parse_result(buf.getvalue()),
+                         {"plat": "qwhd", "sign_days": 12})
+
+    def test_parse_result_takes_last(self):
+        self.assertEqual(common.parse_result('@@RESULT {"a":1}\n噪音\n@@RESULT {"a":2}\n'),
+                         {"a": 2})
+        self.assertIsNone(common.parse_result("没有结果行"))
+        self.assertIsNone(common.parse_result("@@RESULT {坏 json"))
+
+    def test_qwhd_parser_prefers_json_over_log_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = Path(tmp) / "stats.json"
+            text = ("当前累计签到 999 天，今日已签\n"
+                    '@@RESULT {"plat":"qwhd","token":"ok","sign_days":12,'
+                    '"today_signed":true,"flow_mb":100,"last_reward":"100MB"}')
+            with mock.patch.object(dashboard, "STATS_FILE", sf):
+                dashboard.parse_qwhd_output("k", text)
+            st = json.loads(sf.read_text(encoding="utf-8"))["k"]
+            self.assertEqual(st["sign_days"], 12)        # 不是日志里的 999
+            self.assertEqual(st["flow_mb_total"], 100.0)
+            self.assertEqual(st["token_qwhd"], "ok")
+
+    def test_bass_parser_prefers_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = Path(tmp) / "stats.json"
+            text = ('@@RESULT {"plat":"bass","token":"ok","fodder":750,'
+                    '"stage":"第2阶 250/5000","fb_exchange":"1.5GB",'
+                    '"today_signed":true,"flow_mb":500,"tasks":3,"feeds":2,'
+                    '"last_reward":"500MB月包券"}')
+            with mock.patch.object(dashboard, "STATS_FILE", sf):
+                dashboard.parse_bass_output("k", text)
+            st = json.loads(sf.read_text(encoding="utf-8"))["k"]
+            self.assertEqual(st["fodder"], 750)
+            self.assertEqual(st["fb_exchange"], "1.5GB")
+            self.assertEqual(st["tasks_done_total"], 3)
+            self.assertEqual(st["feeds_total"], 2)
+            self.assertEqual(st["flow_mb_total"], 500.0)
+
+    def test_bass_idle_does_not_claim_token_ok(self):
+        """本地短路那轮根本没发请求，不能据此说 token 有效。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = Path(tmp) / "stats.json"
+            text = '@@RESULT {"plat":"bass","token":"ok","idle":true,"today_signed":true}'
+            with mock.patch.object(dashboard, "STATS_FILE", sf):
+                dashboard.parse_bass_output("k", text)
+            st = json.loads(sf.read_text(encoding="utf-8"))["k"]
+            self.assertNotIn("token_bass", st)
+
+    def test_legacy_fallback_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = Path(tmp) / "stats.json"
+            with mock.patch.object(dashboard, "STATS_FILE", sf):
+                dashboard.parse_qwhd_output("k", "当前累计签到 7 天，今日已签\n活动会话建立成功")
+            st = json.loads(sf.read_text(encoding="utf-8"))["k"]
+            self.assertEqual(st["sign_days"], "7")
+            self.assertEqual(st["token_qwhd"], "ok")
+
+    def test_api_post_refreshes_timestamp_on_retry(self):
+        """1006 按时间戳判定，带旧时间戳重试只会继续被拒。"""
+        bodies = []
+
+        class FakeSession:
+            def post(self, url, json=None, timeout=None):
+                bodies.append(dict(json))
+                code = "1006" if len(bodies) == 1 else "0"
+                return types.SimpleNamespace(
+                    status_code=200, json=lambda: {"code": code, "msg": "", "data": {}})
+
+        with mock.patch.object(common.time, "sleep", lambda *_: None):
+            res = common.api_post(FakeSession(), "https://x",
+                                  body={"appId": 0, "timestamp": 1}, retries=1)
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(bodies), 2)
+        self.assertNotEqual(bodies[0]["timestamp"], bodies[1]["timestamp"])
+
+
+# ======================================================================
+# 端到端：真实 main() → @@RESULT → 控制台解析 → 统计落库
+# ======================================================================
+
+class TestEndToEndResult(unittest.TestCase):
+    def test_bass_main_emits_result_dashboard_can_use(self):
+        import cmcc_fj
+        data = {
+            "index_info": {"fodderSurplus": 750, "feedCountToday": 3},
+            "sign_info": {"todaySign": True, "openSignTime": True, "cycleToday": 5,
+                          "signBeginHour": 6,
+                          "signDateList": [{"today": True, "fodder": 1200},
+                                           {"fodder": 1500}]},
+            "daily_list": [{"taskName": "阶段一", "taskStatus": "RECEIVED",
+                            "currentTask": False, "fodder": 150,
+                            "limitInfo": {"intervalMinutes": 60}}],
+            "lucky_bag": {"currentFeedCount": 100, "nextTriggerCount": 300,
+                          "needMoreFeeds": 200, "isNearTrigger": False},
+            "stage_info": {"stageInfo": {"stageName": "第2阶",
+                                         "feedNeedFodderCount": 5000},
+                           "feedFodders": 250},
+            "fb_index": {"exchangeFlow": 1.5, "exchangeFlowUnit": "GB",
+                         "exchangeFlowValue": 1536, "hasTaskToDo": False},
+        }
+
+        def fake_call(s, cfg, key, retries=1, extra=None):
+            return {"ok": True, "code": "0000", "msg": "", "data": data[key]}
+
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            cfg = d / "fj1.json"
+            cfg.write_text(json.dumps({"bearer_token": "x" * 36, "app_id": "0",
+                                       "phone": "13800001234"}), encoding="utf-8")
+            sf = d / "stats.json"
+            with mock.patch.object(cmcc_fj, "call", fake_call), \
+                 mock.patch.object(cmcc_fj, "new_session", lambda c: object()), \
+                 mock.patch.object(cmcc_fj, "pause", lambda *a, **k: None), \
+                 mock.patch.object(cmcc_fj, "DAILY_STATE", d / "daily.json"), \
+                 mock.patch.object(cmcc_fj, "FB_STATE", d / "fb.json"), \
+                 mock.patch.object(dashboard, "STATS_FILE", sf), \
+                 mock.patch.object(sys, "argv", ["cmcc_fj.py", "--config", str(cfg), "--dry-run"]), \
+                 redirect_stdout(buf):
+                rc = cmcc_fj.main()
+                self.assertEqual(rc, 0)
+                text = buf.getvalue()
+                r = common.parse_result(text)
+                self.assertIsNotNone(r, "main() 必须输出 @@RESULT 行")
+                self.assertEqual(r["plat"], "bass")
+                self.assertEqual(r["fodder"], 750)
+                # 控制台拿同一份输出解析，统计要真的落库。
+                # 必须在 mock 作用域内调用，否则会写到真实的 gui_data/stats.json
+                dashboard.parse_bass_output("fj1", text)
+                st = json.loads(sf.read_text(encoding="utf-8"))["fj1"]
+            self.assertEqual(st["fodder"], 750)
+            self.assertEqual(st["fb_exchange"], "1.5GB")
+            self.assertEqual(st["today_signed_bass"], dashboard.TODAY())
+            self.assertIn("第2阶", st["stage"])
+            self.assertEqual(st["token_bass"], "ok")
+
+
+# ======================================================================
+# 前端拆分与打包
+# ======================================================================
+
+class TestFrontendSplit(unittest.TestCase):
+    def test_html_file_matches_loaded_constant(self):
+        f = ROOT / "static" / "index.html"
+        self.assertTrue(f.is_file())
+        self.assertEqual(dashboard.INDEX_HTML, f.read_text(encoding="utf-8"))
+        for marker in ("runSeckill", "seckill_run", "cmcc_seckill.py"):
+            self.assertIn(marker, dashboard.INDEX_HTML)
+
+    def test_missing_frontend_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(dashboard, "BASE", Path(tmp)), \
+                 mock.patch.object(sys, "frozen", False, create=True):
+                with self.assertRaises(SystemExit):
+                    dashboard._load_frontend()
+
+    def test_frozen_frontend_resolves_from_meipass(self):
+        """exe 运行时页面在 PyInstaller 解包目录里，不在 exe 同级目录。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "bundle"
+            (bundle / "static").mkdir(parents=True)
+            (bundle / "static" / "index.html").write_text("<html>frozen</html>", encoding="utf-8")
+            with mock.patch.object(dashboard, "BASE", Path(tmp) / "exe_dir"), \
+                 mock.patch.object(sys, "frozen", True, create=True), \
+                 mock.patch.object(sys, "_MEIPASS", str(bundle), create=True):
+                self.assertEqual(dashboard._load_frontend(), "<html>frozen</html>")
+
+    def test_build_config_bundles_static(self):
+        spec = (ROOT / "签到控制台.spec").read_text(encoding="utf-8")
+        bat = (ROOT / "build_exe.bat").read_text(encoding="utf-8")
+        self.assertIn("('static', 'static')", spec)
+        # bat 必须从 spec 构建：用命令行参数会让 PyInstaller 重新生成 spec、覆盖手工配置
+        self.assertIn("签到控制台.spec", bat)
+
+
+# ======================================================================
+# Python 3.9 兼容（README 承诺的最低版本）
+# ======================================================================
+
+class TestPython39Compat(unittest.TestCase):
+    def test_pep604_annotations_have_future_import(self):
+        for p in sorted(ROOT.glob("*.py")):
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+            has_future = any(
+                isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                and any(a.name == "annotations" for a in n.names)
+                for n in tree.body)
+            uses_union = False
+            for n in ast.walk(tree):
+                anns = []
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    a = n.args
+                    anns = [x.annotation for x in
+                            a.posonlyargs + a.args + a.kwonlyargs if x.annotation]
+                    if n.returns:
+                        anns.append(n.returns)
+                elif isinstance(n, ast.AnnAssign) and n.annotation:
+                    anns = [n.annotation]
+                for ann in anns:
+                    if any(isinstance(s, ast.BinOp) and isinstance(s.op, ast.BitOr)
+                           for s in ast.walk(ann)):
+                        uses_union = True
+            if uses_union:
+                self.assertTrue(
+                    has_future,
+                    f"{p.name} 用了 X|Y 注解但没有 from __future__ import annotations，"
+                    f"Python 3.9 导入即 TypeError")
+
+    def test_no_syntax_newer_than_39(self):
+        for p in sorted(ROOT.glob("*.py")):
+            ast.parse(p.read_text(encoding="utf-8"), filename=str(p), feature_version=(3, 9))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -185,10 +185,6 @@ class TestRunAll(unittest.TestCase):
         self.assertFalse(log.enabled)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestSeckill(unittest.TestCase):
     """秒杀相关的纯逻辑（选场次、状态判定、会话路径隔离）。"""
 
@@ -404,24 +400,27 @@ class TestTokenLifeProbe(unittest.TestCase):
                 PT._accounts = real_accounts
 
     def test_bat_files_use_crlf(self):
-        """Windows 的 bat 必须是 CRLF，LF 会导致 cmd 解析报错。"""
-        for name in ("run_token_life.bat", "run_jwt_keepalive.bat", "run_daily_reward.bat"):
-            p = Path(__file__).resolve().parent.parent / name
-            if not p.exists():
-                continue
+        """Windows 的 bat 必须是 CRLF，LF 会导致 cmd 解析报错。覆盖全部 bat。"""
+        root = Path(__file__).resolve().parent.parent
+        bats = sorted(root.glob("*.bat"))
+        self.assertTrue(bats, "项目根目录下应有 bat 启动脚本")
+        for p in bats:
             data = p.read_bytes()
-            self.assertIn(b"\r\n", data, f"{name} 缺 CRLF")
+            self.assertIn(b"\r\n", data, f"{p.name} 缺 CRLF")
             # 不应出现"只有 LF 没有 CR"的裸换行
-            self.assertNotIn(b"\n", data.replace(b"\r\n", b""), f"{name} 存在裸 LF")
+            self.assertNotIn(b"\n", data.replace(b"\r\n", b""), f"{p.name} 存在裸 LF")
 
     def test_bat_comments_are_english(self):
         """cmd 在 GBK 控制台下会把 bat 里的中文 rem 注释当命令执行。"""
-        for name in ("run_token_life.bat", "run_jwt_keepalive.bat", "run_daily_reward.bat"):
-            p = Path(__file__).resolve().parent.parent / name
-            if not p.exists():
-                continue
+        root = Path(__file__).resolve().parent.parent
+        for p in sorted(root.glob("*.bat")):
             for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
                 s = line.strip()
                 if s.lower().startswith("rem"):
                     self.assertTrue(s.isascii(),
-                                    f"{name} 的 rem 注释含非 ASCII 字符：{s}")
+                                    f"{p.name} 的 rem 注释含非 ASCII 字符：{s}")
+
+
+if __name__ == "__main__":
+    # 入口必须在文件末尾：放在中间会让后面的测试类在直接运行时根本不执行
+    unittest.main(verbosity=2)

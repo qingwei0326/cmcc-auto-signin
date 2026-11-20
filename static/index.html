@@ -19,11 +19,28 @@ a{color:var(--acc)}
 .brand b{font-size:14.5px;font-weight:600;display:block}
 .brand small{display:block;font-size:11px;color:var(--sub);margin-top:4px}
 nav{padding:12px 10px;flex:1}
-nav button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:none;color:var(--sub);font-size:13.5px;padding:9px 12px;border-radius:6px;cursor:pointer;margin-bottom:2px;border-left:2px solid transparent;transition:.12s}
+nav button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:none;color:var(--sub);font-size:14px;padding:9px 12px;border-radius:6px;cursor:pointer;margin-bottom:2px;border-left:2px solid transparent;transition:.12s}
 nav button svg{width:15px;height:15px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;opacity:.85}
 nav button:hover{color:var(--txt);background:var(--card)}
 nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--acc);font-weight:500}
-.side-foot{padding:14px 16px;border-top:1px solid var(--line);font-size:11.5px;color:var(--sub);line-height:1.7}
+.side-foot{padding:14px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--sub);line-height:1.7}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+.scrollhint{display:none;font-size:12px;color:var(--sub);margin:6px 0}
+.stamp{font-size:11.5px;color:var(--sub);font-weight:400}
+.envbar{background:rgba(212,106,106,.1);border:1px solid rgba(212,106,106,.4);color:#f0a3a3;border-radius:10px;padding:12px 15px;margin-bottom:14px;font-size:13px;line-height:1.8;white-space:pre-line}
+.errbar{background:rgba(212,106,106,.1);border:1px solid rgba(212,106,106,.4);color:#f0a3a3;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;line-height:1.7;display:none;white-space:pre-line}
+.errbar b{cursor:pointer;float:right;color:var(--sub);font-weight:400}
+details.guide{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:10px 0;font-size:13px;line-height:1.9}
+details.guide summary{cursor:pointer;color:var(--acc);font-weight:500}
+details.guide ol{margin:8px 0 2px 20px}
+/* 弹层：账号编辑 / 计划任务日志 */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:20px;z-index:100}
+.modal.on{display:flex}
+.modal .box{background:var(--card);border:1px solid var(--line);border-radius:12px;width:100%;max-width:920px;max-height:84vh;display:flex;flex-direction:column}
+.modal .bh{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);font-size:14.5px;font-weight:600}
+.modal .bh .x{margin-left:auto}
+.modal .bb{padding:16px 18px;overflow:auto}
+.modal pre{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.7;white-space:pre-wrap;word-break:break-all;color:#c9d4ee}
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
 .topbar{display:flex;align-items:center;gap:12px;padding:13px 28px;border-bottom:1px solid var(--line);background:var(--bg);position:sticky;top:0;z-index:10}
 .topbar .title{font-size:15px;font-weight:600}
@@ -33,11 +50,15 @@ nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--ac
 /* ===== 页头 ===== */
 .phead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
 .phead h2{font-size:18px;font-weight:600}
-.phead .desc{font-size:12.5px;color:var(--sub);margin-top:5px}
+.phead .desc{font-size:13px;color:var(--sub);margin-top:5px;line-height:1.7}
 .phead .ops{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 /* ===== 按钮 ===== */
-.btn{background:var(--card2);border:1px solid var(--line);color:var(--txt);padding:7px 15px;border-radius:6px;font-size:13px;cursor:pointer;transition:.15s}
+.btn{background:var(--card2);border:1px solid var(--line);color:var(--txt);padding:7px 15px;border-radius:6px;font-size:13.5px;cursor:pointer;transition:.15s}
 .btn:hover{border-color:var(--acc);color:var(--acc)}
+/* 有任务在跑时，动作按钮统一置灰：原先照样可点，点了只弹一句「可能正忙」 */
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn[disabled]:hover{border-color:var(--line);color:var(--txt)}
+.btn.pri[disabled]:hover{opacity:.4;color:#fff}
 .btn.pri{background:var(--acc);border:1px solid var(--acc);color:#fff;font-weight:500}
 .btn.pri:hover{opacity:.85;color:#fff}
 .btn.sm{padding:5px 11px;font-size:12px;border-radius:5px}
@@ -50,7 +71,7 @@ nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--ac
 .kpi .k{font-size:12px;color:var(--sub);margin-bottom:8px}
 .kpi .v{font-size:25px;font-weight:600;letter-spacing:-.3px}
 .kpi .v small{font-size:12.5px;color:var(--sub);font-weight:400;margin-left:2px}
-.kpi .c{font-size:11px;color:var(--sub);margin-top:7px}
+.kpi .c{font-size:12px;color:var(--sub);margin-top:7px}
 .kpi .spark{display:block;width:100%;height:26px;margin-top:9px}
 .kpi .spark polyline{fill:none;stroke:var(--acc);stroke-width:1.6;vector-effect:non-scaling-stroke;opacity:.7}
 .kpi .v,.strip .v,.stat .v{font-variant-numeric:tabular-nums}
@@ -76,15 +97,18 @@ nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--ac
 /* 总览待办条：回答「我现在要不要动手」 */
 .todo{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 15px;margin-bottom:14px}
 .todo .th{font-size:12px;color:var(--sub);letter-spacing:.4px;margin-bottom:7px}
-.todo .it{display:flex;gap:9px;align-items:flex-start;font-size:13px;padding:4px 0;line-height:1.6}
+.todo .it{display:flex;gap:9px;align-items:flex-start;font-size:13.5px;padding:4px 0;line-height:1.7}
 .todo .dot{width:7px;height:7px;border-radius:50%;margin-top:8px;flex:none}
 /* 定时任务表 */
-.stab{width:100%;border-collapse:collapse;font-size:12.5px}
+.stab{width:100%;border-collapse:collapse;font-size:13px}
+.tablewrap>.stab{min-width:860px}
+.tablewrap>.fbtab{min-width:700px}
+.tablewrap>.runtab{min-width:520px}
 .stab th{text-align:left;font-weight:400;color:var(--sub);padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
 .stab td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
 .stab tr:last-child td{border-bottom:none}
 .stab .nm{font-weight:500}
-.stab .sub{color:var(--sub);font-size:11.5px}
+.stab .sub{color:var(--sub);font-size:12px}
 /* 执行结果区（消消乐 / 拓展活动） */
 .outbox{margin-top:12px;background:#0c0e12;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
   font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.65;max-height:260px;overflow:auto;white-space:pre-wrap}
@@ -94,10 +118,10 @@ nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--ac
 .stat:last-child{border-bottom:none;padding-bottom:0}
 .stat .k{font-size:12.5px;color:var(--sub);white-space:nowrap}
 .stat .v{font-size:14px;font-weight:600;text-align:right}
-.stat .v small{font-size:11px;color:var(--sub);font-weight:400}
+.stat .v small{font-size:11.5px;color:var(--sub);font-weight:400}
 .stat .v.wrap{font-size:12px;line-height:1.5;max-width:62%;text-align:right;font-weight:500}
 .stat .v.y{color:var(--warn)}
-.stat .v .sum{display:block;font-size:10.5px;color:var(--sub);font-weight:400;margin-top:2px}
+.stat .v .sum{display:block;font-size:11.5px;color:var(--sub);font-weight:400;margin-top:2px}
 .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .hist{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
 .hist .t{font-size:11.5px;color:var(--sub);margin-bottom:7px}
@@ -108,7 +132,7 @@ nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--ac
 .bar .tip{display:none;position:absolute;bottom:110%;left:50%;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:3px 8px;border-radius:5px;white-space:nowrap;z-index:5}
 .bar:hover .tip{display:block}
 .bardates{display:flex;gap:5px;margin-top:4px}
-.bardates span{flex:1;text-align:center;font-size:9.5px;color:var(--sub)}
+.bardates span{flex:1;text-align:center;font-size:10.5px;color:var(--sub)}
 .hist .empty{font-size:12px;color:var(--sub);padding:20px 0;text-align:center;border:1px dashed var(--line);border-radius:6px}
 /* ===== 面板 / 统计条 / 表格 ===== */
 .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:16px}
@@ -120,7 +144,7 @@ nav button.on{color:var(--txt);background:var(--card);border-left-color:var(--ac
 .strip .k{font-size:11.5px;color:var(--sub);margin-bottom:5px}
 .strip .v{font-size:19px;font-weight:600}
 .strip .v small{font-size:12px;color:var(--sub);font-weight:400}
-table.runtab{width:100%;max-width:880px;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+table.runtab{width:100%;max-width:880px;border-collapse:collapse;font-size:13px;table-layout:fixed}
 .runtab th:nth-child(1){width:150px}
 .runtab th:nth-child(3){width:90px}
 .runtab th:nth-child(4){width:70px}
@@ -131,12 +155,12 @@ table.runtab{width:100%;max-width:880px;border-collapse:collapse;font-size:12.5p
 .runtab tr:last-child td{border-bottom:none}
 .runtab td.num{text-align:right;font-variant-numeric:tabular-nums}
 /* 流量银行任务周期表 */
-table.fbtab{width:100%;max-width:960px;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+table.fbtab{width:100%;max-width:960px;border-collapse:collapse;font-size:13px;table-layout:fixed}
 .fbtab th{color:var(--sub);font-weight:400;text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);font-size:12px}
 .fbtab td{padding:8px 10px;border-bottom:1px solid var(--line)}
 .fbtab tr:last-child td{border-bottom:none}
 .fbtab code{font-size:11.5px;color:var(--sub)}
-.fbhead{font-size:12.5px;color:var(--sub);margin:0 0 6px}
+.fbhead{font-size:13px;color:var(--sub);margin:0 0 6px}
 .runtab tr:hover td{background:var(--card2)}
 .runtab .ok{color:var(--ok)}.runtab .bad{color:var(--bad)}
 /* ===== 表单 ===== */
@@ -147,18 +171,36 @@ table.fbtab{width:100%;max-width:960px;border-collapse:collapse;font-size:12.5px
 select.inp{cursor:pointer}
 .chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--txt);cursor:pointer;background:var(--card2);border:1px solid var(--line);padding:7px 12px;border-radius:6px}
 .chk input{accent-color:var(--acc)}
-.warnbox{background:rgba(211,162,68,.08);border:1px solid rgba(211,162,68,.3);color:var(--warn);font-size:12.5px;padding:10px 14px;border-radius:8px;margin:10px 0;line-height:1.7}
-.infobox{background:rgba(91,141,217,.07);border:1px solid rgba(91,141,217,.25);color:#a8c3ff;font-size:12.5px;padding:10px 14px;border-radius:8px;margin:10px 0;line-height:1.8}
+.warnbox{background:rgba(211,162,68,.08);border:1px solid rgba(211,162,68,.3);color:var(--warn);font-size:13px;padding:10px 14px;border-radius:8px;margin:10px 0;line-height:1.8}
+.infobox{background:rgba(91,141,217,.07);border:1px solid rgba(91,141,217,.25);color:#a8c3ff;font-size:13px;padding:10px 14px;border-radius:8px;margin:10px 0;line-height:1.9}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 /* ===== 日志 ===== */
-.console{background:#0a0c10;border:1px solid var(--line);border-radius:8px;padding:14px 16px;height:420px;overflow-y:auto;font-family:Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.65}
+.console{background:#0a0c10;border:1px solid var(--line);border-radius:8px;padding:14px 16px;height:420px;overflow-y:auto;font-family:Consolas,"Courier New",monospace;font-size:13px;line-height:1.7}
 .console div{white-space:pre-wrap;word-break:break-all;color:#c9d4ee}
-.console .t{color:#5a678a;margin-right:8px}
-.console .ok{color:var(--ok)}.console .err{color:var(--bad)}.console .hl{color:var(--warn)}.console .dim{color:#5a678a}
-.toast{position:fixed;top:64px;right:28px;background:var(--card2);border:1px solid var(--line);color:var(--txt);padding:11px 18px;border-radius:8px;font-size:13px;z-index:99;box-shadow:0 4px 16px rgba(0,0,0,.4);display:none}
+/* 时间戳原来用 #5a678a，在 #0a0c10 上只有约 3.5:1，低于 4.5:1 */
+.console .t{color:#8b96b8;margin-right:8px}
+.console .ok{color:var(--ok)}.console .err{color:var(--bad)}.console .hl{color:var(--warn)}.console .dim{color:#8b96b8}
+.toast{position:fixed;top:64px;right:28px;max-width:min(420px,86vw);background:var(--card2);border:1px solid var(--line);color:var(--txt);padding:11px 18px;border-radius:8px;font-size:13.5px;line-height:1.7;z-index:120;box-shadow:0 4px 16px rgba(0,0,0,.4);display:none;white-space:pre-line}
+.toast.bad{border-color:rgba(212,106,106,.5);color:#f0a3a3}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.strip{grid-template-columns:repeat(2,1fr)}.strip .cell:nth-child(2){border-right:none}.acct-body{grid-template-columns:1fr}.acct-body .plat{border-right:none;border-bottom:1px solid var(--line)}.acct-body .plat:last-child{border-bottom:none}}
 @media(max-width:860px){.sidebar{width:168px}}
-@media(max-width:640px){.shell{flex-direction:column}.sidebar{width:100%;height:auto;position:static;flex-direction:row;align-items:center}.sidebar nav{display:flex;padding:8px}.sidebar .brand,.side-foot{display:none}.grid2{grid-template-columns:1fr}.kpis{grid-template-columns:1fr}}
+@media(max-width:640px){
+  .shell{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:static;flex-direction:row;align-items:center}
+  /* 8 个入口横排要能滑动，不能挤成一团 */
+  .sidebar nav{display:flex;padding:8px;overflow-x:auto;flex:1}
+  .sidebar nav button{width:auto;flex:0 0 auto;white-space:nowrap;margin-bottom:0;border-left:none;border-bottom:2px solid transparent}
+  .sidebar nav button.on{border-bottom-color:var(--acc)}
+  .sidebar .brand,.side-foot{display:none}
+  .topbar{padding:10px 14px;flex-wrap:wrap;gap:8px}
+  .topbar .title{font-size:14px}
+  .content{padding:16px 14px 32px}
+  .phead .ops{width:100%}
+  .scrollhint{display:block}
+  .grid2{grid-template-columns:1fr}
+  .kpis{grid-template-columns:1fr}
+  .toast{top:auto;bottom:16px;right:14px;left:14px;max-width:none}
+}
 </style>
 </head>
 <body>
@@ -167,8 +209,8 @@ select.inp{cursor:pointer}
     <div class="brand"><b>签到控制台</b><small>中国移动自动签到</small></div>
     <nav>
       <button class="on" data-p="dash" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>总览</button>
-      <button data-p="token" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 19 4m-3.5 0H19v3.5"/></svg>Token 管理</button>
-      <button data-p="bass" onclick="nav(this)"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>BASS 任务</button>
+      <button data-p="token" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 19 4m-3.5 0H19v3.5"/></svg>凭证与账号</button>
+      <button data-p="bass" onclick="nav(this)"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>福建活动</button>
       <button data-p="xxl" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>消消乐</button>
       <button data-p="seckill" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>秒杀抢券</button>
       <button data-p="games" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m9 12 2 2 4-4"/></svg>拓展活动</button>
@@ -184,11 +226,16 @@ select.inp{cursor:pointer}
     <div class="topbar">
       <div class="title" id="pageTitle">签到控制台 / 总览</div>
       <div class="actions">
+        <span class="pill" id="taskPillTop">空闲</span>
+        <button class="btn sm" data-nobusy onclick="zoomBy(-0.1)" aria-label="缩小字号" title="缩小字号">A−</button>
+        <button class="btn sm" data-nobusy onclick="zoomBy(0.1)" aria-label="放大字号" title="放大字号">A＋</button>
         <button class="btn sm" onclick="refreshStatus()">刷新状态</button>
-        <button class="btn sm danger" onclick="act({action:'stop'})">停止</button>
+        <button class="btn sm danger" data-nobusy id="btnStop" onclick="act({action:'stop'})">停止</button>
       </div>
     </div>
     <div class="content">
+      <div id="envBox"></div>
+      <div class="errbar" id="errBox" role="alert"></div>
 
       <!-- 总览 -->
       <div class="page on" id="p-dash">
@@ -196,10 +243,10 @@ select.inp{cursor:pointer}
           <div><h2>总览</h2><div class="desc">每个号码的签到状态、本月收益与近 7 天记录</div></div>
           <div class="ops">
             <button class="btn pri" onclick="runAll('all')">一键签到</button>
-            <button class="btn" onclick="runAll('qwhd')">只跑 qwhdhub</button>
-            <button class="btn" onclick="runAll('bass')">只跑 BASS</button>
-            <label class="chk"><input type="checkbox" id="dashDry">dry-run</label>
-            <label class="chk"><input type="checkbox" id="dashXxl" checked>含消消乐</label>
+            <button class="btn" onclick="runAll('qwhd')">只跑全国签到</button>
+            <button class="btn" onclick="runAll('bass')">只跑福建活动</button>
+            <label class="chk" title="只查询状态，不签到、不领取、不消耗"><input type="checkbox" id="dashDry">只读检查</label>
+            <label class="chk" title="消消乐属伪造通关成绩，性质比空报浏览更重，默认不勾选"><input type="checkbox" id="dashXxl">含消消乐</label>
           </div>
         </div>
         <div id="todoBox"></div>
@@ -212,23 +259,41 @@ select.inp{cursor:pointer}
         </div>
       </div>
 
-      <!-- Token 管理 -->
+      <!-- 凭证与账号 -->
       <div class="page" id="p-token">
-        <div class="phead"><div><h2>Token 管理</h2><div class="desc">从 HAR 一次性导入 qwhdhub 与 BASS 的登录凭证</div></div></div>
+        <div class="phead"><div><h2>凭证与账号</h2><div class="desc">添加号码、导入抓包文件、查看凭证还能用多久</div></div></div>
         <div class="panel">
-          <h3>HAR 导入 <span class="hint">一份 HAR 同时更新 qwhdhub 与 BASS</span></h3>
-          <div class="infobox">手机抓包（Stream / ProxyPin）导出含 <b>appTokenLogin</b> 或 <b>wap.fj.10086.cn</b> 请求的 HAR。
-            qwhdhub token 按 HAR 里的手机号自动归位；BASS token 跟随同一号码写进 configs_fj。</div>
-          <div class="frow"><label>HAR 文件</label><input type="file" id="harFile" accept=".har,.json" style="min-width:220px">
-            <select class="inp" id="harKey" style="min-width:160px"></select>
-            <button class="btn pri sm" onclick="importHar()">导入</button></div>
+          <h3>账号 <span class="hint">一个号码两张卡：全国签到 + 福建活动</span></h3>
+          <div id="acctBox"></div>
+          <div class="frow" style="margin-top:12px">
+            <button class="btn pri sm" data-nobusy onclick="openNewAccount()">新建账号</button>
+            <span style="font-size:12.5px;color:var(--sub)">新建后导入一次抓包文件，凭证会自动填进去</span>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>导入抓包文件（HAR） <span class="hint">一份文件同时更新两个平台</span></h3>
+          <details class="guide">
+            <summary>第一次用？点这里看抓包步骤</summary>
+            <ol>
+              <li>手机装抓包 App：<b>Stream</b>（iOS）或 <b>ProxyPin</b>（安卓 / iOS），按提示装好并信任它的证书。</li>
+              <li>打开抓包开关，再打开<b>中国移动 App → 我的 → 签到领流量</b>，让页面完整加载一次。</li>
+              <li>顺手打开一次<b>福建养成游戏</b>活动页，这样同一份文件里也有福建活动的凭证。</li>
+              <li>在抓包 App 里<b>导出 HAR</b>，用微信「文件传输助手」发到电脑。</li>
+              <li>回到这里点<b>「扫描并导入」</b>——微信接收目录会自动扫到，不用挪文件；也可以「选择文件」手动导入。</li>
+              <li>看下方报告里的<b>「✓ 实测登录成功」</b>那一行：显示导入了不等于票能用。</li>
+            </ol>
+            全国签到的票据只有约 30 分钟寿命，过期就要重抓一次；福建活动的凭证能撑 20 小时以上。
+          </details>
+          <div class="frow"><label>选择文件</label><input type="file" id="harFile" accept=".har,.json" style="min-width:220px">
+            <select class="inp" id="harKey" style="min-width:180px" title="认不出号码时，手动指定导入到哪个账号"></select>
+            <button class="btn pri sm" data-nobusy onclick="importHar()">导入</button></div>
           <div class="frow"><label>自动查找</label>
-            <button class="btn sm" onclick="act({action:'har_import'},afterHar)">扫描并导入（项目 / 下载 / 微信）</button>
-            <button class="btn sm" onclick="act({action:'har_import',latest:1},afterHar)">只导入最新一份</button></div>
+            <button class="btn sm" data-nobusy onclick="act({action:'har_import'},afterHar)">扫描并导入（项目 / 下载 / 微信）</button>
+            <button class="btn sm" data-nobusy onclick="act({action:'har_import',latest:1},afterHar)">只导入最新一份</button></div>
+          <div class="infobox">导入不走运行槽，<b>秒杀等待期间也能导入</b>——脚本每轮重读配置，新票据会被自动接上。</div>
           <div class="infobox" id="harOut" style="display:none"></div>
-          <div class="infobox">导入后回「总览」点右上角「刷新状态」即可复核 token 是否生效。
-            <b>抓包文件在微信里也能直接用</b>：点「自动查找」会连微信接收目录一起扫，
-            不用先把文件挪到项目目录。</div>
+          <div class="infobox">号码按抓包文件里的手机号自动归位，认不出时用上面的下拉框指定。
+            导入后到「总览」点「刷新状态」复核。</div>
         </div>
         <div class="panel">
           <h3>优惠专区抽奖 <span class="hint">自动从最新 HAR 取 token，刷任务 + 抽奖</span></h3>
@@ -244,19 +309,21 @@ select.inp{cursor:pointer}
         </div>
       </div>
 
-      <!-- BASS 任务 -->
+      <!-- 福建活动 -->
       <div class="page" id="p-bass">
-        <div class="phead"><div><h2>BASS 任务</h2><div class="desc">cmcc_fj.py 参数化执行：签到、领奖、喂养、探测</div></div></div>
+        <div class="phead"><div><h2 title="cmcc_fj.py">福建活动</h2><div class="desc">养成游戏：签到、领阶段奖励、喂养、只读检查</div></div></div>
         <div class="panel">
           <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span></h3>
           <div class="infobox">这里定的是<b>自动任务</b>的行为，不用每次手动勾：
-            <br>· <b>每天自动喂养</b>：只在指定小时的那一轮喂，<b>一天最多喂一次</b>，饲料不足会自动停手
+            <br>· <b>每天自动喂养</b>：只在指定小时的那一轮喂，<b>一天最多喂一次</b>，饲料不足会自动停手；
+            勾「喂到饲料用完」就不用填轮数，按当天饲料自动算
             <br>· <b>阶段喂满时</b>：停手等你 / 领奖后继续喂 / 放弃本阶奖品直接升阶
             <br>· <b>伪造类</b>默认关闭；打开等于让脚本空报浏览，自行判断
-            <br>保存后由 <code>MobileDailyReward</code>（每小时那次）读取执行，改完不用重启任何东西。</div>
+            <br>保存后由「每日奖励」计划任务（每小时那次）读取执行，改完不用重启任何东西。</div>
           <div class="frow"><label>每天自动喂养</label>
             <input class="inp" id="pFeed" type="number" min="0" max="50" value="0" style="min-width:70px">
             <span style="font-size:12px;color:var(--sub)">轮（每轮 250 饲料，0 = 不喂）</span>
+            <label class="chk" title="轮数按当天饲料自动算，喂到不足 250 为止，不用填数字"><input type="checkbox" id="pFeedAll" onchange="feedAllToggle('p')">喂到饲料用完</label>
             <label style="min-width:auto">在</label>
             <input class="inp" id="pFeedHour" type="number" min="0" max="23" value="12" style="min-width:64px">
             <span style="font-size:12px;color:var(--sub)">点那一轮</span></div>
@@ -280,38 +347,40 @@ select.inp{cursor:pointer}
             <span style="font-size:12px;color:var(--sub)" id="pMeta">加载中…</span></div>
         </div>
         <div class="panel">
-          <h3>BASS 附加动作</h3>
+          <h3>手动执行一次 <span class="hint">日常交给计划任务，这里用于补做或验证</span></h3>
           <div class="frow"><label>账号</label><select class="inp" id="bassRunKey"></select></div>
           <div class="frow"><label>选项</label>
-            <label class="chk"><input type="checkbox" id="bClaim">--claim 领阶段奖励</label>
-            <label class="chk"><input type="checkbox" id="bRoll">--roll 掷骰子+开箱</label>
-            <label class="chk"><input type="checkbox" id="bDry">--dry-run 只读</label>
+            <label class="chk"><input type="checkbox" id="bClaim">领阶段奖励</label>
+            <label class="chk"><input type="checkbox" id="bRoll">掷骰子 + 开箱</label>
+            <label class="chk" title="只查询，不领取、不消耗"><input type="checkbox" id="bDry">只读检查</label>
           </div>
           <div class="frow"><label>喂养次数</label><input class="inp" id="bFeed" type="number" min="0" max="50" value="0" style="min-width:70px">
             <span style="font-size:12px;color:var(--sub)">每轮耗 250 饲料（游戏内正常消耗）</span>
+            <label class="chk" title="不用填轮数：按当前饲料算，喂到不足 250 为止"><input type="checkbox" id="bFeedAll" onchange="feedAllToggle('b')">喂到用完</label>
             <span id="bFodder" style="font-size:12px;color:var(--warn)"></span></div>
           <div class="frow"><label>阶段喂满时</label>
-            <label class="chk"><input type="checkbox" id="bAuto" onchange="pickStage('auto')">--auto-claim 领本阶奖品后继续喂</label>
-            <label class="chk"><input type="checkbox" id="bCont" onchange="pickStage('cont')">--continue-stage 放弃奖品直接升阶</label>
+            <label class="chk"><input type="checkbox" id="bAuto" onchange="pickStage('auto')">领本阶奖品后继续喂</label>
+            <label class="chk"><input type="checkbox" id="bCont" onchange="pickStage('cont')">放弃奖品直接升阶</label>
           </div>
           <div class="infobox"><b>这里的勾选只影响这一次手动执行</b>，不会记住；要长期自动请用上面的「自动策略」。
             两个阶段选项<b>互斥</b>，都不勾时脚本喂到「下次会打满」就停手等你决定。领奖要选对档位（话费/流量/折扣），升阶则本阶奖品作废。</div>
           <div class="frow"><label style="color:var(--warn)">伪造类</label>
-            <label class="chk"><input type="checkbox" id="bTasks">--tasks 养成浏览任务（空报）</label>
-            <label class="chk"><input type="checkbox" id="bFb">--fb-tasks 流量银行任务（空报）</label>
+            <label class="chk"><input type="checkbox" id="bTasks">养成浏览任务（空报）</label>
+            <label class="chk"><input type="checkbox" id="bFb">流量银行任务（空报）</label>
           </div>
           <div class="warnbox">「空报」= 跳过真实浏览直接上报完成，属伪造行为记录。勾选后点执行会再弹一次确认。</div>
           <div class="frow">
             <button class="btn pri" onclick="runBass()">执行</button>
-            <button class="btn" onclick="act({action:'bass_probe',key:V('bassRunKey')})">probe_fj 只读探测</button>
+            <button class="btn" onclick="runBassProbe()">只读探测全部接口</button>
           </div>
+          <div id="bassBox"></div>
         </div>
         <div class="panel">
           <h3>每日奖励 &amp; 福袋 <span class="hint">三档 150/250/350 饲料，每档间隔 60 分钟，每天 6 点重置</span></h3>
-          <div class="infobox">「阶段一/二/三」是喂养奖励，<b>currentTask=true</b> 那档才是当前该领的；
-            两档之间要隔 60 分钟，没到时间会返回 <code>1504</code>。福袋则是<b>每累计喂食 300 次</b>触发一次。
-            时间是脚本<b>观测到</b>该状态的时刻，首次记录可能略晚于真实领取时间。<br>
-            三档已交给计划任务 <b>MobileDailyReward</b> 每小时自动领取（「定时任务」页可查），不用手动点。</div>
+          <div class="infobox">三档奖励要<b>每隔 60 分钟</b>领一次，一次运行只领得到当前那一档。
+            福袋是<b>每累计喂食 300 次</b>触发一次。这里显示的时间是脚本<b>观测到</b>该状态的时刻，
+            首次记录可能略晚于真实领取时间。<br>
+            三档已交给「每日奖励」计划任务每小时自动领取（「定时任务」页可查），不用手动点。</div>
           <div id="dailyBox"></div>
         </div>
         <div class="panel">
@@ -325,19 +394,20 @@ select.inp{cursor:pointer}
 
       <!-- 消消乐 -->
       <div class="page" id="p-xxl">
-        <div class="phead"><div><h2>消消乐</h2><div class="desc">cmcc_xiaoxiaole.py · 伪造通关成绩换抽奖，中奖靠概率</div></div></div>
+        <div class="phead"><div><h2 title="cmcc_xiaoxiaole.py">消消乐</h2><div class="desc">伪造通关成绩换抽奖机会，中奖靠服务端概率</div></div></div>
         <div class="panel">
           <h3>消消乐执行</h3>
           <div class="frow"><label>账号</label><select class="inp" id="xxlFile"></select></div>
-          <div class="frow"><label>关卡 --level</label><input class="inp" id="xLevel" type="number" value="49" style="min-width:80px">
+          <div class="frow"><label>关卡号</label><input class="inp" id="xLevel" type="number" value="49" style="min-width:80px">
             <label style="min-width:auto">星级</label><input class="inp" id="xStar" type="number" min="0" max="3" value="3" style="min-width:60px">
             <label style="min-width:auto">局数</label><input class="inp" id="xTimes" type="number" min="1" max="20" value="5" style="min-width:60px">
             <label style="min-width:auto">间隔秒</label><input class="inp" id="xGap" type="number" min="5" max="120" value="12" style="min-width:70px"></div>
-          <div class="warnbox">关卡号必须接近账号真实进度（乱填会 -100 异常请求）；每天约 5 次可用，有全局频控；性质比空报浏览更重，请自行决定使用。</div>
+          <div class="warnbox">关卡号必须接近账号真实进度（乱填会被判异常请求）；每天约 5 次可用，有全局频控；性质比空报浏览更重，请自行决定使用。<br>
+            不知道填几？先点「探测当前关卡」，探到的关卡号会自动填进上面的输入框。</div>
           <div class="frow">
             <button class="btn pri" onclick="runXxl()">开始执行</button>
-            <button class="btn" onclick="act({action:'xxl_run',file:V('xxlFile'),dry:1})">dry-run 查剩余次数</button>
-            <button class="btn" onclick="act({action:'xxl_run',file:V('xxlFile'),detect:1})">探测当前关卡</button>
+            <button class="btn" onclick="xxlQuery()">只读查剩余次数</button>
+            <button class="btn" onclick="detectLevel()">探测当前关卡</button>
           </div>
           <div id="xxlBox"></div>
         </div>
@@ -345,41 +415,40 @@ select.inp{cursor:pointer}
 
       <!-- 秒杀抢券 -->
       <div class="page" id="p-seckill">
-        <div class="phead"><div><h2>秒杀抢券</h2><div class="desc">cmcc_seckill.py · 签到有礼「每周秒杀」每天 12:00 抢 1 元话费券</div></div></div>
+        <div class="phead"><div><h2 title="cmcc_seckill.py">秒杀抢券</h2><div class="desc">签到有礼「每周秒杀」：每天 12:00 抢 1 元话费券，库存通常只有 1 份</div></div></div>
         <div class="panel">
           <h3>执行秒杀</h3>
           <div class="frow"><label>账号</label><select class="inp" id="skFile"></select></div>
           <div class="frow"><label>开抢时刻</label><input class="inp" id="skAt" value="11:59:50" style="min-width:100px">
-            <span style="font-size:12px;color:var(--sub)">留空则由脚本按 secConfig 自动选场次</span></div>
+            <span style="font-size:12.5px;color:var(--sub)">留空则按服务端场次自动选；填的时刻是「今天」的</span></div>
+          <div class="warnbox" id="skWindow" style="display:none"></div>
           <div class="frow">
             <button class="btn pri" onclick="runSeckill()">等到点自动抢</button>
-            <button class="btn" onclick="act({action:'seckill_run',file:V('skFile'),dry:1})">dry-run 查场次</button>
-            <button class="btn" onclick="act({action:'seckill_run',file:V('skFile'),once:1})">立即打一次（验证）</button>
+            <button class="btn" onclick="seckillQuery()">只读查场次</button>
+            <button class="btn" onclick="seckillOnce()">立即试一次（验证）</button>
           </div>
-          <div class="infobox">流程：校服务器时间 → 拉场次 → 查当日签到资格 → 等到点 → 密集重试 <code>redeem</code>。
+          <div id="skBox"></div>
+          <div class="infobox">流程：校服务器时间 → 拉场次 → 查当日签到资格 → 等到点 → 密集重试抢券接口。
             开抢时会<b>提前 0.4 秒</b>出手以抵消网络延迟，被拒后每 2 秒核对一次库存，没货立刻停手。
-            抢到的券进 App「我的奖品」核销，脚本会推送到手机。</div>
+            抢到的券进 App「我的奖品」核销，配了推送的话会通知到手机。</div>
           <div class="warnbox"><b>只需要提前几分钟准备</b>——会话刷新 11:54 执行，秒杀 11:55 启动。
             如果启动时会话未就绪，脚本会每 15 秒重试并重新读取配置；
             等待期间重新导入 HAR 也能被自动识别，不会在启动时直接退出。</div>
           <div class="frow"><label>会话就绪</label><span style="font-size:13px" id="skSess">加载中…</span></div>
           <div class="frow"><label>票据寿命</label><span style="font-size:13px" id="tlBox">加载中…</span></div>
-          <div class="infobox">票据寿命由计划任务 <code>MobileTokenLifeProbe</code> 每 2 分钟探测一次
-            （每账号只发一次登录请求，确认失效后自动停手）。
-            签发时刻取自 HAR 里 <code>appTokenLogin</code> 的时间戳，
+          <div class="infobox">票据寿命由「票据寿命探测」计划任务每 2 分钟测一次
+            （每账号只发一次登录请求，确认失效后自动停手）。签发时刻取自抓包文件，
             所以结论能精确到分钟，而不是「大概半小时」。</div>
-          <div class="infobox">每次 qwhdhub 签到成功后，会自动保存该账号的活动会话 cookie
-            （<code>gui_data/seckill_session_&lt;尾号&gt;.json</code>）。实测<b>仅凭该 cookie 就能调用秒杀接口，
-            完全不需要 app_token</b>。</div>
-          <div class="warnbox"><b>会话只能活 2 小时</b>（实测：04:22 建立 → 06:22 服务端返回
-            <code>GOTO_LOGIN</code> 准时失效），所以刷新时刻必须紧邻开抢，不能靠早上那次签到。
-            若 app_token 也已过期，请在开抢前抓包导入。</div>
+          <div class="infobox">每次全国签到成功后，会自动保存该账号的活动会话。
+            实测<b>仅凭这份会话就能抢券，不需要票据</b>——但会话本身是签到那一刻建立的。</div>
+          <div class="warnbox"><b>会话只能活 2 小时</b>（两次独立探测一致，准时 120 分钟失效），
+            所以刷新时刻必须紧邻开抢，不能靠早上那次签到。若票据也已过期，请在开抢前抓包导入。</div>
         </div>
       </div>
 
       <!-- 拓展活动 -->
       <div class="page" id="p-games">
-        <div class="phead"><div><h2>拓展活动</h2><div class="desc">cmcc_extra.py：周六游戏中心 / 追剧领福利 / 玩游戏抽话费</div></div></div>
+        <div class="phead"><div><h2 title="cmcc_extra.py">拓展活动</h2><div class="desc">周六游戏中心 / 追剧领福利 / 玩游戏抽话费，三合一</div></div></div>
         <div class="panel">
           <h3>执行拓展活动</h3>
           <div class="frow"><label>账号</label><select class="inp" id="gmFile"></select></div>
@@ -395,74 +464,107 @@ select.inp{cursor:pointer}
             <br>· <b>玩游戏抽话费</b>：每周一刷新的周任务，没有抽奖
             <br>计划任务 <code>MobileGames</code> 默认每天 <b>12:05</b> 跑一次，正好覆盖周六 12:00 的游戏币抽奖，
             其它日子只报状态、不消耗。</div>
-          <div class="warnbox">拓展活动需要<b>有效 app_token</b>（约 30~46 分钟寿命）。
+          <div class="warnbox">拓展活动需要<b>有效票据</b>（约 30~46 分钟寿命）。
             票据过期时三个活动一个都跑不了，需要重新抓包导入。</div>
         </div>
       </div>
 
       <!-- 定时任务 -->
       <div class="page" id="p-sched">
-        <div class="phead"><div><h2>定时任务</h2><div class="desc">Windows 计划任务注册 / 注销（PowerShell Register-ScheduledTask）</div></div></div>
+        <div class="phead"><div><h2>定时任务</h2><div class="desc">让电脑每天自动跑：看真实状态、改时间、一键配置；失败可直接点开日志</div></div></div>
         <div class="panel">
           <h3>Windows 计划任务</h3>
           <div class="frow"><label>整套配置</label>
             <button class="btn pri" onclick="applyAllSched()">一键配置全部（推荐方案）</button>
-            <button class="btn sm danger" onclick="cf('注销全部 7 个计划任务？',unregAllSched)">全部注销</button>
-            <button class="btn sm" onclick="refreshSched()">刷新状态</button>
+            <button class="btn sm danger" onclick="cf('注销全部 7 个计划任务？注销后电脑不再自动签到。',unregAllSched)">全部注销</button>
+            <button class="btn sm" data-nobusy onclick="refreshSched()">刷新状态</button>
           </div>
           <div class="infobox">推荐方案：签到 <b>08:30</b> · 每日奖励 <b>06:00</b> 起每小时 · 会话保活每 90 分钟 ·
             会话刷新 <b>11:54</b> · 秒杀 <b>11:55</b> · 拓展活动 <b>12:05</b> · 票据探测每 2 分钟。
             一键配置会把这 7 个任务按上面的时刻一次注册好，覆盖当前触发时间；
             想单独调某一个，改下面表格里的「触发时刻」再点该行的注册即可。</div>
+          <div class="scrollhint">← 表格可左右滑动，查看状态、下次运行与操作 →</div>
           <div id="schedBox"></div>
           <div class="infobox">每日奖励三档（150/250/350）之间必须间隔 60 分钟，一次跑只能领一档。
             这个任务从设定时间起每小时检查一次、共 17 次，能领就领，领完自动空转。<br>
-            <b>会话保活</b>：每 90 分钟只试登录一次（--login-only，不签到、不推送）。
-            实测 jwtToken 单独用服务端不认，登录终究依赖 app_token（约 30 分钟寿命），
-            所以保活<b>续不了命</b>：它只是在票据有效期内多跑几次，一旦失败就说明该重新抓包了，
-            每次结果记在 logs\keepalive.log。<br>
-            <b>票据寿命探测</b>：每 2 分钟探一次 app_token 登录，签发时刻取自 HAR，
+            <b>会话保活</b>：每 90 分钟只试登录一次，不签到、不推送。实测长期凭证单独用服务端不认，
+            登录终究依赖那张 30 分钟的票据，所以保活<b>续不了命</b>：它只是在票据有效期内多跑几次，
+            一旦失败就说明该重新抓包了。<br>
+            <b>票据寿命探测</b>：每 2 分钟探一次登录，签发时刻取自抓包文件，
             所以「票据到底活多久」能精确到分钟；确认失效后自动停手不再空转。</div>
-          <div class="frow"><label>日志位置</label>
-            <span style="font-size:12px;color:var(--sub)">logs\ 下 daily / daily_reward / keepalive / session_refresh / seckill / games / token_life，
-              各任务的详细输出都在那里；「日志」页只显示本控制台发起的运行</span></div>
+          <div class="infobox">每行的<b>「日志」</b>按钮直接打开该任务的输出文件（logs\ 目录），
+            失败原因在里面。「日志」页显示的是<b>本控制台发起</b>的运行，两者不是一回事。</div>
         </div>
       </div>
 
       <!-- 日志 -->
       <div class="page" id="p-logs">
-        <div class="phead"><div><h2>日志</h2><div class="desc">所有操作共用，自动跟随滚动</div></div>
-          <div class="ops"><button class="btn sm" onclick="clearConsole()">清屏</button></div></div>
+        <div class="phead"><div><h2>日志</h2><div class="desc">本控制台发起的运行，实时输出、自动跟随滚动（计划任务的日志在「定时任务」页每行点开）</div></div>
+          <div class="ops"><button class="btn sm" data-nobusy onclick="clearConsole()">清屏</button></div></div>
         <div class="panel" style="padding:14px">
-          <div class="console" id="console"></div>
+          <div class="console" id="console" role="log" aria-label="运行日志"></div>
         </div>
       </div>
 
     </div>
   </div>
 </div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="box">
+    <div class="bh"><span id="mTitle">详情</span>
+      <button class="btn sm x" data-nobusy onclick="closeModal()">关闭</button></div>
+    <div class="bb" id="mBody"></div>
+  </div>
+</div>
 <script>
 const $=id=>document.getElementById(id), V=id=>$(id).value.trim();
 let logSeq=0, STATE=null;
-const TITLES={dash:'总览',token:'Token 管理',bass:'BASS 任务',xxl:'消消乐',seckill:'秒杀抢券',games:'拓展活动',sched:'定时任务',logs:'日志'};
+const TITLES={dash:'总览',token:'凭证与账号',bass:'福建活动',xxl:'消消乐',seckill:'秒杀抢券',games:'拓展活动',sched:'定时任务',logs:'日志'};
+const PLAT_CN={qwhdhub:'全国签到',BASS:'福建活动'};
 function nav(b){document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));$('p-'+b.dataset.p).classList.add('on');
   $('pageTitle').textContent='签到控制台 / '+(TITLES[b.dataset.p]||'');
   try{history.replaceState(null,'','#'+b.dataset.p);}catch(e){}}
-function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+let toastTimer=null;
+function toast(m,bad){const t=$('toast');t.textContent=m;t.classList.toggle('bad',!!bad);t.style.display='block';
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.style.display='none',bad?6000:2600);}
+// 失败原因不能只靠一闪而过的 toast：留在页面顶部，直到下一次成功或手动关闭
+function showErr(m){const b=$('errBox');if(!b)return;
+  b.innerHTML='<b onclick="clearErr()">✕ 关闭</b>'+esc(m);b.style.display='block';}
+function clearErr(){const b=$('errBox');if(b){b.style.display='none';b.innerHTML='';}}
 function cf(msg,fn){if(confirm(msg))fn();}
 async function act(body,after){
-  const r=await(await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-  if(!r.ok)toast((r.err||'失败：可能正忙')); else if(r.msg)toast(r.msg);
+  let r;
+  try{
+    const resp=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    r=await resp.json();
+  }catch(e){r={ok:false,err:'连不上控制台服务：'+(e&&e.message||e)};}
+  if(!r.ok){const m=r.err||'操作失败';toast(m,true);showErr(m);}
+  else{clearErr();if(r.msg)toast(r.msg);}
   if(after)after(); pullState(); return r;
 }
+// 有任务在跑时把动作按钮置灰，并明确告诉用户在跑什么（原来只弹「可能正忙」）
+function setBusy(running,label){
+  document.querySelectorAll('.content .btn, .topbar .btn').forEach(b=>{
+    if(b.hasAttribute('data-nobusy'))return;
+    b.disabled=!!running;});
+  const txt=running?('运行中 · '+(label||'')):'空闲';
+  ['taskPill','taskPillTop'].forEach(id=>{const p=$(id);if(!p)return;
+    p.textContent=txt;p.classList.toggle('run',!!running);});
+  const s=$('btnStop');if(s)s.disabled=!running;
+}
+// 弹层：账号编辑 / 计划任务日志
+function openModal(title,html){$('mTitle').textContent=title;$('mBody').innerHTML=html;$('modal').classList.add('on');}
+function closeModal(){$('modal').classList.remove('on');$('mBody').innerHTML='';}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 function mask(p){return p.length===11?p.slice(0,3)+'****'+p.slice(7):p;}
 function tokenBadge(s){
-  if(s==='ok')return '<span class="badge ok">Token 有效</span>';
-  if(s==='expired')return '<span class="badge bad">Token 已过期</span>';
-  if(s==='empty')return '<span class="badge na">Token 未配置</span>';
-  return '<span class="badge na">Token 未校验</span>';}
+  if(s==='ok')return '<span class="badge ok">凭证有效</span>';
+  if(s==='expired')return '<span class="badge bad">凭证已过期</span>';
+  if(s==='empty')return '<span class="badge na">凭证未配置</span>';
+  return '<span class="badge na">凭证未校验</span>';}
 function ymd(d){const p=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());}
 function todayLocal(){return ymd(new Date());}
 function last7(map){
@@ -481,6 +583,9 @@ function flowFmt(v){return v>=1024?(v/1024).toFixed(2)+'<small>GB</small>':Math.
 function render(){
   if(!STATE)return;
   const S=STATE.stats, accts=STATE.raw_accounts;
+  const env=STATE.env||{};
+  $('envBox').innerHTML=env.ok===false
+    ? `<div class="envbar"><b>任务暂时跑不了</b>\n${esc(env.msg)}</div>` : '';
   // 票据有效性以「每 2 分钟探测」为准：stats 里的 token_* 是上次跑任务时记下的，
   // 可能已经是几小时前的结论，直接用会出现「待办说已失效、卡片说有效」的自相矛盾。
   const liveTok={};
@@ -507,8 +612,8 @@ function render(){
   $('sumbar').innerHTML=`
     <div class="kpi"><div class="k">本月领取流量</div><div class="v">${flowM>=1024?(flowM/1024).toFixed(2)+'<small>GB</small>':flowM.toFixed(0)+'<small>MB</small>'}</div><div class="c">历史合计 ${flow>=1024?(flow/1024).toFixed(2)+' GB':flow.toFixed(0)+' MB'}</div>${spF}</div>
     <div class="kpi"><div class="k">本月完成任务</div><div class="v">${tasksM}<small>个</small></div><div class="c">历史合计 ${tasks} 个</div>${spT}</div>
-    <div class="kpi"><div class="k">Token 可用</div><div class="v">${okTok}<small>/ ${accts.length}</small></div><div class="c">过期需重新获取</div></div>
-    <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">qwhdhub + BASS 配置</div></div>`;
+    <div class="kpi"><div class="k">凭证可用</div><div class="v">${okTok}<small>/ ${accts.length} 份</small></div><div class="c">一个号码两份（全国 + 福建）</div></div>
+    <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">过期需重新抓包导入</div></div>`;
   // 运行记录统计条
   const e=STATE.eff||{};
   const mins=e.saved_min||0;
@@ -548,8 +653,9 @@ function render(){
       }).join('');
       const dates=hist.map(h=>`<span>${h.date.slice(8)}</span>`).join('');
       return `<div class="plat">
-        <div class="pt">${isQ?'qwhdhub · 全国签到':'BASS · 福建活动'} ${tokenBadge(tkState)}
-          ${signedBadge(isQ?s.today_signed_qwhd:s.today_signed_bass)}</div>
+        <div class="pt">${isQ?'全国签到':'福建活动'} ${tokenBadge(tkState)}
+          ${signedBadge(isQ?s.today_signed_qwhd:s.today_signed_bass)}
+          <span class="stamp" title="这些数字是上次运行脚本时记下的，不是实时值">数据截至 ${esc(s.last_run||'从未运行')}</span></div>
         <div class="stats">
           ${isQ?`
           <div class="stat"><div class="k">本月领取</div><div class="v">${flowFmt(s.flow_mb_month||0)}<small class="sum">累计 ${flowTxt(s.flow_mb_total||0)}</small></div></div>
@@ -578,8 +684,6 @@ function render(){
     </div>`;
   }).join('');
   // 下拉框
-  const bk=STATE.bass_files;
-  fillSel('bassFile',bk);
   const bassItems=accts.filter(a=>a.plat==='BASS').map(a=>({v:a.file,t:`${a.key} · ${mask(a.phone)}`}));
   fillSelKV('xxlFile',bassItems);
   fillSelKV('bassRunKey',accts.filter(a=>a.plat==='BASS').map(a=>({v:a.key,t:`${a.key} · ${mask(a.phone)}`})));
@@ -624,28 +728,124 @@ function render(){
         else if(x.state==='expired') tag='<span style="color:var(--bad)">已失效</span>';
         else tag='<span style="color:var(--warn)">未确认</span>';
         const iss=x.issued_at?x.issued_at.replace('T',' ').slice(5,16):'?';
+        const age=tokenAge(x);
+        const ageTxt=age==null?'':` · 已用 <b style="color:${age>=25?'var(--warn)':'inherit'}">${age} 分钟</b>`;
         return `<div class="pill" style="display:block;margin-bottom:6px;padding:8px 10px">
-          <b>${x.phone?mask(x.phone):x.key}</b> · ${tag}
-          <span style="color:var(--sub)">签发 ${iss} · ${x.conclusion||''}</span>
+          <b>${x.phone?mask(x.phone):esc(x.key)}</b> · ${tag}${ageTxt}
+          <span style="color:var(--sub)">签发 ${esc(iss)} · ${esc(x.conclusion||'')}</span>
         </div>`;
       }).join('');
     }
   }
-  // HAR 导入的账号兜底下拉（BASS token 无法自证归属时用）
-  const hk=$('harKey');  if(hk&&!hk.dataset.done){
-    const seen=new Set();
+  // HAR 导入的账号兜底下拉（凭证无法自证归属时用）。
+  // 每次渲染都重建：新建的账号要立刻能选到，原来只填一次，新号永远不出现。
+  const hk=$('harKey');
+  if(hk){
+    const cur=hk.value, seen=new Set();
     const opts=accts.filter(a=>{if(!a.phone||seen.has(a.phone))return false;seen.add(a.phone);return true;})
-      .map(a=>`<option value="${a.key}">${a.key} · ${mask(a.phone)}</option>`).join('');
-    hk.innerHTML='<option value="">自动识别（按 HAR 号码）</option>'+opts;
-    hk.dataset.done='1';
+      .map(a=>`<option value="${esc(a.key)}">${esc(a.key)} · ${mask(a.phone)}</option>`).join('');
+    hk.innerHTML='<option value="">自动识别（按文件里的号码）</option>'+opts;
+    if(Array.from(hk.options).some(o=>o.value===cur))hk.value=cur;
   }
   $('hsub').textContent=`${STATE.accounts.length} 个号码 · ${accts.length} 份配置`;
+  renderAccounts();
   renderFlowbank();
   renderDaily();
   renderLuck();
   renderPolicy();
   renderTodo();
+  renderSkWindow();
   updSched();
+}
+// 账号列表：新建 / 改手机号 / 配失败推送，原先这些只能手改 JSON
+function renderAccounts(){
+  const box=$('acctBox'); if(!box)return;
+  const accts=STATE.raw_accounts||[];
+  if(!accts.length){
+    box.innerHTML='<div class="hist"><div class="empty">还没有账号。点下面「新建账号」填手机号，再导入一次抓包文件即可。</div></div>';
+    return;
+  }
+  box.innerHTML='<div class="tablewrap"><table class="fbtab"><thead><tr>'+
+    '<th>号码</th><th>平台</th><th>配置文件</th><th>凭证</th><th>失败推送</th><th style="width:88px">操作</th>'+
+    '</tr></thead><tbody>'+accts.map(a=>{
+      const notify=(a.has_bark||a.has_sendkey)
+        ? '<span class="badge ok">已配置</span>' : '<span class="badge na">未配置</span>';
+      const tok=a.token_state==='filled'?'<span class="badge signed">已填写</span>':'<span class="badge na">空</span>';
+      return `<tr><td>${a.phone?mask(a.phone):'（未填手机号）'}</td>
+        <td>${PLAT_CN[a.plat]||esc(a.plat)}</td>
+        <td><code>${esc(a.file)}</code></td><td>${tok}</td><td>${notify}</td>
+        <td><button class="btn sm" data-nobusy onclick="editAccount('${esc(a.file)}')">编辑</button></td></tr>`;
+    }).join('')+'</tbody></table></div>';
+}
+function openNewAccount(){
+  openModal('新建账号',`
+    <div class="infobox">先建一份空配置，再导入抓包文件，凭证会自动填进去。
+      文件名默认用手机号尾号，方便认。</div>
+    <div class="frow"><label>平台</label>
+      <select class="inp" id="naPlat">
+        <option value="qwhdhub">全国签到（签到领流量）</option>
+        <option value="BASS">福建活动（养成游戏）</option>
+      </select></div>
+    <div class="frow"><label>手机号</label><input class="inp" id="naPhone" placeholder="11 位手机号" style="min-width:200px"></div>
+    <div class="frow"><label>文件名</label><input class="inp" id="naName" placeholder="留空则用尾号，如 3239" style="min-width:200px"></div>
+    <div class="frow"><button class="btn pri" onclick="saveNewAccount()">创建</button>
+      <button class="btn" onclick="closeModal()">取消</button></div>`);
+}
+async function saveNewAccount(){
+  const r=await act({action:'account_new',plat:V('naPlat'),phone:V('naPhone'),name:V('naName')});
+  if(r&&r.ok)closeModal();
+}
+function editAccount(file){
+  const a=(STATE.raw_accounts||[]).find(x=>x.file===file)||{};
+  openModal('编辑账号 · '+file,`
+    <div class="infobox">手机号用于把抓包文件里的凭证归到正确的号上。
+      推送配好后，任一账号失败会通知到手机。<b>推送框留空 = 不修改</b>；要清除请点「清除推送配置」。</div>
+    <div class="frow"><label>手机号</label><input class="inp" id="eaPhone" value="${esc(a.phone||'')}" style="min-width:200px"></div>
+    <div class="frow"><label>Bark 地址</label><input class="inp" id="eaBark" style="min-width:280px"
+      placeholder="${a.has_bark?'已配置（留空则不修改）':'https://api.day.app/你的key'}"></div>
+    <div class="frow"><label>Server酱</label><input class="inp" id="eaKey" style="min-width:280px"
+      placeholder="${a.has_sendkey?'已配置（留空则不修改）':'SendKey'}"></div>
+    <div class="frow"><button class="btn pri" onclick="saveAccount('${esc(file)}')">保存</button>
+      <button class="btn" onclick="closeModal()">取消</button>
+      ${(a.has_bark||a.has_sendkey)?`<button class="btn danger" onclick="cf('清除该账号的推送配置？',()=>clearNotify('${esc(file)}'))">清除推送配置</button>`:''}</div>`);
+}
+async function saveAccount(file){
+  const body={action:'account_save',file:file,phone:V('eaPhone')};
+  // 留空不提交，避免「打开看一眼再保存」把已配好的推送清掉
+  if(V('eaBark'))body.bark_url=V('eaBark');
+  if(V('eaKey'))body.serverchan_sendkey=V('eaKey');
+  const r=await act(body);
+  if(r&&r.ok)closeModal();
+}
+async function clearNotify(file){
+  const r=await act({action:'account_save',file:file,bark_url:'',serverchan_sendkey:''});
+  if(r&&r.ok)closeModal();
+}
+// 计划任务日志：失败原因要能一键看到，不用自己去 logs 目录翻
+async function openLog(kind){
+  const name=(STATE.sched_logs||{})[kind];
+  if(!name){toast('不知道这个任务对应哪个日志',true);return;}
+  openModal('任务日志 · '+name,'<div class="infobox">正在读取…</div>');
+  let r;
+  try{r=await(await fetch('/api/tasklog?name='+encodeURIComponent(name)+'&tail=300')).json();}
+  catch(e){r={err:String(e&&e.message||e)};}
+  if(r.err){$('mBody').innerHTML='<div class="warnbox">读取失败：'+esc(r.err)+'</div>';return;}
+  if(r.missing){$('mBody').innerHTML='<div class="warnbox">还没有这个日志文件 —— 该任务尚未运行过。'+
+    '可以在「定时任务」页点该行「注册/更新」，或等它到点自动跑。</div>';return;}
+  const lines=(r.lines||[]).map(l=>esc(l)).join('\n')||'（日志为空）';
+  $('mBody').innerHTML='<div class="fbhead">显示最后 '+(r.lines||[]).length+' 行（文件共 '+
+    Math.round((r.size||0)/1024)+' KB）· 完整文件在 logs\\'+esc(name)+'</div><pre>'+lines+'</pre>';
+}
+// 秒杀窗口提示：--at 的日期取「今天」，过了 13:00 再点会立刻出手并被拒
+function renderSkWindow(){
+  const el=$('skWindow'); if(!el)return;
+  const n=new Date(), mins=n.getHours()*60+n.getMinutes();
+  if(mins>=13*60||mins<11*60){
+    el.style.display='block';
+    el.innerHTML=mins>=13*60
+      ? '今天的场次（12:00~13:00）已结束。现在点「等到点自动抢」会<b>立刻出手并被拒</b>，请明天再来，或交给 11:55 的计划任务。'
+      : '现在距开抢还早。点「等到点自动抢」会一直占用运行槽等到 12:00，期间别的操作都做不了；建议交给 11:55 的计划任务。';
+  }else el.style.display='none';
 }
 function renderLuck(){
   const box=$('luckBox'); if(!box)return;
@@ -666,7 +866,7 @@ function renderLuck(){
     }).join('');
     const summary=(a.last_draws!=null)?`　上次抽 ${a.last_draws} 次，中 ${a.last_wins||0} 次`:'';
     return `<div style="margin-top:14px">
-      <div class="fbhead">${k} · ${a.phone||''}　剩余次数 <b>${a.surplus!=null?a.surplus:'—'}</b>${summary}　<code>${a.updated||''}</code></div>
+      <div class="fbhead">${esc(k)} · ${a.phone?mask(a.phone):''}　剩余次数 <b>${a.surplus!=null?a.surplus:'—'}</b>${summary}　<code>${esc(a.updated||'')}</code></div>
       ${ps.length?`<table class="fbtab"><thead><tr><th style="width:110px">时间</th><th>奖品</th><th style="width:90px">有效期</th></tr></thead><tbody>${rows}</tbody></table>`:''}
     </div>`;
   }).join('');
@@ -742,7 +942,7 @@ function renderFlowbank(){
   const fb=STATE.flowbank||{};
   const keys=Object.keys(fb).filter(k=>fb[k]&&fb[k].tasks&&Object.keys(fb[k].tasks).length);
   if(!keys.length){
-    box.innerHTML='<div class="empty">还没有记录。在「执行」里勾上 --fb-tasks 跑一次，这里就会列出每个任务的周期、奖励和下次可做时间。</div>';
+    box.innerHTML='<div class="empty">还没有记录。在「手动执行一次」里勾上「流量银行任务」跑一次，这里就会列出每个任务的周期、奖励和下次可做时间。</div>';
     return;
   }
   const badge=s=>s==='1'?'<span class="badge ok">已完成</span>'
@@ -764,7 +964,6 @@ function renderFlowbank(){
       <tbody>${rows}</tbody></table></div>`;
   }).join('');
 }
-function fillSel(id,vals){const s=$(id);if(!s)return;const cur=s.value;s.innerHTML=vals.map(v=>`<option>${v}</option>`).join('');if(vals.includes(cur))s.value=cur;}
 // ---------------- 自动策略：存一次，长期生效 ----------------
 let PREFS_ONCE=false;
 function renderPolicy(){
@@ -774,6 +973,8 @@ function renderPolicy(){
     // 只在首次渲染时回填，之后不覆盖用户正在改的值
     PREFS_ONCE=true;
     $('pFeed').value=(b.feed!=null?b.feed:0);
+    $('pFeedAll').checked=!!b.feed_all;
+    feedAllToggle('p');
     $('pFeedHour').value=(b.feed_hour!=null?b.feed_hour:12);
     $('pFull').value=b.on_stage_full||'stop';
     $('pPrize').value=b.prize||'fee';
@@ -788,13 +989,25 @@ function renderPolicy(){
     if($('skAt')&&sk.at)$('skAt').value=sk.at;
   }
   const f=Number(b.feed)||0;
-  $('pMeta').textContent=f>0
-    ? `已保存：每天 ${b.feed_hour} 点喂 ${f} 轮（约 ${f*250} 饲料）· 阶段满时 ${({stop:'停手',claim:'领奖续喂',continue:'直接升阶'})[b.on_stage_full]||b.on_stage_full}`
-    : '已保存：不自动喂养（只领三档奖励）';
+  const fullCn=({stop:'停手',claim:'领奖续喂',continue:'直接升阶'})[b.on_stage_full]||b.on_stage_full;
+  $('pMeta').textContent=b.feed_all
+    ? `已保存：每天 ${b.feed_hour} 点喂到饲料用完（轮数自动算）· 阶段满时 ${fullCn}`
+    : (f>0
+      ? `已保存：每天 ${b.feed_hour} 点喂 ${f} 轮（约 ${f*250} 饲料）· 阶段满时 ${fullCn}`
+      : '已保存：不自动喂养（只领三档奖励）');
+}
+// 勾「喂到用完」就不用填轮数：把数字框置灰，避免两个口径打架
+function feedAllToggle(p){
+  const all=$(p+'FeedAll'), num=$(p+'Feed');
+  if(!all||!num)return;
+  num.disabled=all.checked;
+  if(all.checked)num.value=0;
 }
 async function savePolicy(){
   const body={action:'policy_save',
-    bass:{feed:Number(V('pFeed'))||0,feed_hour:Number(V('pFeedHour'))||0,
+    bass:{feed:$('pFeedAll').checked?0:(Number(V('pFeed'))||0),
+          feed_all:$('pFeedAll').checked,
+          feed_hour:Number(V('pFeedHour'))||0,
           on_stage_full:V('pFull'),prize:V('pPrize'),
           tasks:$('pTasks').checked,fb_tasks:$('pFb').checked},
     xxl:{level:Number(V('xLevel'))||49,star:Number(V('xStar'))||3,
@@ -811,15 +1024,28 @@ function fillSelKV(id,items){
 }
 
 // ---------------- 总览：现在需要你做什么 ----------------
+// 票据已用多少分钟（签发时刻取自抓包文件，本地时间）
+function tokenAge(x){
+  if(!x||!x.issued_at)return null;
+  const t=new Date(String(x.issued_at).replace(' ','T'));
+  if(isNaN(t.getTime()))return null;
+  return Math.max(0,Math.round((Date.now()-t.getTime())/60000));
+}
 function renderTodo(){
   const box=$('todoBox'); if(!box)return;
   const items=[], nm=x=>mask(x.phone||'')||x.key;
+  if(!(STATE.raw_accounts||[]).length)
+    items.push(['bad','<b>还没有账号</b> → 去「凭证与账号」点「新建账号」填手机号，再导入一次抓包文件']);
   const tl=STATE.token_life||[];
   const exp=tl.filter(x=>x.state==='expired');
   const alive=tl.filter(x=>x.state==='alive');
-  if(exp.length)items.push(['bad',`<b>${exp.length} 个号的 app_token 已失效</b>（${exp.map(nm).join('、')}）→ 去「Token 管理」导入刚抓的 HAR。导入后 11:54 的会话刷新会自动接上，不用重启任务`]);
-  if(alive.length)items.push(['ok',`${alive.length} 个号票据有效（${alive.map(nm).join('、')}），暂时不用抓包`]);
-  if(!tl.length)items.push(['warn','还没有票据寿命数据 —— 导入一次 HAR 后，探测任务会自动开始计时']);
+  if(exp.length)items.push(['bad',`<b>${exp.length} 个号的票据已失效</b>（${exp.map(nm).join('、')}）→ 去「凭证与账号」导入刚抓的文件。导入后 11:54 的会话刷新会自动接上，不用重启任务`]);
+  if(alive.length){
+    items.push(['ok',`${alive.length} 个号票据有效（${alive.map(nm).join('、')}），暂时不用抓包`]);
+    const soon=alive.filter(x=>{const a=tokenAge(x);return a!=null&&a>=25;});
+    if(soon.length)items.push(['warn',`票据已用 ${soon.map(x=>tokenAge(x)+' 分钟').join('、')}，接近约 30 分钟的寿命上限 —— 要赶 12:00 秒杀的话现在就该重新抓包`]);
+  }
+  if(!tl.length&&(STATE.raw_accounts||[]).length)items.push(['warn','还没有票据寿命数据 —— 导入一次抓包文件后，探测任务会自动开始计时']);
   const ss=STATE.seckill_sessions||[];
   const dead=ss.filter(x=>x.left_min!=null&&x.left_min<=0);
   if(dead.length)items.push(['warn',`秒杀会话已过期（${dead.map(x=>mask(x.phone||'')||x.file).join('、')}）—— 11:54 的刷新任务会重建，前提是那一刻票据还活着`]);
@@ -827,55 +1053,57 @@ function renderTodo(){
   (STATE.accounts||[]).forEach(g=>Object.entries(g.plats||{}).forEach(([plat,a])=>{
     const st=a.stats||{};
     const signed=plat==='qwhdhub'?st.today_signed_qwhd:st.today_signed_bass;
-    if(signed!==todayLocal())noSign.push(mask(g.phone)+'（'+(plat==='qwhdhub'?'qwhdhub':'BASS')+'）');
+    if(signed!==todayLocal())noSign.push(mask(g.phone)+'（'+(PLAT_CN[plat]||plat)+'）');
   }));
   if(noSign.length)items.push(['sub',`今日还没签到：${noSign.join('、')} —— 08:30 的任务会自动补，也可在下方卡片手动点`]);
   // 下一个「你会在意」的自动任务：探测任务每 2 分钟一次，放进来只会刷屏
   const nx=(STATE.sched||[]).filter(x=>x.next&&x.name!=='MobileTokenLifeProbe')
     .sort((a,b)=>(a.next<b.next?-1:1))[0];
-  if(nx)items.push(['acc',`下一个自动任务：<b>${nx.name}</b> ${nx.next}`]);
+  if(nx)items.push(['acc',`下一个自动任务：<b>${esc((STATE.sched_cn||{})[nx.kind]||nx.name)}</b> ${esc(nx.next)}`]);
   box.innerHTML='<div class="todo"><div class="th">现在需要你做什么</div>'+
     items.map(([lv,t])=>`<div class="it"><span class="dot" style="background:var(--${lv})"></span><span>${t}</span></div>`).join('')+'</div>';
 }
 
 // ---------------- 定时任务：真实状态表 ----------------
 const SCHED=[
-  {kind:'sign',      name:'MobileSignIn',         bat:'run_scheduled.bat',      desc:'每天签到（qwhdhub + BASS）'},
-  {kind:'daily',     name:'MobileDailyReward',    bat:'run_daily_reward.bat',   desc:'每小时补签到 + 领三档奖励'},
-  {kind:'keepalive', name:'MobileJwtKeepAlive',   bat:'run_jwt_keepalive.bat',  desc:'每 90 分钟只登录，不签到'},
-  {kind:'sess',      name:'MobileSessionRefresh', bat:'run_session_refresh.bat',desc:'刷新活动会话，供秒杀复用'},
-  {kind:'seckill',   name:'MobileSeckill',        bat:'run_seckill.bat',        desc:'启动后内部等到 12:00 开抢'},
-  {kind:'games',     name:'MobileGames',          bat:'run_games.bat',          desc:'拓展活动三合一'},
-  {kind:'probe',     name:'MobileTokenLifeProbe', bat:'run_token_life.bat',     desc:'每 2 分钟探测票据寿命'}
+  {kind:'sign',      cn:'每天签到',    name:'MobileSignIn',         bat:'run_scheduled.bat',      desc:'全国签到 + 福建活动 + 消消乐'},
+  {kind:'daily',     cn:'每日奖励',    name:'MobileDailyReward',    bat:'run_daily_reward.bat',   desc:'每小时补签到 + 领三档奖励'},
+  {kind:'keepalive', cn:'会话保活',    name:'MobileJwtKeepAlive',   bat:'run_jwt_keepalive.bat',  desc:'每 90 分钟只登录，不签到'},
+  {kind:'sess',      cn:'会话刷新',    name:'MobileSessionRefresh', bat:'run_session_refresh.bat',desc:'刷新活动会话，供秒杀复用'},
+  {kind:'seckill',   cn:'秒杀抢券',    name:'MobileSeckill',        bat:'run_seckill.bat',        desc:'启动后内部等到 12:00 开抢'},
+  {kind:'games',     cn:'拓展活动',    name:'MobileGames',          bat:'run_games.bat',          desc:'拓展活动三合一'},
+  {kind:'probe',     cn:'票据寿命探测',name:'MobileTokenLifeProbe', bat:'run_token_life.bat',     desc:'每 2 分钟探测票据寿命'}
 ];
-function codeText(c){
+function codeText(c,kind){
   if(c===0)return '<span style="color:var(--ok)">成功</span>';
   if(c===267011)return '<span style="color:var(--warn)">从未运行</span>';
   if(c===267009)return '<span style="color:var(--acc)">运行中</span>';
   if(c===267014)return '<span style="color:var(--sub)">已中止</span>';
   if(c===267010)return '<span style="color:var(--sub)">已禁用</span>';
   if(c==null)return '—';
-  // 退出码 1 是批处理里最常见的失败（多为票据失效），细节在 logs/ 对应日志里，
-  // 这里不写长句，否则这一列会被挤成两行
-  return c===1?'<span style="color:var(--bad)" title="退出码 1：多为票据失效，详见 logs 目录">失败（见日志）</span>'
-    :'<span style="color:var(--bad)">异常 '+c+'</span>';
+  // 退出码 1 是批处理里最常见的失败（多为票据失效）。原来只写「见日志」却不给入口，
+  // 用户得自己去文件夹翻；这里直接做成可点开的链接。
+  const link=kind?` <a href="javascript:void(0)" onclick="openLog('${kind}')">看日志</a>`:'';
+  return c===1?`<span style="color:var(--bad)" title="退出码 1：多为票据失效">失败</span>${link}`
+    :`<span style="color:var(--bad)">异常 ${c}</span>${link}`;
 }
 function buildSched(){
   const box=$('schedBox'); if(!box||box.dataset.done)return;
-  box.innerHTML='<table class="stab"><thead><tr><th>任务</th><th>脚本</th>'+
+  box.innerHTML='<div class="tablewrap"><table class="stab"><thead><tr><th>任务</th>'+
     '<th style="width:100px">触发时刻</th><th style="width:76px">状态</th>'+
-    '<th style="width:112px">下次运行</th><th style="width:172px">上次结果</th><th style="width:166px">操作</th></tr></thead><tbody>'+
+    '<th style="width:112px">下次运行</th><th style="width:172px">上次结果</th><th style="width:236px">操作</th></tr></thead><tbody>'+
     SCHED.map(t=>`<tr>
-      <td><div class="nm">${t.name}</div><div class="sub">${t.desc}</div></td>
-      <td><div class="sub">${t.bat}</div></td>
+      <td><div class="nm">${t.cn}</div><div class="sub">${t.desc}</div>
+          <div class="sub" title="Windows 计划任务名与启动脚本">${t.name} · ${t.bat}</div></td>
       <td><input class="inp" id="st_${t.kind}" placeholder="HH:MM" style="min-width:84px"
                  oninput="this.dataset.dirty='1'"></td>
       <td id="sc_${t.kind}">—</td>
       <td id="sn_${t.kind}">—</td>
       <td id="sl_${t.kind}">—</td>
       <td><button class="btn pri sm" onclick="regSched('${t.kind}')">注册/更新</button>
-          <button class="btn sm danger" onclick="cf('注销 ${t.name}？',()=>unregSched('${t.name}'))">注销</button></td>
-    </tr>`).join('')+'</tbody></table>';
+          <button class="btn sm" data-nobusy onclick="openLog('${t.kind}')">日志</button>
+          <button class="btn sm danger" onclick="cf('注销「${t.cn}」？注销后它不再自动运行。',()=>unregSched('${t.name}'))">注销</button></td>
+    </tr>`).join('')+'</tbody></table></div>';
   box.dataset.done='1';
 }
 function updSched(){
@@ -886,14 +1114,28 @@ function updSched(){
     const e=$('st_'+t.kind);
     if(e&&!e.dataset.dirty&&document.activeElement!==e&&s&&s.time&&e.value!==s.time)e.value=s.time;
     const c=$('sc_'+t.kind), n=$('sn_'+t.kind), l=$('sl_'+t.kind);
-    if(c)c.innerHTML=s?(s.state==='Disabled'?'<span style="color:var(--warn)">已禁用</span>':'<span style="color:var(--ok)">已注册</span>'):'<span style="color:var(--bad)">未注册</span>';
+    // 还没读到状态时不能说「未注册」——那是一句假话，几秒后才有真相
+    if(c)c.innerHTML=s?(s.state==='Disabled'?'<span style="color:var(--warn)">已禁用</span>':'<span style="color:var(--ok)">已注册</span>')
+      :(STATE.sched_read_ok==null?'<span style="color:var(--sub)">读取中</span>':'<span style="color:var(--bad)">未注册</span>');
     if(n)n.textContent=s&&s.next?s.next:'—';
-    if(l)l.innerHTML=s?(s.last?`<div class="sub">${s.last}</div><div>${codeText(s.code)}</div>`:codeText(s.code)):'—';
+    if(l)l.innerHTML=s?(s.last?`<div class="sub">${esc(s.last)}</div><div>${codeText(s.code,t.kind)}</div>`:codeText(s.code,t.kind)):'—';
   });
-  if(!list.length&&$('schedBox')){
-    const tip=$('schedBox').querySelector('.stab');
-    if(tip)tip.insertAdjacentHTML('afterend','<div class="warnbox">读不到任务状态（PowerShell 可能被策略拦）。可点上方「刷新任务状态」重试；不影响任务本身照常运行。</div>');
+  // 提示条只保留一条：原来每次渲染（6 秒一次）都往后插一条，会无限堆叠；
+  // 而且「一个都没注册」被误报成「PowerShell 被策略拦」。
+  const box=$('schedBox'); if(!box)return;
+  let tip=box.querySelector('.schedtip');
+  let html='';
+  if(!list.length){
+    if(STATE.sched_read_ok===false)
+      html='<div class="warnbox schedtip">读不到任务状态（PowerShell 可能被策略拦或超时）。点上方「刷新状态」重试；不影响已注册的任务照常运行。</div>';
+    else if(STATE.sched_read_ok==null)
+      html='<div class="infobox schedtip">正在读取计划任务状态…（首次要几秒，读到后自动更新）</div>';
+    else
+      html='<div class="infobox schedtip">还没有注册任何计划任务 —— 点上方「一键配置全部（推荐方案）」一次配好 7 个，电脑才会每天自动跑。</div>';
   }
+  if(!html){if(tip)tip.remove();return;}
+  if(tip)tip.outerHTML=html;
+  else box.insertAdjacentHTML('beforeend',html);
 }
 async function refreshSched(){
   const r=await act({action:'sched_refresh'});
@@ -903,8 +1145,10 @@ async function refreshSched(){
 const SCHED_PLAN=[["sign","08:30"],["daily","06:00"],["keepalive","00:00"],
                   ["sess","11:54"],["seckill","11:55"],["games","12:05"],["probe","00:00"]];
 async function applyAllSched(){
-  const desc=SCHED_PLAN.map(([k,t])=>`${k} ${t}`).join('\n');
-  if(!confirm('将按推荐方案重新注册 7 个计划任务，会覆盖当前触发时刻：\n\n'+desc+'\n\n继续吗？'))return;
+  const cn=k=>(SCHED.find(x=>x.kind===k)||{}).cn||k;
+  const desc=SCHED_PLAN.map(([k,t])=>`${cn(k)}　${t}`).join('\n');
+  if(!confirm('将按推荐方案重新注册 7 个计划任务，会覆盖当前触发时刻：\n\n'+desc+
+              '\n\n注意：「每天签到」那一趟含消消乐（伪造通关成绩）。\n\n继续吗？'))return;
   const r=await act({action:'sched_apply_all',plan:SCHED_PLAN});
   if(r&&r.ok)setTimeout(refreshSched,6000);   // 7 个任务要跑几秒，等它落盘
 }
@@ -923,23 +1167,38 @@ async function unregSched(name){
   await act({action:'sched_unreg',name:name});
   setTimeout(refreshSched,2000);
 }
-async function pullState(){STATE=await(await fetch('/api/state')).json();render();
-  const p=$('taskPill');
-  if(STATE.task.running){p.textContent='运行中 · '+STATE.task.label;p.classList.add('run');}else{p.textContent='空闲';p.classList.remove('run');}}
+async function pullState(){
+  try{STATE=await(await fetch('/api/state')).json();}
+  catch(e){
+    // 服务连不上时要说出来，不能停在旧数据上装没事
+    $('envBox').innerHTML='<div class="envbar">连不上控制台服务（'+esc(e&&e.message||e)+
+      '）。请确认程序还在运行，再刷新本页。</div>';
+    return;}
+  render();
+  setBusy(STATE.task.running,STATE.task.label);
+}
 function runBass(){
   const warn=[];if($('bTasks').checked)warn.push('养成浏览任务（空报伪造）');if($('bFb').checked)warn.push('流量银行任务（空报伪造）');
   if(warn.length&&!confirm('本次将执行伪造浏览类任务：\n- '+warn.join('\n- ')+'\n\n确定继续吗？'))return;
+  capStart('bass');
   act({action:'bass_run',key:V('bassRunKey'),dry:$('bDry').checked?1:0,claim:$('bClaim').checked?1:0,roll:$('bRoll').checked?1:0,
-       feed:parseInt($('bFeed').value||0),tasks:$('bTasks').checked?1:0,fb:$('bFb').checked?1:0,
-       auto_claim:$('bAuto').checked?1:0,continue_stage:$('bCont').checked?1:0});}
+       feed:$('bFeedAll').checked?0:parseInt($('bFeed').value||0),
+       feed_all:$('bFeedAll').checked?1:0,
+       tasks:$('bTasks').checked?1:0,fb:$('bFb').checked?1:0,
+       auto_claim:$('bAuto').checked?1:0,continue_stage:$('bCont').checked?1:0})
+    .then(r=>{if(!r||!r.ok)CAP=null;});}
+function runBassProbe(){
+  capStart('bass');
+  act({action:'bass_probe',key:V('bassRunKey')}).then(r=>{if(!r||!r.ok)CAP=null;});}
 // 阶段喂满时的两种处理互斥：勾一个就自动取消另一个
 function pickStage(which){
   if(which==='auto'&&$('bAuto').checked)$('bCont').checked=false;
   if(which==='cont'&&$('bCont').checked)$('bAuto').checked=false;
 }
 // 执行结果区：把本次运行的输出留在页面上，不用去日志翻
-let CAP=null,CAPBUF=[];
-function capStart(kind){CAP=kind;CAPBUF=[];}
+let CAP=null,CAPBUF=[],CAPTHEN=null;
+function capStart(kind,then){CAP=kind;CAPBUF=[];CAPTHEN=then||null;}
+function capDrop(){CAP=null;CAPTHEN=null;}
 function capPush(line){
   if(!CAP)return;
   const s=String(line).replace(/\s+$/,'');
@@ -948,26 +1207,47 @@ function capPush(line){
 }
 function capEnd(){
   if(!CAP)return;
-  const box=$(CAP+'Box'), kind=CAP; CAP=null;
-  if(!box)return;
-  const head=`最近一次执行 · ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;
-  const body=CAPBUF.length?CAPBUF.map(l=>l.replace(/[<>]/g,'')).join('\n'):'（本次没有输出）';
-  box.innerHTML=`<div class="outbox"><div class="h">${head}</div>${body}</div>`;
+  const box=$(CAP+'Box'), then=CAPTHEN, lines=CAPBUF.slice();
+  CAP=null;CAPTHEN=null;
+  if(box){
+    const head=`最近一次执行 · ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;
+    const body=lines.length?esc(lines.join('\n')):'（本次没有输出）';
+    box.innerHTML=`<div class="outbox"><div class="h">${head}</div>${body}</div>`;
+  }
+  if(then)then(lines);
 }
-let lastRunning=false;
 async function runGames(mode){
   capStart('gm');
   const r=await act({action:'games_run',file:V('gmFile'),dry:mode==='dry'?1:0,tasks:mode==='tasks'?1:0},
                     ()=>setTimeout(pullState,3000));
-  if(!r||!r.ok)CAP=null;
+  if(!r||!r.ok)capDrop();
 }
 function runXxl(){if(!confirm('消消乐属于伪造游戏通关成绩，中奖靠服务端概率，确定要跑吗？'))return;
   capStart('xxl');
   act({action:'xxl_run',file:V('xxlFile'),level:V('xLevel'),star:V('xStar'),times:V('xTimes'),gap:V('xGap')})
-    .then(r=>{if(!r||!r.ok)CAP=null;});}
+    .then(r=>{if(!r||!r.ok)capDrop();});}
+function xxlQuery(){
+  capStart('xxl');
+  act({action:'xxl_run',file:V('xxlFile'),dry:1}).then(r=>{if(!r||!r.ok)capDrop();});}
+// 探到的关卡号直接回填输入框：原来只进日志，用户还得自己翻出来手填
+function detectLevel(){
+  capStart('xxl',lines=>{
+    const m=lines.join('\n').match(/自动探测当前关卡:\s*(\d+)/);
+    if(m){$('xLevel').value=m[1];toast('已把探测到的关卡号 '+m[1]+' 填进输入框');}
+    else toast('没探到关卡号（可能体力不足或凭证失效），看下方输出',true);
+  });
+  act({action:'xxl_run',file:V('xxlFile'),detect:1}).then(r=>{if(!r||!r.ok)capDrop();});}
 function runSeckill(){
-  const at=V('skAt').trim();
-  act({action:'seckill_run',file:V('skFile'),at:at||''});}
+  const at=V('skAt').trim(), n=new Date(), mins=n.getHours()*60+n.getMinutes();
+  if(mins>=13*60&&!confirm('今天的场次（12:00~13:00）已结束，现在出手会被拒。仍要继续吗？'))return;
+  capStart('sk');
+  act({action:'seckill_run',file:V('skFile'),at:at||''}).then(r=>{if(!r||!r.ok)capDrop();});}
+function seckillQuery(){
+  capStart('sk');
+  act({action:'seckill_run',file:V('skFile'),dry:1}).then(r=>{if(!r||!r.ok)capDrop();});}
+function seckillOnce(){
+  capStart('sk');
+  act({action:'seckill_run',file:V('skFile'),once:1}).then(r=>{if(!r||!r.ok)capDrop();});}
 function afterHar(r){
   const el=$('harOut'); if(!el)return;
   const rep=(r&&r.report)||[];
@@ -977,15 +1257,18 @@ function afterHar(r){
   if(!rep.length&&!err){el.style.display='none';return;}
   el.style.display='block';
   let html='';
-  if(err) html+=`<div style="color:var(--bad)">✗ ${String(err).replace(/[<>]/g,'')}</div>`;
-  html+=rep.map(t=>`<div>${String(t).replace(/[<>]/g,'')}</div>`).join('');
+  if(err) html+=`<div style="color:var(--bad)">✗ ${esc(err)}</div>`;
+  html+=rep.map(t=>`<div>${esc(t)}</div>`).join('');
   el.innerHTML=html;
 }
+let harBusy=false;
 function importHar(){
   const f=$('harFile').files[0];
-  if(!f){toast('先选择一个 HAR 文件');return;}
+  if(!f){toast('先选择一个抓包文件（.har）',true);return;}
+  if(harBusy){toast('上一份还在导入，等它出报告再点',true);return;}
+  harBusy=true;
   const el=$('harOut');
-  if(el){el.style.display='block';el.innerHTML=`<div style="color:var(--sub)">正在上传 ${f.name}（${(f.size/1048576).toFixed(1)}MB）…</div>`;}
+  if(el){el.style.display='block';el.innerHTML=`<div style="color:var(--sub)">正在上传 ${esc(f.name)}（${(f.size/1048576).toFixed(1)}MB）…导入后会实测登录一次，请稍候</div>`;}
   const fr=new FileReader();
   fr.onload=async()=>{
     let r=null;
@@ -994,19 +1277,22 @@ function importHar(){
     }catch(e){
       r={ok:false,err:'上传失败：'+(e&&e.message||e)};
     }
+    harBusy=false;
     afterHar(r);
   };
-  fr.onerror=()=>{toast('读取文件失败');if(el){el.style.display='block';el.innerHTML='<div style="color:var(--bad)">✗ 读取文件失败</div>';}};
+  fr.onerror=()=>{harBusy=false;toast('读取文件失败',true);
+    if(el){el.style.display='block';el.innerHTML='<div style="color:var(--bad)">✗ 读取文件失败</div>';}};
   fr.readAsText(f);
 }
 function runAll(platform){
-  // 消消乐只跟随「一键签到」；只跑单个平台时不带，避免误消耗游戏次数
+  // 消消乐只跟随「一键签到」；只跑单个平台时不带，避免误消耗游戏次数。
+  // 勾了就要确认：它是伪造通关成绩，门槛不能比消消乐专页还低。
   const xxl=(platform==='all'&&$('dashXxl')&&$('dashXxl').checked)?1:0;
+  if(xxl&&!confirm('本次一键签到包含消消乐（伪造游戏通关成绩，性质比空报浏览更重）。\n\n确定继续吗？'))return;
   return act({action:'run_all',platform:platform,
     dry:($('dashDry')&&$('dashDry').checked)?1:0, xxl:xxl});}
-function refreshStatus(){
-  if($('dashDry'))$('dashDry').checked=false;
-  act({action:'refresh_status'});}
+// 刷新状态本身就是只读检查，不该顺手改掉用户勾的选项
+function refreshStatus(){act({action:'refresh_status'});}
 // 日志
 const cons=$('console');
 function colorize(l){
@@ -1016,8 +1302,10 @@ function colorize(l){
   else if(/▶|■|——|警告|⚠/.test(l))c='hl';
   else if(/^\$/.test(l))c='dim';
   return c?` class="${c}"`:'';}
+let lastRunning=false;
 async function pullLogs(){
-  const r=await(await fetch('/api/logs?since='+logSeq)).json();
+  let r;
+  try{r=await(await fetch('/api/logs?since='+logSeq)).json();}catch(e){return;}
   if(r.lines.length){
     const atBottom=cons.scrollHeight-cons.scrollTop-cons.clientHeight<40;
     r.lines.forEach(l=>{logSeq=l.seq;capPush(l.line);
@@ -1031,15 +1319,24 @@ async function pullLogs(){
       cons.appendChild(d);});
     while(cons.children.length>2500)cons.removeChild(cons.firstChild);
     if(atBottom)cons.scrollTop=cons.scrollHeight;}
-  const p=$('taskPill');
-  if(r.running){p.textContent='运行中 · '+(r.label||'');p.classList.add('run');}
-  else{
+  const wasRunning=lastRunning; lastRunning=!!r.running;
+  setBusy(r.running,r.label);
+  if(!r.running){
     if(CAP)capEnd();                                  // 跑完了，把输出落到页面结果区
-    if(p.classList.contains('run')){p.textContent='空闲';p.classList.remove('run');pullState();}}}
+    if(wasRunning)pullState();}}
 function clearConsole(){cons.innerHTML='';}
-// 签到总览 dry-run 联动
-document.addEventListener('change',e=>{if(e.target.id==='dashDry')window._dashDry=e.target.checked;});
-const _act=act; act=async(b,a)=>{if(b.action==='run_all'&&$('dashDry').checked)b.dry=1;return _act(b,a);};
+// 点弹层外的灰底也能关闭
+document.addEventListener('click',e=>{if(e.target&&e.target.id==='modal')closeModal();});
+// 字号缩放：桌面窗口里没有浏览器的 Ctrl+滚轮，得自己给一个（记住选择）
+let ZOOM=1;
+try{ZOOM=Number(localStorage.getItem('cmcc_zoom'))||1;}catch(e){}
+function applyZoom(){document.documentElement.style.zoom=ZOOM;}
+function zoomBy(d){
+  ZOOM=Math.min(1.6,Math.max(0.8,Math.round((ZOOM+d)*10)/10));
+  try{localStorage.setItem('cmcc_zoom',String(ZOOM));}catch(e){}
+  applyZoom();toast('字号 '+Math.round(ZOOM*100)+'%');
+}
+applyZoom();
 (function(){const h=location.hash.slice(1);const b=h&&document.querySelector('nav button[data-p="'+h+'"]');if(b)nav(b);})();
 pullState();pullLogs();setInterval(pullLogs,1200);setInterval(pullState,6000);
 </script>

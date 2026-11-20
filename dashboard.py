@@ -739,8 +739,10 @@ def _list_seckill_sessions() -> list:
             left_min = None
             if exp:
                 try:
-                    d = datetime.datetime.fromisoformat(exp) - datetime.datetime.now()
-                    left_min = round(d.total_seconds() / 60)
+                    # 本模块是 from datetime import datetime，写成 datetime.datetime
+                    # 会抛 AttributeError 并被下面吞掉，剩余分钟就永远是 null
+                    left_min = round((datetime.fromisoformat(exp)
+                                      - datetime.now()).total_seconds() / 60)
                 except Exception:
                     pass
             out.append({

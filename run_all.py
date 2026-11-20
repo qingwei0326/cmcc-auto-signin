@@ -10,7 +10,7 @@ run_all.py —— 多账号批量运行器（两个平台）
     python run_all.py --platform qwhd    # 只跑 qwhdhub
     python run_all.py --platform bass    # 只跑 BASS
     python run_all.py --delay 900        # 每个号之间随机等待（会退回串行）
-    python run_all.py --extra "--roll"   # 给 BASS 脚本追加参数
+    python run_all.py --extra="--roll"   # 给 BASS 脚本追加参数（值以 -- 开头，必须用 =）
     python run_all.py --log logs/daily.log   # 同时写一份按天轮转的日志
 """
 
@@ -152,31 +152,28 @@ def brief_error(text: str) -> str:
     return lines[-1] if lines else ""
 
 
-def run_one(platform_key: str, conf: Path, dry_run: bool, extra: list,
-            idx: int = 1, total: int = 1) -> tuple:
-    """跑一个账号。返回 (名称, 是否成功, 耗时, 输出文本)。
+def run_script(script: Path, conf: Path, args: list, timeout: int,
+               name: str = "", idx: int = 0, total: int = 0) -> tuple:
+    """跑一个子脚本。返回 (名称, 是否成功, 耗时, 输出文本)。
 
     输出不在子线程里直接打印，而是回传给主线程按顺序打印，
     否则并发执行时各账号的日志会交错在一起。
+    签到 / 消消乐 / 秒杀三条链路共用这一份实现。
     """
-    p = PLATFORMS[platform_key]
-    cmd = [sys.executable, str(p["script"]), "--config", str(conf)]
-    if dry_run:
-        cmd.append("--dry-run")
-    if platform_key == "bass" and extra:
-        cmd.extend(extra)
-
-    name = label_of(conf, p["id_field"])
+    cmd = [sys.executable, str(script), "--config", str(conf), *args]
+    name = name or label_of(conf, "phone")
+    head = f"--- [{idx}/{total}] {name}  ({conf.name}) ---" if idx else ""
     buf = []
     t0 = time.time()
     ok = False
     try:
         res = subprocess.run(cmd, capture_output=True, text=True,
-                             encoding="utf-8", errors="ignore", timeout=300)
+                             encoding="utf-8", errors="ignore", timeout=timeout)
         out = (res.stdout or "").strip()
         err = (res.stderr or "").strip()
         ok = res.returncode == 0
-        buf.append(f"--- [{idx}/{total}] {name}  ({conf.name}) ---")
+        if head:
+            buf.append(head)
         if out:
             buf.append(out[-1500:])
         if not ok:
@@ -186,14 +183,23 @@ def run_one(platform_key: str, conf: Path, dry_run: bool, extra: list,
         if not out and not err:
             buf.append("(无输出)")
     except subprocess.TimeoutExpired:
-        buf.append(f"--- [{idx}/{total}] {name}  ({conf.name}) ---")
+        if head:
+            buf.append(head)
         buf.append("超时，跳过")
-        ok = False
     except Exception as e:
-        buf.append(f"--- [{idx}/{total}] {name}  ({conf.name}) ---")
+        if head:
+            buf.append(head)
         buf.append(f"异常：{e}")
-        ok = False
     return name, ok, round(time.time() - t0, 1), "\n".join(buf)
+
+
+def run_one(platform_key: str, conf: Path, dry_run: bool, extra: list,
+            idx: int = 1, total: int = 1) -> tuple:
+    """跑一个平台账号。extra 由调用方按平台决定，两个平台都要透传。"""
+    p = PLATFORMS[platform_key]
+    args = (["--dry-run"] if dry_run else []) + list(extra or [])
+    return run_script(p["script"], conf, args, 300,
+                      label_of(conf, p["id_field"]), idx, total)
 
 
 def run_platform(key: str, confs: list, dry_run: bool, extra: list,
@@ -340,7 +346,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--platform", choices=["qwhd", "bass", "all", "none"], default="all")
     ap.add_argument("--delay", type=int, default=0)
-    ap.add_argument("--extra", default="", help="传给 BASS 脚本的额外参数，如 --roll")
+    ap.add_argument("--extra", default="",
+                    help='传给 BASS 脚本的额外参数，写成 --extra="--roll"')
     ap.add_argument("--xxl", action="store_true", help="签完之后接着跑消消乐")
     ap.add_argument("--xxl-times", type=int, default=5, help="消消乐每个号玩几局，默认 5")
     ap.add_argument("--daily-only", action="store_true",
@@ -356,11 +363,16 @@ def main():
     ap.add_argument("--seckill-at", default="", help="秒杀开抢时刻，默认按 secConfig 自动选场次")
     args = ap.parse_args()
 
+    # 额外参数按平台分发：--extra 是给 BASS 的，qwhd 的由模式开关自己决定。
+    # 早先两个平台共用一个 extra 字符串、却只透传给 bass，导致 --keepalive
+    # 的 --login-only 被丢掉，保活任务变成了每 90 分钟真签到一次。
+    extra_map = {"qwhd": [], "bass": args.extra.split() if args.extra else []}
+
     # 只领每日奖励：只跑 BASS，且把 --daily-only 透传给 cmcc_fj.py
     if args.daily_only:
         args.platform = "bass"
         args.xxl = False
-        args.extra = (args.extra + " --daily-only").strip()
+        extra_map["bass"].append("--daily-only")
 
     # 只跑秒杀：不签到（资格由秒杀脚本自己补签），也不跑别的平台
     if args.seckill_only:
@@ -374,7 +386,7 @@ def main():
         args.xxl = False
         args.dry_run = False
         args.no_notify = True
-        args.extra = (args.extra + " --login-only").strip()
+        extra_map["qwhd"].append("--login-only")
 
     log = RotatingLog(args.log)
     if log.enabled:
@@ -399,7 +411,7 @@ def main():
         print("=" * 66)
 
         results.extend(run_platform(key, confs, args.dry_run,
-                                    args.extra.split() if args.extra else [], args.delay))
+                                    extra_map[key], args.delay))
 
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))

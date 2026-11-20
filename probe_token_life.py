@@ -198,17 +198,32 @@ def report() -> int:
     return 0
 
 
-def mark_issued(issued_at: str | None = None) -> int:
-    """把当前配置的 app_token 签发时刻写入探测记录。
+def _phone_of(cfg_path: Path, rec: dict) -> str:
+    """账号手机号：优先探测记录里的，其次配置文件里的（记录可能还没探过）。"""
+    ph = str(rec.get("phone") or "")
+    if ph:
+        return ph
+    return str(_load(BASE / "configs" / f"{cfg_path.stem}.json").get("phone") or "")
+
+
+def mark_issued(issued_at: str | None = None, phone: str | None = None) -> int:
+    """把 app_token 签发时刻写入探测记录。
 
     签发时刻来自 HAR 里 appTokenLogin 请求的时间戳（最接近真实签发点）。
     没有 HAR 时退化为「导入时刻」，这会让寿命算短一点。
+
+    **必须按账号定位**：早先无条件遍历全部 configs 写同一个 stamp，给 3239
+    导入 HAR 会清空 4167 的样本、并写上 3239 的签发时间，4167 的寿命结论
+    随之失真。传 phone 时只动那一个号；不传则保留旧行为（全部账号）。
     """
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = issued_at or datetime.now().isoformat(timespec="seconds")
+    hit = 0
     for cfg_path in _accounts():
         out = OUT_DIR / f"{cfg_path.stem}.json"
         rec = _load(out)
+        if phone is not None and _phone_of(cfg_path, rec) != str(phone):
+            continue
         rec["issued_at"] = stamp
         # 新票据 = 新的一轮探测：清掉旧样本与旧状态
         rec["samples"] = []
@@ -216,7 +231,10 @@ def mark_issued(issued_at: str | None = None) -> int:
         rec.pop("expired_at", None)
         rec["conclusion"] = _conclude(rec)
         _save(out, rec)
+        hit += 1
         print(f"...{cfg_path.stem} 签发时刻标记为 {stamp}")
+    if phone is not None and not hit:
+        print(f"⚠ 未找到手机号 {phone} 对应的账号，签发时刻未写入")
     return 0
 
 

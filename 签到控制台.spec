@@ -1,7 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+# 前端页面已拆成独立文件，必须一起打包（dashboard._load_frontend 会去 _MEIPASS 找）。
+# 本 spec 是打包配置的唯一来源：build_exe.bat 直接构建它，不再用命令行参数，
+# 否则 PyInstaller 会按命令行重新生成 spec、把这里的配置覆盖掉。
+datas = [('static', 'static')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('webview')

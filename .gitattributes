@@ -4,6 +4,8 @@
 # 其余文本统一 LF
 *.py text eol=lf
 *.js text eol=lf
+*.html text eol=lf
+*.css text eol=lf
 *.md text eol=lf
 *.json text eol=lf
 *.txt text eol=lf

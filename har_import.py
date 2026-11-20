@@ -168,7 +168,7 @@ def apply(text, key=None):
         if issued:
             try:
                 import probe_token_life as PT
-                PT.mark_issued(issued)
+                PT.mark_issued(issued, phone=phone)
                 report.append(f"  ↳ 票据签发时刻 {issued}，已写入寿命探测记录")
             except Exception as e:
                 report.append(f"  ↳ 记录签发时刻失败：{e}")

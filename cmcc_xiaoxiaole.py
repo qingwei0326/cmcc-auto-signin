@@ -25,6 +25,10 @@ cmcc_xiaoxiaole.py —— 福建移动 BASS「消消乐」H5 小游戏（半自�
   python cmcc_xiaoxiaole.py --dry-run --config configs_fj/fj2.json   # 只读看次数
   python cmcc_xiaoxiaole.py --config configs_fj/fj2.json --level 63 --times 5
   python cmcc_xiaoxiaole.py --config configs_fj/fj2.json --level 63 --times 5 --gap 15
+
+退出码（run_all.py 靠它判定成败并决定是否推送）：
+  0 = 正常收尾，含「体力/次数用尽」这类预期内的停止
+  1 = 真失败：配置错误、token 失效、取不到 playToken、连续异常失败
 """
 
 import argparse
@@ -44,7 +48,9 @@ except ImportError:
     print("缺少 pycryptodome，请先运行：python -m pip install pycryptodome", file=sys.stderr)
     sys.exit(1)
 
-sys.stdout.reconfigure(encoding="utf-8")
+from common import setup_utf8
+
+setup_utf8()
 
 BASE = Path(__file__).parent
 HOST = "https://wap.fj.10086.cn"
@@ -108,11 +114,12 @@ def post(s: requests.Session, path: str, body: dict = None, retries: int = 1) ->
 
 
 def show_limit(s: requests.Session) -> dict:
+    """打印今日次数并返回整个响应（调用方要看 code 判定 token 是否失效）。"""
     j = post(s, "getDailyPlayLimit")
     d = j.get("data") or {}
     print(f"  今日已玩 {d.get('todayPlayCount')} 次 / dayLimit={d.get('dayLimit')} "
           f"reached={d.get('reachedLimit')}  code={j.get('code')}")
-    return d
+    return j
 
 
 def prize_name(data) -> str:
@@ -121,7 +128,7 @@ def prize_name(data) -> str:
     return data.get("prizeName") or ""
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(description="福建移动消消乐（半自动，慢速少量）")
     ap.add_argument("--config", default="configs_fj/fj2.json", help="账号配置 json")
     ap.add_argument("--dry-run", action="store_true", help="只读看次数，不玩游戏")
@@ -138,21 +145,25 @@ def main():
     cfg_path = BASE / args.config
     if not cfg_path.exists():
         print(f"找不到配置：{cfg_path}")
-        sys.exit(1)
-    cfg = json.load(open(cfg_path, encoding="utf-8"))
+        return 1
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"配置解析失败：{cfg_path}\n  {e}")
+        return 1
     token = cfg.get("bearer_token", "")
     if not token:
         print("配置里 bearer_token 为空")
-        sys.exit(1)
+        return 1
 
     s = make_session(token)
     print(f"账号配置: {args.config}")
     print("=" * 56)
 
-    d = show_limit(s)
+    lim0 = show_limit(s)
     if args.dry_run and not args.detect_level:
         print("\n--dry-run：仅查看，未玩游戏。")
-        return
+        return 0 if str(lim0.get("code")) == "0000" else 1
 
     # 自动探测当前关卡：indexInfo.gameRecordList 里最高 gameLevel 即账号进度
     detected = None
@@ -170,7 +181,7 @@ def main():
                 print("  提示：-100 多为体力耗尽或今日次数用完（也可能短时限流），先试 1 局确认")
         if args.dry_run:
             print("\n--dry-run：仅查看，未玩游戏。")
-            return
+            return 0 if str(lim0.get("code")) == "0000" else 1
 
     level = detected if detected is not None else (args.level if args.level is not None else 63)
     print(f"\n参数: level={level}  star={args.star}  times={args.times}  gap={args.gap}s")
@@ -179,16 +190,29 @@ def main():
     got = 0
     played = 0
     fail_streak = 0
+    hard_fail = False   # 真失败（token/网关/参数），退出码 1
+    soft_stop = False   # 预期内收尾（体力或次数用尽），退出码 0
     for i in range(args.times):
         # 每局重新取一次性 token
         lim = post(s, "getDailyPlayLimit")
         ld = lim.get("data") or {}
-        if ld.get("reachedLimit") or str(lim.get("code")) != "0000":
-            print(f"[{i + 1}] 已到上限或取 token 失败：{lim.get('msg')}，停止。")
+        lcode = str(lim.get("code"))
+        if lcode == "401":
+            print(f"[{i + 1}] token 失效（401），停止。请更新该号 bearer_token。")
+            hard_fail = True
+            break
+        if ld.get("reachedLimit"):
+            print(f"[{i + 1}] 今日次数已用完，停止。")
+            soft_stop = True
+            break
+        if lcode != "0000":
+            print(f"[{i + 1}] 取 playToken 失败：code={lcode} {lim.get('msg')}，停止。")
+            hard_fail = True
             break
         play_token = ld.get("playToken", "")
         if not play_token:
             print(f"[{i + 1}] 未拿到 playToken，停止。")
+            hard_fail = True
             break
 
         body = {
@@ -215,11 +239,17 @@ def main():
             # 服务端对体力不足有明确文案，命中就直接收手，别再试探
             if "体力" in msg or "次数" in msg:
                 print(f"    体力/次数不足，直接停止（今日已玩 {ld.get('todayPlayCount')} 次）。")
+                soft_stop = True
+                break
+            if code == "401":
+                print("    token 失效（401），停止。请更新该号 bearer_token。")
+                hard_fail = True
                 break
             # 其它 -100：连续两次拿不到结果也停，继续跑只是白烧次数
             if fail_streak >= 2:
                 print(f"    连续 {fail_streak} 局失败（{code}）——大概率次数用完或网关在拦，"
                       f"提前停止，剩余局数不再消耗。")
+                hard_fail = True
                 break
 
         if i < args.times - 1:
@@ -238,6 +268,13 @@ def main():
     else:
         print(f"奖品查询：code={pr.get('code')} msg={pr.get('msg')!r}")
 
+    if hard_fail:
+        return 1
+    if played == 0 and not soft_stop:
+        print("一局都没提交成功，且不属于体力/次数用尽 —— 记为失败。")
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

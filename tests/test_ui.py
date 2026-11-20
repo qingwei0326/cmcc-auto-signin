@@ -34,6 +34,8 @@ class TestSchedState(unittest.TestCase):
         with dashboard._SCHED_LOCK:
             dashboard._SCHED_CACHE["at"] = 0.0
             dashboard._SCHED_CACHE["data"] = []
+            dashboard._SCHED_CACHE["ok"] = None
+            dashboard._SCHED_CACHE["th"] = None
 
     @staticmethod
     def _fake(payload, calls):
@@ -66,9 +68,11 @@ class TestSchedState(unittest.TestCase):
                                "at": "2026-11-20T08:30:00+08:00",
                                "next": "", "last": "", "code": 267011}]).encode()
         with mock.patch.object(dashboard.subprocess, "run", self._fake(payload, calls)):
+            dashboard._sched_state(ttl=90)    # 冷启动交给后台读，不挡首屏
+            dashboard._sched_wait()
+            dashboard._sched_state(ttl=90)    # 之后命中缓存
             dashboard._sched_state(ttl=90)
-            dashboard._sched_state(ttl=90)
-        self.assertEqual(len(calls), 1, "第二次应命中缓存")
+        self.assertEqual(len(calls), 1, "重复轮询只该起一次 PowerShell")
 
     def test_failure_does_not_raise(self):
         """读不到任务状态不能让整个 /api/state 挂掉。"""

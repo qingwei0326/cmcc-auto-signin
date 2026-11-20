@@ -58,6 +58,63 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WIN else 0
 
 TODAY = lambda: datetime.now().strftime("%Y-%m-%d")
 
+# 冻结成 exe 后任务脚本交给系统 Python 跑。缺 Python / 缺 requests 时，
+# 早先只在日志里吐「[WinError 2] 系统找不到指定的文件」，用户看不懂也没法自救，
+# 所以这里提前检查并给出可照做的说明。源码运行时解释器与 requests 必然可用。
+_PREFLIGHT = {"at": 0.0, "ok": True, "msg": ""}
+
+
+def preflight(force=False):
+    """检查任务脚本能否执行，返回 (ok, 人话说明)。结果缓存 5 分钟。"""
+    if not getattr(sys, "frozen", False):
+        return True, ""
+    now = time.time()
+    if not force and _PREFLIGHT["at"] and now - _PREFLIGHT["at"] < 300:
+        return _PREFLIGHT["ok"], _PREFLIGHT["msg"]
+    import shutil
+    exe = shutil.which("python") or shutil.which("python3")
+    if not exe:
+        ok, msg = False, ("找不到系统 Python，签到任务无法执行。\n\n"
+                          "请安装 Python 3.9+（64 位），安装时勾选 "
+                          "Add Python to PATH，装完重开本程序。\n"
+                          "下载：https://www.python.org/downloads/")
+    else:
+        ok, msg = True, ""
+        try:
+            p = subprocess.run([exe, "-c", "import requests"], capture_output=True,
+                               timeout=60, creationflags=NO_WINDOW)
+            if p.returncode != 0:
+                ok = False
+                msg = (f"已找到 Python（{exe}），但缺少 requests 等依赖。\n\n"
+                       f"请在项目目录打开 cmd 执行：\n"
+                       f"  \"{exe}\" -m pip install -r requirements.txt")
+        except Exception as e:
+            ok, msg = False, f"无法验证 Python 环境（{exe}）：{e}"
+    _PREFLIGHT.update(at=now, ok=ok, msg=msg)
+    return ok, msg
+
+
+def _busy_err() -> str:
+    """单任务槽被占时的说明。要讲清「在跑什么、怎么办」，不能只说「可能正忙」。"""
+    label = str(getattr(RUNNER, "label", "") or "")
+    return (f"正在运行「{label}」，请等它结束，或点右上角「停止」"
+            if label else "有任务正在运行，请等它结束，或点右上角「停止」")
+
+
+def _start(label, cmd, parser=None, shell=False, need_py=True) -> dict:
+    """所有「起一个任务」的动作共用：成功返回 ok，被占/环境不行返回可照做的原因。
+
+    need_py=False 用于只跑 PowerShell 的计划任务操作：没装 Python 也该能注销任务。
+    """
+    if need_py:
+        ok, msg = preflight()
+        if not ok:
+            return {"ok": False, "err": msg}
+    started = RUNNER.start(label, cmd, parser=parser, shell=shell)
+    if started:
+        return {"ok": started}
+    return {"ok": False, "err": _busy_err()}
+
 
 # ======================================================================
 # 统计存储
@@ -164,10 +221,24 @@ def load_json(p: Path):
 
 
 def _pythonw() -> str:
-    """无窗口的 Python 解释器（pythonw.exe）；没有就退回 sys.executable。
+    """无窗口的 Python 解释器（pythonw.exe），找不到返回空串。
 
     计划任务用它 + run_hidden.py 启动 bat，桌面就不会再闪黑窗口。
+    冻结态下 sys.executable 是 exe 自己，绝不能拿它当解释器——那会让计划任务
+    每 2 分钟弹一次控制台窗口，而 bat 根本没跑。必须去找系统 Python。
     """
+    if getattr(sys, "frozen", False):
+        import shutil
+        for name in ("pythonw", "python"):
+            exe = shutil.which(name)
+            if not exe:
+                continue
+            if name == "python":
+                cand = Path(exe).with_name("pythonw.exe")
+                if cand.exists():
+                    return str(cand)
+            return exe
+        return ""
     cand = Path(sys.executable).with_name("pythonw.exe")
     return str(cand) if cand.exists() else sys.executable
 
@@ -352,6 +423,7 @@ class TaskRunner:
         self.proc = None
         self._parser = None   # (fn, key) 完成后解析输出
         self._buf = []
+        self._cancel = threading.Event()
 
     def push(self, line: str):
         self.seq += 1
@@ -368,6 +440,7 @@ class TaskRunner:
         """
         if self.running:
             return False
+        self._cancel.clear()
         self.running = True
         self.label = label
         self.push(f"▶ {label}")
@@ -399,15 +472,23 @@ class TaskRunner:
         label = self.label
         try:
             for cmd, parser in steps:
+                # 点「停止」后剩余步骤不再执行：早先只杀当前子进程，
+                # 循环会接着跑下一个账号，看起来就是「停不下来」。
+                if self._cancel.is_set():
+                    self.push("■ 已停止，剩余步骤不再执行")
+                    break
                 self._buf = []
                 rc = self._run_one(cmd, shell)
                 text = "".join(self._buf)
-                if parser and text:
+                if parser and text and not self._cancel.is_set():
                     try:
                         fn, key = parser
                         fn(key, text)
                     except Exception as e:
                         self.push(f"[解析统计失败] {e}")
+                if self._cancel.is_set():
+                    self.push("■ 已停止")
+                    break
         finally:
             try:
                 append_run(label, time.time() - t0, rc == 0)
@@ -417,12 +498,29 @@ class TaskRunner:
             self.push(f"■ 完成（退出码 {rc}，耗时 {time.time()-t0:.1f}s）\n")
             self.label = ""
 
-    def kill(self):
-        if self.proc:
+    def kill(self) -> bool:
+        """请求停止：置取消标志 + 杀整棵进程树。
+
+        只 kill 直接子进程是不够的：一键签到跑的是 run_all.py，它自己又用
+        subprocess.run 起了 cmcc_*.py —— 父进程被杀后孙子进程照样把请求发完。
+        Windows 用 taskkill /T 连子孙一起结束；其它平台退回 kill 本身。
+        """
+        self._cancel.set()
+        proc = self.proc
+        if proc is None:
+            return False
+        try:
+            if IS_WIN:
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                               capture_output=True, timeout=15, creationflags=NO_WINDOW)
+            else:
+                proc.kill()
+        except Exception:
             try:
-                self.proc.kill()
+                proc.kill()
             except Exception:
                 pass
+        return True
 
 
 RUNNER = TaskRunner()
@@ -477,10 +575,13 @@ def find_account(pred):
     return None
 
 
-def act_refresh_status():
+def act_refresh_status() -> dict:
     """逐个账号 dry-run，拉取实时状态刷新仪表盘。"""
     if RUNNER.running:
-        return False
+        return {"ok": False, "err": _busy_err()}
+    ok, msg = preflight()
+    if not ok:
+        return {"ok": False, "err": msg}
     steps = []
     for a in scan_accounts():
         is_qwhd = a["plat"] == "qwhdhub"
@@ -494,8 +595,10 @@ def act_refresh_status():
         steps.append((py(script, "--config", a["file"], "--dry-run"), parser))
     if not steps:
         RUNNER.push("没有可刷新的账号（token 都为空）")
-        return False
-    return RUNNER.start_sequence("刷新全部账号状态（dry-run 只读）", steps)
+        return {"ok": False,
+                "err": "还没有可刷新的账号：请到「凭证与账号」页点「新建账号」，再导入抓包文件"}
+    started = RUNNER.start_sequence("刷新全部账号状态（只读检查）", steps)
+    return {"ok": started} if started else {"ok": False, "err": _busy_err()}
 
 
 # 7 个计划任务的唯一定义处：名字、脚本、触发器类型、注册后的提示语。
@@ -527,6 +630,16 @@ SCHED_PLAN = [
     ("games", "12:05"),
     ("probe", "00:00"),
 ]
+
+_NO_PYW_ERR = ("找不到系统 Python（pythonw.exe），无法注册计划任务。\n"
+               "请先安装 Python 3.9+ 并勾选 Add Python to PATH，再重开本程序。")
+
+# 计划任务的中文名，提示语里用它而不是 MobileXxx 这种内部代号
+SCHED_CN = {
+    "sign": "每天签到", "daily": "每日奖励", "keepalive": "会话保活",
+    "sess": "会话刷新", "seckill": "秒杀抢券", "games": "拓展活动",
+    "probe": "票据寿命探测",
+}
 
 
 def _sched_ps(kind: str, t: str, pyw: str, launcher: str):
@@ -566,7 +679,7 @@ def do_action(body: dict):
     accts = scan_accounts()
 
     if act == "refresh_status":
-        return {"ok": act_refresh_status()}
+        return act_refresh_status()
 
     if act == "run_all":
         plat = body.get("platform", "all")
@@ -581,10 +694,12 @@ def do_action(body: dict):
             cmd.append("--seckill")
             if body.get("seckill_at"):
                 cmd += ["--seckill-at", body["seckill_at"]]
-        label = "一键签到（%s%s%s%s）" % (plat, "，dry-run" if body.get("dry") else "",
+        pname = {"all": "全部平台", "qwhd": "全国签到", "bass": "福建活动",
+                 "none": "不跑签到"}.get(plat, plat)
+        label = "一键签到（%s%s%s%s）" % (pname, "，只读检查" if body.get("dry") else "",
                                      "，含消消乐" if body.get("xxl") else "",
                                      "，含秒杀" if body.get("seckill") else "")
-        return {"ok": RUNNER.start(label, cmd)}
+        return _start(label, cmd)
 
     if act == "qwhd_run":
         a = next((x for x in accts if x["key"] == body.get("key")), None)
@@ -595,7 +710,7 @@ def do_action(body: dict):
         if body.get("claim"): cmd.append("--claim")
         if body.get("tasks"): cmd.append("--tasks")
         if body.get("games"): cmd.append("--games")
-        return {"ok": RUNNER.start(f"qwhdhub 签到 · {a['key']}", cmd, parser=(parse_qwhd_output, a["key"]))}
+        return _start(f"全国签到 · {a['key']}", cmd, parser=(parse_qwhd_output, a["key"]))
 
     if act == "bass_run":
         a = next((x for x in accts if x["key"] == body.get("key")), None)
@@ -613,13 +728,13 @@ def do_action(body: dict):
         if body.get("continue_stage"): cmd.append("--continue-stage")
         if body.get("tasks"): cmd.append("--tasks")
         if body.get("fb"): cmd.append("--fb-tasks")
-        return {"ok": RUNNER.start(f"BASS 任务 · {a['key']}", cmd, parser=(parse_bass_output, a["key"]))}
+        return _start(f"福建活动 · {a['key']}", cmd, parser=(parse_bass_output, a["key"]))
 
     if act == "bass_probe":
         a = next((x for x in accts if x["key"] == body.get("key")), None)
         if not a:
             return {"ok": False, "err": "账号不存在"}
-        return {"ok": RUNNER.start(f"BASS 探测 · {a['key']}", py("probe_fj.py", "--config", a["file"]))}
+        return _start(f"福建活动只读探测 · {a['key']}", py("probe_fj.py", "--config", a["file"]))
 
     if act == "luck_run":
         cmd = py("cmcc_luck.py")
@@ -634,7 +749,7 @@ def do_action(body: dict):
             cmd.append("--no-tasks")
         if body.get("max"):
             cmd += ["--max", str(body["max"])]
-        return {"ok": RUNNER.start("优惠专区抽奖", cmd)}
+        return _start("优惠专区抽奖", cmd)
 
     if act == "seckill_run":
         f = safe_conf_path(body.get("file"))
@@ -650,7 +765,7 @@ def do_action(body: dict):
             cmd.append("--once")
         elif at:
             cmd += ["--at", at]
-        return {"ok": RUNNER.start(f"签到秒杀 · {f.name}", cmd)}
+        return _start(f"秒杀抢券 · {f.stem}", cmd)
 
     if act == "games_run":
         f = safe_conf_path(body.get("file"))
@@ -663,7 +778,7 @@ def do_action(body: dict):
             cmd.append("--games")
             if body.get("tasks"):
                 cmd.append("--tasks")
-        return {"ok": RUNNER.start(f"拓展活动 · {f.name}", cmd)}
+        return _start(f"拓展活动 · {f.stem}", cmd)
 
     if act == "xxl_run":
         f = safe_conf_path(body.get("file"))
@@ -677,7 +792,7 @@ def do_action(body: dict):
         else:
             cmd += ["--level", body.get("level", 49), "--star", body.get("star", 3),
                     "--times", body.get("times", 5), "--gap", body.get("gap", 12)]
-        return {"ok": RUNNER.start("消消乐", cmd)}
+        return _start("消消乐", cmd)
 
     # ---- token 管理 ----
     if act == "har_import":
@@ -801,10 +916,12 @@ def do_action(body: dict):
               "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
               "Write-Host ($n+'  状态='+$t.State+'  下次='+$i.NextRunTime+'  上次结果='+$i.LastTaskResult)}"
               "else{Write-Host ($n+'  未注册')}}")
-        return {"ok": RUNNER.start("查询计划任务", ["powershell", "-NoProfile", "-Command", ps])}
+        return _start("查询计划任务", ["powershell", "-NoProfile", "-Command", ps], need_py=False)
     if act == "sched_reg":
         # 隐藏启动：无窗口 pythonw + run_hidden.py，避免任务跑起来时闪黑窗口
         pyw = _pythonw()
+        if not pyw:
+            return {"ok": False, "err": _NO_PYW_ERR}
         launcher = str(BASE / "run_hidden.py")
         kind = body.get("kind", "sign")
         t = str(body.get("time") or "08:30").strip()
@@ -814,12 +931,14 @@ def do_action(body: dict):
         if kind not in SCHED_DEF:
             return {"ok": False, "err": "未知任务类型"}
         name, ps = _sched_ps(kind, t, pyw, launcher)
-        return {"ok": RUNNER.start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
+        return _start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps], need_py=False)
 
     if act == "sched_apply_all":
         # 一次调用注册全部任务：7 个 Register-ScheduledTask 塞进同一个 PowerShell 会话，
         # 比在界面上点七次快，也不用逐个等状态刷新。
         pyw = _pythonw()
+        if not pyw:
+            return {"ok": False, "err": _NO_PYW_ERR}
         launcher = str(BASE / "run_hidden.py")
         plan = body.get("plan") or [[k, t] for k, t in SCHED_PLAN]
         if not isinstance(plan, list) or not plan:
@@ -836,13 +955,14 @@ def do_action(body: dict):
                 return {"ok": False, "err": f"{kind} 的时刻格式应为 HH:MM"}
             name, ps = _sched_ps(kind, t, pyw, launcher)
             parts.append(ps)
-            names.append(f"{name} {t}")
+            names.append(f"{SCHED_CN.get(kind, name)} {t}")
         with _SCHED_LOCK:
             _SCHED_CACHE["at"] = 0.0
-        ok = RUNNER.start("一键配置全部计划任务",
-                          ["powershell", "-NoProfile", "-Command", "\n".join(parts)])
-        return {"ok": ok, "msg": f"正在配置 {len(parts)} 个任务：{'、'.join(names)}" if ok
-                else "有任务正在运行，稍后再试"}
+        r = _start("一键配置全部计划任务",
+                   ["powershell", "-NoProfile", "-Command", "\n".join(parts)], need_py=False)
+        if r.get("ok"):
+            r["msg"] = f"正在配置 {len(parts)} 个任务：{'、'.join(names)}"
+        return r
 
     if act == "sched_unreg_all":
         names = ",".join(f"'{v[0]}'" for v in SCHED_DEF.values())
@@ -851,7 +971,7 @@ def do_action(body: dict):
               "Write-Host '全部计划任务已注销'")
         with _SCHED_LOCK:
             _SCHED_CACHE["at"] = 0.0
-        return {"ok": RUNNER.start("注销全部计划任务", ["powershell", "-NoProfile", "-Command", ps])}
+        return _start("注销全部计划任务", ["powershell", "-NoProfile", "-Command", ps], need_py=False)
 
     if act == "sched_refresh":
         # 清缓存后同步重读一次，直接把结果回给前端（注册/注销是异步跑的，
@@ -867,11 +987,14 @@ def do_action(body: dict):
                         "MobileGames"):
             return {"ok": False, "err": "非法任务名"}
         ps = f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false; Write-Host '{name} 已注销'"
-        return {"ok": RUNNER.start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps])}
+        return _start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps], need_py=False)
 
     if act == "stop":
+        if not RUNNER.running:
+            return {"ok": True, "msg": "当前没有正在运行的任务"}
+        label = RUNNER.label
         RUNNER.kill()
-        return {"ok": True}
+        return {"ok": True, "msg": f"已请求停止「{label}」"}
 
     return {"ok": False, "err": f"未知动作 {act}"}
 
@@ -902,6 +1025,7 @@ def _month_sums(s: dict) -> dict:
 def build_state():
     st = load_stats()
     accts = scan_accounts()
+    env_ok, env_msg = preflight()
     for k, v in st.items():
         if isinstance(v, dict):
             v.update(_month_sums(v))
@@ -925,6 +1049,8 @@ def build_state():
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
         "sched": _sched_state(),
+        "sched_read_ok": _SCHED_CACHE["ok"],
+        "env": {"ok": env_ok, "msg": env_msg},
         "policy": load_policy(),
     }
 
@@ -961,24 +1087,57 @@ def _list_token_life() -> list:
 SCHED_TASKS = ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
                "MobileSeckill", "MobileSessionRefresh", "MobileGames",
                "MobileTokenLifeProbe")
-_SCHED_CACHE = {"at": 0.0, "data": []}
+_SCHED_CACHE = {"at": 0.0, "data": [], "ok": None, "th": None}
 _SCHED_LOCK = threading.Lock()
 
 
+def _sched_bg_refresh():
+    """后台读一次真实状态。冷启动时用它，首屏就不必等 PowerShell。"""
+    with _SCHED_LOCK:
+        th = _SCHED_CACHE.get("th")
+        if th is not None and th.is_alive():
+            return
+        t = threading.Thread(target=_sched_read_sync, daemon=True)
+        _SCHED_CACHE["th"] = t
+        t.start()
+
+
+def _sched_wait(timeout: float = 20.0):
+    """等后台那次读取落盘（测试与显式刷新用）。"""
+    with _SCHED_LOCK:
+        th = _SCHED_CACHE.get("th")
+    if th is not None:
+        th.join(timeout)
+
+
 def _sched_state(ttl: float = 90.0) -> list:
-    """读取 Windows 计划任务的**真实**状态：是否注册 / 实际触发时间 / 下次 / 上次结果。
+    """取计划任务状态；缓存冷且允许异步时，先返回旧值并让后台去读。
 
-    页面上原来只有「注册/注销」按钮，看不出任务到底有没有在跑；输入框里还是写死的
-    默认时刻（与真实注册时间可能不一致，点一下就静默改掉）。这里把系统里的真相读出来。
-
-    结果缓存 ttl 秒：前端每 6 秒轮询 /api/state，而每次读取都要起一个 PowerShell，
-    不缓存会明显拖慢机器。读取失败（被策略拦 / 超时）时返回上一次的结果，不抛给页面。
+    读一次要起 PowerShell（最长 12 秒）。原先它挡在 /api/state 里，
+    首屏要等它读完才渲染 —— 打开程序先白屏十几秒。
     """
     now = time.time()
     with _SCHED_LOCK:
         if now - _SCHED_CACHE["at"] < ttl:
             return _SCHED_CACHE["data"]
+        cold = _SCHED_CACHE["at"] == 0.0
+    if ttl > 0 and cold:
+        _sched_bg_refresh()
+        with _SCHED_LOCK:
+            return _SCHED_CACHE["data"]
+    return _sched_read_sync()
 
+
+def _sched_read_sync() -> list:
+    """读取 Windows 计划任务的**真实**状态：是否注册 / 实际触发时间 / 下次 / 上次结果。
+
+    页面上原来只有「注册/注销」按钮，看不出任务到底有没有在跑；输入框里还是写死的
+    默认时刻（与真实注册时间可能不一致，点一下就静默改掉）。这里把系统里的真相读出来。
+
+    每次读取都要起一个 PowerShell，所以由 _sched_state 负责缓存与异步；
+    读取失败（被策略拦 / 超时）时返回上一次的结果，不抛给页面。
+    """
+    now = time.time()
     names = ",".join(f"'{n}'" for n in SCHED_TASKS)
     ps = ("$o=@();foreach($n in @(" + names + ")){"
           "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
@@ -1005,6 +1164,8 @@ def _sched_state(ttl: float = 90.0) -> list:
         data = None
     if data is None:
         with _SCHED_LOCK:
+            # 读失败与「一个都没注册」要分得开，否则界面会把新用户误报成被策略拦
+            _SCHED_CACHE["ok"] = False
             return _SCHED_CACHE["data"]
 
     out = []
@@ -1026,6 +1187,7 @@ def _sched_state(ttl: float = 90.0) -> list:
     with _SCHED_LOCK:
         _SCHED_CACHE["at"] = now
         _SCHED_CACHE["data"] = out
+        _SCHED_CACHE["ok"] = True
     return out
 
 
@@ -1102,12 +1264,17 @@ class Handler(BaseHTTPRequestHandler):
         return not origin or _host_of(origin) in LOCAL_HOSTS
 
     def _send(self, code, ctype, data: bytes):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (ConnectionError, OSError):
+            # 页面每秒轮询，关页/切页时浏览器会掐断连接。
+            # 不接住就会往 stderr 打一整段 traceback，看着像服务崩了。
+            self.close_connection = True
 
     def _json(self, obj, code=200):
         self._send(code, "application/json; charset=utf-8", json.dumps(obj, ensure_ascii=False).encode())
@@ -1120,6 +1287,12 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", INDEX_HTML.encode())
+        elif u.path == "/favicon.ico":
+            ico = BASE / "app.ico"
+            if ico.is_file():
+                self._send(200, "image/x-icon", ico.read_bytes())
+            else:
+                self._send(204, "image/x-icon", b"")
         elif u.path == "/api/state":
             self._json(build_state())
         elif u.path == "/api/logs":
@@ -1182,7 +1355,70 @@ def _load_frontend() -> str:
         if path.is_file():
             return path.read_text(encoding="utf-8")
     raise SystemExit("缺少 static/index.html：请把它与程序放在同一目录"
-                     "（打包时由 --add-data \"static;static\" 带上）")
+                     "（打包时由 spec 的 datas 带上）")
 
 
 INDEX_HTML = _load_frontend()
+
+
+# ======================================================================
+# 入口
+# ======================================================================
+
+class ConsoleServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # Windows 的 SO_REUSEADDR 允许绑到**已在监听**的端口：两个实例会抢同一个端口，
+    # 请求随机落到旧实例上（表现为「改了代码但界面没变」）。这里关掉它，
+    # 端口被占就老实顺延；POSIX 保留 reuse，避免重启时被 TIME_WAIT 卡住。
+    allow_reuse_address = os.name != "nt"
+
+
+def make_server():
+    """绑定本地端口（被占就顺延 10 个），返回 (server, 错误说明)。"""
+    for port in range(PORT, PORT + 11):
+        try:
+            return ConsoleServer(("127.0.0.1", port), Handler), ""
+        except OSError:
+            continue
+    return None, f"端口 {PORT}~{PORT + 10} 均被占用，请关闭占用程序后重试。"
+
+
+def alert(msg: str):
+    """无窗口环境下的错误提示：Windows 弹原生对话框，其它平台打印。"""
+    print(msg)
+    if IS_WIN:
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, msg, "签到控制台", 0x10)
+        except Exception:
+            pass
+
+
+def main() -> int:
+    """浏览器模式入口：python dashboard.py / run_gui.bat。
+
+    这个入口原先根本不存在——模块只有定义没有启动代码，
+    run_gui.bat 双击后进程秒退，既不监听也不开浏览器，还不报错。
+    """
+    ok, msg = preflight(force=True)
+    if not ok:
+        alert(msg)          # 界面照常起，让用户看得到说明再去装 Python
+    srv, err = make_server()
+    if srv is None:
+        alert(err)
+        return 1
+    url = f"http://127.0.0.1:{srv.server_address[1]}"
+    print(f"签到控制台已启动：{url}\n关闭本窗口即退出。")
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\n已退出")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

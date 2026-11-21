@@ -20,6 +20,10 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+import _guard  # noqa: F401,E402  隔离真实全局配置（见 tests/_guard.py）
 import common
 import dashboard
 import run_all

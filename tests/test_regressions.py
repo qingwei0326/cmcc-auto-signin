@@ -31,6 +31,10 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cmcc_sign
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+import _guard  # noqa: F401,E402  隔离真实全局配置（见 tests/_guard.py）
 import common
 import dashboard
 import har_import
@@ -2000,3 +2004,35 @@ class TestFeedReward(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestRotatingLogArchive(unittest.TestCase):
+    """跨天归档：旧文件要归到它自己那天的名字，今天的输出另起新文件。
+
+    早先只改了 target 的路径、没有真的改名，于是当天的全部输出被写进
+    「daily_reward.2026-11-20.log」（昨天日期）这种文件里，
+    而 daily_reward.log 停在昨天不动——按日期翻日志会看错。
+    """
+
+    def test_each_day_lands_in_its_own_file(self):
+        import datetime
+        import run_all
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.log"
+            # 先造一个「两天前写的内容」，并把修改时间设成那天
+            old_day = datetime.date.today() - datetime.timedelta(days=2)
+            path.write_text("旧内容\n", encoding="utf-8")
+            t = datetime.datetime.combine(old_day, datetime.time(12, 0)).timestamp()
+            os.utime(path, (t, t))
+
+            lg = run_all.RotatingLog(path)
+            lg.line("今天的内容")
+
+            arch = path.with_name(f"x.{old_day.isoformat()}.log")
+            self.assertTrue(arch.is_file(), "前几天的归档文件没生成")
+            self.assertIn("旧内容", arch.read_text(encoding="utf-8"))
+            self.assertNotIn("今天的内容", arch.read_text(encoding="utf-8"))
+            live = path.read_text(encoding="utf-8")
+            self.assertIn("今天的内容", live)
+            self.assertNotIn("旧内容", live)

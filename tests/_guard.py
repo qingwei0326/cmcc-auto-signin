@@ -30,3 +30,8 @@ except Exception:        # pragma: no cover - common 导入失败时不要挡住
 if _common is not None:
     _TMP = tempfile.mkdtemp(prefix="cmcc_test_")
     _common.GLOBAL_SETTINGS_FILE = Path(_TMP) / "settings.json"
+    # 台账同样要隔离：`cmcc_extra.run_lottery` 抽中会调 record_award，
+    # 不隔离的话每跑一次测试就往用户真实台账里塞几条「游戏币 话费券」，
+    # 而且 account 是空的（测试没有账号上下文），看着像脏数据。
+    _common.AWARDS_FILE = Path(_TMP) / "awards.json"
+    _common.NOTIFY_STATE_FILE = Path(_TMP) / "notify_state.json"

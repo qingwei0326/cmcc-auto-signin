@@ -311,7 +311,9 @@ def record_award(account, source, name, url="", size_mb=None, kind=None,
     cls = classify_award(t)
     row = {
         "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "account": str(account or ""),
+        # 账号为空说明调用方没传上下文（曾经是测试污染），显式标「未知」，
+        # 免得台账里出现一行没有归属的奇怪记录
+        "account": str(account or "").strip() or "未知",
         "source": str(source or ""),
         "name": t,
         "kind": kind or cls["kind"],

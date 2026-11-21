@@ -434,6 +434,20 @@ class TestTokenLifeProbe(unittest.TestCase):
                                     f"{p.name} 的 rem 注释含非 ASCII 字符：{s}")
 
 
+class TestIsolation(unittest.TestCase):
+    def test_awards_file_is_isolated(self):
+        """测试绝不能写用户真实台账。
+
+        曾经 `cmcc_extra.run_lottery` 抽中会调 record_award，而 _guard 只隔离了
+        全局设置、没隔离台账，每跑一次测试就往真实台账塞 3 条无账号的假记录。
+        """
+        import _guard  # noqa: F401  触发隔离
+        import common
+        real = Path(__file__).resolve().parent.parent / "gui_data" / "awards.json"
+        self.assertNotEqual(Path(common.AWARDS_FILE).resolve(), real.resolve(),
+                            "台账没被隔离，测试会污染真实数据")
+
+
 class TestMailWatch(unittest.TestCase):
     def test_mark_seen_writes_state(self):
         """mark_seen 曾给 atomic_write_json 多传 default 参数而抛异常，

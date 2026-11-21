@@ -55,6 +55,9 @@ def token_dead_notice(accounts) -> tuple:
 FEED_STATE = BASE / "gui_data" / "feed_state.json"
 # 三档饲料的领取状态（由 cmcc_fj 写入），用来判断能不能「领齐再一起喂」
 DAILY_STATE = BASE / "gui_data" / "daily_state.json"
+# 邮箱收 HAR 的触发标记：只有「票确实失效且今天任务没全做完」才去查邮箱
+MAIL_NEED = BASE / "gui_data" / "mail_need.json"
+TODAY_DONE = BASE / "gui_data" / "today_done.json"
 
 
 def all_tiers_claimed() -> bool:
@@ -96,6 +99,20 @@ def feed_due(pol: dict) -> bool:
         return False
     st = load_json(FEED_STATE, default={}) or {}
     return st.get("date") != datetime.date.today().isoformat()
+
+
+def mark_mail_needed(accounts) -> None:
+    """票失效时打标记，邮箱监听只在看到这个标记后才去收 HAR。"""
+    atomic_write_json(MAIL_NEED, {
+        "needed": True,
+        "at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "accounts": list(accounts or []),
+    }, indent=1)
+
+
+def mark_today_done() -> None:
+    """今天所有任务都跑顺了：邮箱监听就不必再查。"""
+    atomic_write_json(TODAY_DONE, {"date": datetime.date.today().isoformat()}, indent=1)
 
 
 def mark_fed() -> None:
@@ -692,6 +709,12 @@ def main():
         print(f"  {'✓' if ok else '✗'} [{key:<4}] {name:<10} {sec:>6.1f}s")
     good = sum(1 for _, _, ok, _ in results if ok)
     print(f"\n  {good}/{len(results)} 成功")
+
+    # 给邮箱监听用的触发标记：只有「票失效了、今天还没全做完」才值得去收 HAR
+    if TOKEN_DEAD_ACCOUNTS:
+        mark_mail_needed(TOKEN_DEAD_ACCOUNTS)
+    elif good == len(results):
+        mark_today_done()
 
     # 失败才推送，避免每天正常签到都打扰；同类事当天只推一条
     if not args.no_notify and (good != len(results) or TOKEN_DEAD_ACCOUNTS):

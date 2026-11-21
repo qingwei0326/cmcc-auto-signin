@@ -526,6 +526,28 @@ select.inp{cursor:pointer}
             <span style="font-size:12px;color:var(--sub)" id="sMeta">加载中…</span></div>
         </div>
         <div class="panel">
+          <h3>邮箱收 HAR <span class="hint">凭证过期时手机发邮件，程序每 10 分钟自动查收并导入</span></h3>
+          <div class="infobox">不用开智能体，也不用开电脑。只有<b>凭证失效且今天任务没做完</b>时才查邮箱；
+            没过期、或今天已做完，一次都不会连 Gmail。只处理白名单发件人的 <b>.har</b> 附件。</div>
+          <div class="frow"><label class="chk"><input type="checkbox" id="mEnabled">启用邮箱收件</label>
+            <label style="min-width:auto">邮箱</label><input class="inp" id="mUser" placeholder="you@gmail.com" style="min-width:230px">
+            <label style="min-width:auto">应用专用密码</label><input class="inp" id="mPass" type="password" placeholder="16 位授权码" style="min-width:180px"></div>
+          <div class="frow"><label>邮箱类型</label>
+            <select class="inp" id="mProvider" onchange="mailProvider()" style="min-width:110px">
+              <option value="gmail">Gmail</option><option value="qq">QQ邮箱</option><option value="163">163邮箱</option>
+            </select>
+            <label style="min-width:auto">IMAP</label>
+            <input class="inp" id="mHost" value="imap.gmail.com" style="min-width:170px">
+            <label style="min-width:auto">端口</label><input class="inp" id="mPort" type="number" value="993" style="min-width:80px">
+            <label style="min-width:auto">标题含</label><input class="inp" id="mKeyword" value="HAR" style="min-width:90px"></div>
+          <div class="frow"><label>允许的发件人</label>
+            <input class="inp" id="mSender" placeholder="你的手机号邮箱，留空=不限制" style="min-width:320px">
+            <span style="font-size:12px;color:var(--sub)">只认这个地址发来的 HAR</span></div>
+          <div class="frow"><button class="btn pri" onclick="saveMail()">保存邮箱设置</button>
+            <button class="btn" onclick="act({action:'mail_test'})">测试连接</button>
+            <span style="font-size:12px;color:var(--sub)" id="mMeta">加载中…</span></div>
+        </div>
+        <div class="panel">
           <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span></h3>
           <div class="infobox">这里定的是<b>自动任务</b>的行为，不用每次手动勾：
             <br>· <b>每天自动喂养</b>：等三档饲料（150/250/350，档间隔 60 分钟）<b>全部领齐后</b>，
@@ -1219,6 +1241,7 @@ function renderSettings(){
   $('sMeta').textContent=on.length
     ? ('已开启：'+on.join(' + '))
     : '还没配推送方式（失败时不会通知手机）';
+  renderMail();
 }
 async function saveSettings(){
   const push={bark_url:V('sBark'),serverchan_sendkey:V('sSendkey'),pushplus_token:V('sPushplus')};
@@ -1227,6 +1250,40 @@ async function saveSettings(){
     if(STATE)STATE.settings=push;
     SET_ONCE=true;renderSettings();
   }
+}
+// ---------------- 设置页：邮箱收 HAR ----------------
+let MAIL_ONCE=false;
+const MAIL_PRESETS={gmail:['imap.gmail.com',993],qq:['imap.qq.com',993],'163':['imap.163.com',993]};
+function mailProvider(){
+  const p=MAIL_PRESETS[$('mProvider').value];
+  if(p){$('mHost').value=p[0];$('mPort').value=p[1];}
+}
+function renderMail(){
+  const m=(STATE&&STATE.mail)||{};
+  if(!$('mUser'))return;
+  if(!MAIL_ONCE){
+    MAIL_ONCE=true;
+    $('mEnabled').checked=!!m.enabled;
+    $('mProvider').value=m.provider||'gmail';
+    $('mUser').value=m.user||'';
+    $('mPass').value='';                 // 不回显密码，留空=沿用已存的
+    $('mHost').value=m.host||'imap.gmail.com';
+    $('mPort').value=m.port||993;
+    $('mSender').value=m.sender||'';
+    $('mKeyword').value=m.subject_keyword||'HAR';
+  }
+  $('mMeta').textContent=(m.enabled?('已启用 · '+(m.user||'未填邮箱')):'未启用')
+    +(m.password?' · 授权码已保存':' · 尚未保存授权码');
+}
+async function saveMail(){
+  const r=await act({action:'mail_save',mail:{
+    enabled:$('mEnabled').checked,provider:$('mProvider').value,
+    host:V('mHost'),port:Number(V('mPort'))||993,
+    user:V('mUser'),password:V('mPass'),sender:V('mSender'),subject_keyword:V('mKeyword')}});
+  if(r&&r.ok&&STATE){STATE.mail={...(STATE.mail||{}),enabled:$('mEnabled').checked,
+    provider:$('mProvider').value,host:V('mHost'),port:Number(V('mPort'))||993,user:V('mUser'),
+    sender:V('mSender'),subject_keyword:V('mKeyword'),password:V('mPass')?1:STATE.mail.password};
+    MAIL_ONCE=false;renderMail();}
 }
 // 从别的页面跳到设置页
 function gotoSettings(){

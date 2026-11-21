@@ -35,7 +35,7 @@ import time
 from email import policy
 from pathlib import Path
 
-from common import app_base, atomic_write_json, load_json, notify, setup_utf8
+from common import app_base, atomic_write_json, load_json, notify, setup_utf8, update_json
 
 setup_utf8()
 
@@ -114,7 +114,7 @@ def mark_seen(uid: str):
         seen.add(str(uid))
         st["seen"] = sorted(seen)[-500:]
         st["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    atomic_write_json(STATE, mutate, default={})
+    update_json(STATE, mutate, default={})
 
 
 def connect(cfg):

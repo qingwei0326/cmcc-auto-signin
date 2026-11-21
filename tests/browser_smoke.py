@@ -73,6 +73,11 @@ with sync_playwright() as p:
         check("账号表已建", page.eval_on_selector_all("#acctBox tbody tr", "e=>e.length") >= 1)
     else:
         check("空状态给出下一步", "新建账号" in page.inner_text("#todoBox"))
+    # 到账台账：用户只看「到手多少流量」，这里必须真渲染出数字而不是空白
+    check("到账台账汇总", page.eval_on_selector_all("#awSum .cell", "e=>e.length") == 4)
+    aw_txt = page.inner_text("#awSum") + page.inner_text("#awTab")
+    check("台账有今日/本月口径", "今日已得流量" in aw_txt and "本月已得流量" in aw_txt)
+    check("台账未出现充值类券", "充值9.9折" not in page.inner_text("#awTab"))
     page.screenshot(path=str(OUT / "shot_dash.png"), full_page=True)
 
     for key, title in [("token", "凭证与账号"), ("bass", "福建活动"), ("xxl", "消消乐"),

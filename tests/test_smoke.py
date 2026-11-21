@@ -55,12 +55,12 @@ class TestCommon(unittest.TestCase):
     def test_notify_settings_prefer_env(self):
         os.environ["CMCC_BARK_URL"] = "https://bark.example/x"
         try:
-            bark, key = common.collect_notify_settings({"bark_url": "https://other/y"})
-            self.assertEqual(bark, "https://bark.example/x")
+            ch = common.collect_notify_settings({"bark_url": "https://other/y"})
+            self.assertEqual(ch["bark_url"], "https://bark.example/x")
         finally:
             del os.environ["CMCC_BARK_URL"]
-        bark, key = common.collect_notify_settings({"bark_url": "https://other/y"})
-        self.assertEqual(bark, "https://other/y")
+        ch = common.collect_notify_settings({"bark_url": "https://other/y"})
+        self.assertEqual(ch["bark_url"], "https://other/y")
 
     def test_notify_without_config_does_nothing(self):
         self.assertFalse(common.notify("t", "b", bark_url="", serverchan_sendkey=""))
@@ -129,12 +129,20 @@ class TestDailyShortcut(unittest.TestCase):
     def test_all_received_and_signed(self):
         import datetime
         today = datetime.datetime.now().strftime("%Y-%m-%d")
-        self._write({"fj1": {"tiers_date": today, "tiers": [
+        self._write({"fj1": {"tiers_date": today, "feed_reward_date": today, "tiers": [
             {"name": "阶段一", "status": "RECEIVED"},
             {"name": "阶段二", "status": "RECEIVED"},
             {"name": "阶段三", "status": "RECEIVED"}],
             "sign": {"today": True}}})
         self.assertTrue(self.F.daily_nothing_to_do("fj1"))
+
+    def test_pending_feed_reward_prevents_shortcut(self):
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write({"fj1": {"tiers_date": today, "feed_reward_date": today,
+            "tiers": [{"status": "RECEIVED"}] * 3, "sign": {"today": True},
+            "feed_reward": {"fodder": 750}}})
+        self.assertFalse(self.F.daily_nothing_to_do("fj1"))
 
     def test_pending_tier_not_done(self):
         import datetime

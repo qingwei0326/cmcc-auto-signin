@@ -1352,6 +1352,84 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             self.assertEqual(args[1], "游戏币")
             self.assertEqual(args[2], "100MB流量日包券")
 
+    def test_xtoken_fallback_extracts_qwhd_token(self):
+        """HAR 里没有 appTokenLogin 时，用请求头的 x-token 兜底。
+
+        用户抓包时 APP 已是登录态，不会重发 appTokenLogin，
+        但每个 wx.10086.cn 请求都带 x-token 头，里面就是同一张票据。
+        """
+        import har_import as HI
+        har = json.dumps({"log": {"version": "1.2", "entries": [
+            {"startedDateTime": "2026-11-21T11:24:58.159509Z",
+             "request": {"method": "GET",
+                         "url": "https://wx.10086.cn/qwhdhub/api/mark/user/info",
+                         "headers": [
+                             {"name": "x-token", "value":
+                              "JSESSIONID=aaa; UID=bbb; Comment=SessionServer-unity; "
+                              "Path=/;HTTPOnly; ticketID=SuZhou"}],
+                         "postData": {"text": "{}"}},
+             "response": {"content": {"text":
+                 '{"code":"SUCCESS","data":{"nickName":"139****5678"}}'}}},
+        ]}})
+        p = HI.parse_har_text(har)
+        self.assertEqual(len(p["qwhd"]), 1)
+        phone, info = list(p["qwhd"].items())[0]
+        self.assertTrue(info.get("from_xtoken"))
+        self.assertIn("JSESSIONID", info["token"])
+        self.assertEqual(phone, "139XXXX5678")
+        self.assertEqual(p.get("masked"), "139****5678")
+
+    def test_xtoken_placeholder_matches_existing_config(self):
+        """脱敏占位号要能按前3+后4匹配到 configs/ 里的完整号码。"""
+        import har_import as HI
+        # 造一个临时 configs 目录，避免依赖真实账号配置
+        with tempfile.TemporaryDirectory() as td:
+            real = HI.BASE
+            HI.BASE = Path(td)
+            try:
+                (Path(td) / "configs").mkdir()
+                (Path(td) / "configs" / "5678.json").write_text(
+                    json.dumps({"phone": "13900005678"}), encoding="utf-8")
+                self.assertEqual(HI._match_existing_phone("139XXXX5678"),
+                                 "13900005678")
+                self.assertEqual(HI._match_existing_phone("199XXXX0000"), "")
+                self.assertEqual(HI._match_existing_phone("13900005678"), "")
+            finally:
+                HI.BASE = real
+
+    def test_lottery_continues_after_no_win(self):
+        """NO_WON 是正常「没中奖」，照样扣了币，不能中断剩余次数。
+
+        之前遇到 NO_WON 直接 break，剩余可抽次数白留着，等于少抽。
+        """
+        import cmcc_extra as EX
+        draws = []
+
+        def fake_api_call(s, referer, method, path, body=None):
+            if path.startswith("/qwhdhub/diyLottery/period/remain/"):
+                return {"code": "SUCCESS", "data": {"remainGameVal": 50, "remain": 5}}
+            draws.append(path)
+            # 第 2 次不中，其余中奖
+            if len(draws) == 2:
+                return {"code": "NO_WON", "msg": "未中奖"}
+            return {"code": "SUCCESS", "data": [{"prizeName": "100MB流量日包券"}]}
+
+        cfg = {"component": "c", "wallet_key": "remainGameVal", "cost": 10,
+               "count_key": "remain", "weekday": 6, "start_hour": 12,
+               "label": "游戏币"}
+        with mock.patch.object(EX, "api_call", side_effect=fake_api_call), \
+                mock.patch.object(EX.time, "sleep"), \
+                mock.patch.object(EX, "datetime") as fake_dt, \
+                mock.patch.object(EX, "record_award"):
+            fake_dt.now.return_value = datetime(2026, 11, 21, 13, 0, 0)
+            out, won = EX.run_lottery(None, "ref", cfg, dry_run=False)
+        # 余额 50 / 10 = 5 次，上限 5 → 必须抽满 5 次，不能在第 2 次就停
+        self.assertEqual(len(draws), 5)
+        self.assertIn("未中奖", out)
+        # 中奖列表只含真中奖的，未中奖不进台账
+        self.assertEqual(len(won), 4)
+        self.assertNotIn("未中奖", won)
+
     def test_daily_report_groups_by_account_and_sums(self):
         """今日战报：按账号分组、算流量/话费合计，且不列被忽略的券。"""
         import common

@@ -499,13 +499,44 @@ TOKEN_DEAD = re.compile(
 
 NOTIFY_STATE_FILE = BASE / "gui_data" / "notify_state.json"
 
+# 设置页保存的全局配置：推送方式这类「设置一次、长期生效」的项。
+# 放在 gui_data 下，和 policy.json 一样是本地文件，不进 git。
+GLOBAL_SETTINGS_FILE = BASE / "gui_data" / "settings.json"
+
+PUSHPLUS_URL = "https://www.pushplus.plus/send"
+
+
+def load_global_settings() -> dict:
+    """读设置页的全局配置。文件缺失或损坏都返回空字典。"""
+    st = load_json(GLOBAL_SETTINGS_FILE, {}) or {}
+    return st if isinstance(st, dict) else {}
+
+
+def save_global_settings(patch: dict) -> dict:
+    """写全局配置（只改传入的字段，其余保留）。"""
+    cur = load_global_settings()
+    for k, v in (patch or {}).items():
+        cur[k] = v
+    atomic_write_json(GLOBAL_SETTINGS_FILE, cur, indent=1)
+    return cur
+
+
+def pushplus_token_ok(token) -> bool:
+    """PushPlus token 是一串 32 位十六进制，带不带连字符都行。
+
+    它要进请求体（不是 URL path），但仍做基本格式校验，
+    免得把「还没配」这类空值或手滑粘的整段文字发出去。
+    """
+    return bool(re.fullmatch(r"[0-9A-Za-z_-]{16,80}", str(token or "").strip()))
+
 
 def is_token_dead(text) -> bool:
     """这段输出是不是「凭证过期」，而不是真的执行出错。"""
     return bool(TOKEN_DEAD.search(str(text or "")))
 
 
-def notify_once(key, title, detail, bark_url="", serverchan_sendkey="", hours=20) -> bool:
+def notify_once(key, title, detail, bark_url="", serverchan_sendkey="",
+                hours=20, pushplus_token="") -> bool:
     """同一类事 hours 小时内只推一次。
 
     每日奖励是每小时跑一轮，凭证过期时一小时失败一次；每轮都推的话
@@ -521,7 +552,7 @@ def notify_once(key, title, detail, bark_url="", serverchan_sendkey="", hours=20
                 return False
         except Exception:
             pass
-    if not notify(title, detail, bark_url, serverchan_sendkey):
+    if not notify(title, detail, bark_url, serverchan_sendkey, pushplus_token):
         return False
 
     def mutate(st):
@@ -534,31 +565,55 @@ def notify_once(key, title, detail, bark_url="", serverchan_sendkey="", hours=20
     return True
 
 
-def collect_notify_settings(*cfgs):
-    """从若干配置里收集推送设置（Bark / Server酱），环境变量优先。"""
-    bark = os.environ.get("CMCC_BARK_URL", "").strip()
-    key = os.environ.get("CMCC_SERVERCHAN_SENDKEY", "").strip()
+def collect_notify_settings(*cfgs) -> dict:
+    """收集推送配置，返回各通道的最终取值。
+
+    优先级：环境变量 > 设置页的全局配置 > 单账号配置。
+    设置页就是「设置一次、永久生效」的地方——配一次全局 PushPlus，
+    所有账号、所有脚本都能收到，不用每个账号再填一遍。
+    返回 dict 而不是元组，是为了以后再加通道不用改所有调用点。
+    """
+    out = {"bark_url": "", "serverchan_sendkey": "", "pushplus_token": ""}
     for cfg in cfgs:
         if not cfg:
             continue
-        bark = bark or str(cfg.get("bark_url") or "").strip()
-        key = key or str(cfg.get("serverchan_sendkey") or "").strip()
-    return bark, key
+        for k in out:
+            if not out[k]:
+                out[k] = str(cfg.get(k) or "").strip()
+
+    gs = load_global_settings()
+    for k in out:
+        v = str(gs.get(k) or "").strip()
+        if v:
+            out[k] = v
+    for k, env_name in (("bark_url", "CMCC_BARK_URL"),
+                        ("serverchan_sendkey", "CMCC_SERVERCHAN_SENDKEY"),
+                        ("pushplus_token", "CMCC_PUSHPLUS_TOKEN")):
+        v = os.environ.get(env_name, "").strip()
+        if v:
+            out[k] = v
+    return out
 
 
 # ---------------------------------------------------------------- 通知
 
-def notify(title, detail, bark_url="", serverchan_sendkey=""):
-    """推送到 Bark 和/或 Server酱。失败只告警，绝不影响主流程。
+def notify(title, detail, bark_url="", serverchan_sendkey="", pushplus_token=""):
+    """推送到 Bark / Server酱 / PushPlus。失败只告警，绝不影响主流程。
 
     批量运行（run_all）会设 CMCC_NOTIFY_BATCH=1：此时子脚本遇到「凭证过期」
     不各自推送，由 run_all 收齐账号后合并成一条，避免两三个号各发一条。
     """
     if os.environ.get("CMCC_NOTIFY_BATCH") and is_token_dead(f"{title}\n{detail}"):
         return False
-    bark_url = (bark_url or os.environ.get("CMCC_BARK_URL", "")).strip()
-    key = (serverchan_sendkey or os.environ.get("CMCC_SERVERCHAN_SENDKEY", "")).strip()
-    if not bark_url and not key:
+
+    gs = load_global_settings()
+    bark_url = (bark_url or os.environ.get("CMCC_BARK_URL", "")
+                or gs.get("bark_url") or "").strip()
+    key = (serverchan_sendkey or os.environ.get("CMCC_SERVERCHAN_SENDKEY", "")
+           or gs.get("serverchan_sendkey") or "").strip()
+    pp = (pushplus_token or os.environ.get("CMCC_PUSHPLUS_TOKEN", "")
+          or gs.get("pushplus_token") or "").strip()
+    if not bark_url and not key and not pp:
         return False
 
     sent = False
@@ -572,6 +627,15 @@ def notify(title, detail, bark_url="", serverchan_sendkey=""):
             else:
                 s.post(f"https://sctapi.ftqq.com/{key}.send",
                        data={"title": title, "desp": detail}, timeout=15)
+                sent = True
+        if pp:
+            if not pushplus_token_ok(pp):
+                print("  [通知] pushplus_token 格式不对，已跳过")
+            else:
+                s.post(PUSHPLUS_URL,
+                       json={"token": pp, "title": title, "content": detail,
+                             "template": "html"},
+                       timeout=15)
                 sent = True
         if bark_url:
             if not bark_url.lower().startswith(("http://", "https://")):

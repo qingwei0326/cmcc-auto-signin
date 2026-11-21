@@ -227,6 +227,7 @@ select.inp{cursor:pointer}
       <button data-p="games" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m9 12 2 2 4-4"/></svg>拓展活动</button>
       <button data-p="sched" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>定时任务</button>
       <button data-p="logs" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m5 0h5"/></svg>日志</button>
+      <button data-p="settings" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置</button>
     </nav>
     <div class="side-foot">
       <span class="pill" id="taskPill">空闲</span><br>
@@ -333,44 +334,12 @@ select.inp{cursor:pointer}
       <div class="page" id="p-bass">
         <div class="phead"><div><h2 title="cmcc_fj.py">福建活动</h2><div class="desc">养成游戏：签到、领阶段奖励、喂养、只读检查</div></div></div>
         <div class="panel">
-          <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span></h3>
-          <div class="infobox">这里定的是<b>自动任务</b>的行为，不用每次手动勾：
-            <br>· <b>每天自动喂养</b>：只在指定小时的那一轮喂，<b>一天最多喂一次</b>，饲料不足会自动停手；
-            勾「喂到饲料用完」就不用填轮数，按当天饲料自动算
-            <br>· <b>阶段喂满时</b>：停手等你 / 领奖后继续喂 / 放弃本阶奖品直接升阶
-            <br>· <b>伪造类</b>默认关闭；打开等于让脚本空报浏览，自行判断
-            <br>保存后由「每日奖励」计划任务（每小时那次）读取执行，改完不用重启任何东西。</div>
-          <div class="frow"><label>每天自动喂养</label>
-            <input class="inp" id="pFeed" type="number" min="0" max="50" value="0" style="min-width:70px">
-            <span style="font-size:12px;color:var(--sub)">轮（每轮 250 饲料，0 = 不喂）</span>
-            <label class="chk" title="轮数按当天饲料自动算，喂到不足 250 为止，不用填数字"><input type="checkbox" id="pFeedAll" onchange="feedAllToggle('p')">喂到饲料用完</label>
-            <label style="min-width:auto">在</label>
-            <input class="inp" id="pFeedHour" type="number" min="0" max="23" value="12" style="min-width:64px">
-            <span style="font-size:12px;color:var(--sub)">点那一轮</span></div>
-          <div class="frow"><label>阶段喂满时</label>
-            <select class="inp" id="pFull" style="min-width:210px">
-              <option value="stop">停手，等我自己决定</option>
-              <option value="claim">领本阶奖品后继续喂</option>
-              <option value="continue">放弃本阶奖品，直接升阶</option>
-            </select>
-            <label style="min-width:auto">领奖档位</label>
-            <select class="inp" id="pPrize" style="min-width:110px">
-              <option value="fee">话费券</option>
-              <option value="flow">流量包</option>
-              <option value="discount">折扣券</option>
-            </select></div>
-          <div class="frow"><label>天天大转盘</label>
-            <label class="chk" title="福建移动「优惠专区 · 天天大转盘」每天有免费次数，当天不用就清零"><input type="checkbox" id="pLuck">自动把免费次数抽完</label>
-            <label class="chk" title="环闽寻宝记：骰子当天不用就作废，顺带投掉"><input type="checkbox" id="pXunbao">自动投掉寻宝骰子</label>
-            <span style="font-size:12px;color:var(--sub)">跟每日奖励同一次运行，只花已有次数，不替你做加次数任务</span>
-          </div>
-          <div class="frow"><label style="color:var(--warn)">伪造类</label>
-            <label class="chk"><input type="checkbox" id="pTasks">养成浏览任务（空报）</label>
-            <label class="chk"><input type="checkbox" id="pFb">流量银行任务（空报）</label>
-            <label class="chk" title="券来世界（App 首页访问活动）：每天一次 500 饲料。脚本会先把券来世界页面真的打开一次，再上报完成"><input type="checkbox" id="pCouponWorld">券来世界访问（+500 饲料）</label>
-          </div>
-          <div class="frow"><button class="btn pri" onclick="savePolicy()">保存策略</button>
-            <span style="font-size:12px;color:var(--sub)" id="pMeta">加载中…</span></div>
+          <h3>自动策略 <span class="hint">已挪到「设置」页</span></h3>
+          <div class="infobox">「自动策略」和「推送设置」都是<b>设置一次、长期生效</b>的东西，
+            统一放在 <b>设置</b> 页面了：养成喂养的轮数与时段、阶段满时怎么处理、
+            天天大转盘 / 寻宝 / 券来世界要不要自动跑、消消乐参数、秒杀开抢时刻，
+            以及 Bark / Server酱 / PushPlus 推送。</div>
+          <div class="frow"><button class="btn pri" onclick="gotoSettings()">去设置</button></div>
         </div>
         <div class="panel">
           <h3>手动执行一次 <span class="hint">日常交给计划任务，这里用于补做或验证</span></h3>
@@ -436,12 +405,11 @@ select.inp{cursor:pointer}
         <div class="panel">
           <h3>消消乐执行</h3>
           <div class="frow"><label>账号</label><select class="inp" id="xxlFile"></select></div>
-          <div class="frow"><label>关卡号</label><input class="inp" id="xLevel" type="number" value="49" style="min-width:80px">
-            <label style="min-width:auto">星级</label><input class="inp" id="xStar" type="number" min="0" max="3" value="3" style="min-width:60px">
-            <label style="min-width:auto">局数</label><input class="inp" id="xTimes" type="number" min="1" max="20" value="5" style="min-width:60px">
-            <label style="min-width:auto">间隔秒</label><input class="inp" id="xGap" type="number" min="5" max="120" value="12" style="min-width:70px"></div>
+          <div class="frow"><label>参数</label><span style="font-size:13px" id="xxlParams">加载中…</span>
+            <button class="btn sm" onclick="gotoSettings()">去设置里改</button></div>
           <div class="warnbox">关卡号必须接近账号真实进度（乱填会被判异常请求）；每天约 5 次可用，有全局频控；性质比空报浏览更重，请自行决定使用。<br>
-            不知道填几？先点「探测当前关卡」，探到的关卡号会自动填进上面的输入框。</div>
+            关卡号 / 星级 / 局数 / 间隔在 <b>设置 → 自动策略</b> 里长期保存，这里直接照着跑。
+            不知道填几？先点「探测当前关卡」，探到的关卡号会填进设置页，去那里保存即生效。</div>
           <div class="frow">
             <button class="btn pri" onclick="runXxl()">开始执行</button>
             <button class="btn" onclick="xxlQuery()">只读查剩余次数</button>
@@ -457,8 +425,8 @@ select.inp{cursor:pointer}
         <div class="panel">
           <h3>执行秒杀</h3>
           <div class="frow"><label>账号</label><select class="inp" id="skFile"></select></div>
-          <div class="frow"><label>开抢时刻</label><input class="inp" id="skAt" value="11:59:50" style="min-width:100px">
-            <span style="font-size:12.5px;color:var(--sub)">留空则按服务端场次自动选；填的时刻是「今天」的</span></div>
+          <div class="frow"><label>开抢时刻</label><span style="font-size:13px" id="skAtShow">加载中…</span>
+            <button class="btn sm" onclick="gotoSettings()">去设置里改</button></div>
           <div class="warnbox" id="skWindow" style="display:none"></div>
           <div class="frow">
             <button class="btn pri" onclick="runSeckill()">等到点自动抢</button>
@@ -535,6 +503,79 @@ select.inp{cursor:pointer}
         </div>
       </div>
 
+      <!-- 设置 -->
+      <div class="page" id="p-settings">
+        <div class="phead"><div><h2>设置</h2><div class="desc">设置一次、长期生效：推送方式 + 自动策略</div></div></div>
+        <div class="panel">
+          <h3>推送设置 <span class="hint">填一次，所有账号、所有脚本都用它</span></h3>
+          <div class="infobox">失败通知统一走这里：配一次就行，不用给每个账号单独填。
+            <br>优先级：<b>环境变量 &gt; 这里 &gt; 单账号配置</b>。留空保存 = 清除这一项。
+            <br>PushPlus Token 在 pushplus.plus 官网「我的令牌」里拿，一串 32 位字符；
+            三种方式可以同时填，会同时收到。</div>
+          <div class="frow"><label>Bark</label>
+            <input class="inp" id="sBark" placeholder="https://api.day.app/你的key" style="min-width:320px">
+            <span style="font-size:12px;color:var(--sub)">iOS 推送地址</span></div>
+          <div class="frow"><label>Server酱</label>
+            <input class="inp" id="sSendkey" placeholder="SCTxxxxxxxxxxxxxxxx" style="min-width:320px">
+            <span style="font-size:12px;color:var(--sub)">SendKey，只含字母和数字</span></div>
+          <div class="frow"><label>PushPlus</label>
+            <input class="inp" id="sPushplus" placeholder="32 位十六进制令牌" style="min-width:320px">
+            <span style="font-size:12px;color:var(--sub)">微信 / 邮箱推送</span></div>
+          <div class="frow"><button class="btn pri" onclick="saveSettings()">保存</button>
+            <button class="btn" onclick="act({action:'notify_test'})">发一条测试</button>
+            <span style="font-size:12px;color:var(--sub)" id="sMeta">加载中…</span></div>
+        </div>
+        <div class="panel">
+          <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span></h3>
+          <div class="infobox">这里定的是<b>自动任务</b>的行为，不用每次手动勾：
+            <br>· <b>每天自动喂养</b>：只在指定小时的那一轮喂，<b>一天最多喂一次</b>，饲料不足会自动停手；
+            勾「喂到饲料用完」就不用填轮数，按当天饲料自动算
+            <br>· <b>阶段喂满时</b>：停手等你 / 领奖后继续喂 / 放弃本阶奖品直接升阶
+            <br>· <b>伪造类</b>默认关闭；打开等于让脚本空报浏览，自行判断
+            <br>保存后由「每日奖励」计划任务（每小时那次）读取执行，改完不用重启任何东西。</div>
+          <div class="frow"><label>每天自动喂养</label>
+            <input class="inp" id="pFeed" type="number" min="0" max="50" value="0" style="min-width:70px">
+            <span style="font-size:12px;color:var(--sub)">轮（每轮 250 饲料，0 = 不喂）</span>
+            <label class="chk" title="轮数按当天饲料自动算，喂到不足 250 为止，不用填数字"><input type="checkbox" id="pFeedAll" onchange="feedAllToggle('p')">喂到饲料用完</label>
+            <label style="min-width:auto">在</label>
+            <input class="inp" id="pFeedHour" type="number" min="0" max="23" value="12" style="min-width:64px">
+            <span style="font-size:12px;color:var(--sub)">点那一轮</span></div>
+          <div class="frow"><label>阶段喂满时</label>
+            <select class="inp" id="pFull" style="min-width:210px">
+              <option value="stop">停手，等我自己决定</option>
+              <option value="claim">领本阶奖品后继续喂</option>
+              <option value="continue">放弃本阶奖品，直接升阶</option>
+            </select>
+            <label style="min-width:auto">领奖档位</label>
+            <select class="inp" id="pPrize" style="min-width:110px">
+              <option value="fee">话费券</option>
+              <option value="flow">流量包</option>
+              <option value="discount">折扣券</option>
+            </select></div>
+          <div class="frow"><label>天天大转盘</label>
+            <label class="chk" title="福建移动「优惠专区 · 天天大转盘」每天有免费次数，当天不用就清零"><input type="checkbox" id="pLuck">自动把免费次数抽完</label>
+            <label class="chk" title="环闽寻宝记：骰子当天不用就作废，顺带投掉"><input type="checkbox" id="pXunbao">自动投掉寻宝骰子</label>
+            <span style="font-size:12px;color:var(--sub)">跟每日奖励同一次运行，只花已有次数，不替你做加次数任务</span>
+          </div>
+          <div class="frow"><label style="color:var(--warn)">伪造类</label>
+            <label class="chk"><input type="checkbox" id="pTasks">养成浏览任务（空报）</label>
+            <label class="chk"><input type="checkbox" id="pFb">流量银行任务（空报）</label>
+            <label class="chk" title="券来世界（App 首页访问活动）：每天一次 500 饲料。脚本会先把券来世界页面真的打开一次，再上报完成"><input type="checkbox" id="pCouponWorld">券来世界访问（+500 饲料）</label>
+          </div>
+          <div class="frow"><label>消消乐</label>
+            <label style="min-width:auto">关卡号</label><input class="inp" id="sLevel" type="number" value="49" style="min-width:80px">
+            <label style="min-width:auto">星级</label><input class="inp" id="sStar" type="number" min="0" max="3" value="3" style="min-width:60px">
+            <label style="min-width:auto">局数</label><input class="inp" id="sTimes" type="number" min="1" max="20" value="5" style="min-width:60px">
+            <label style="min-width:auto">间隔秒</label><input class="inp" id="sGap" type="number" min="5" max="120" value="12" style="min-width:70px">
+            <span style="font-size:12px;color:var(--sub)">关卡号要接近账号真实进度</span></div>
+          <div class="frow"><label>秒杀抢券</label>
+            <label style="min-width:auto">开抢时刻</label><input class="inp" id="sAt" value="11:59:50" style="min-width:100px">
+            <span style="font-size:12px;color:var(--sub)">留空则按服务端场次自动选；填的时刻是「今天」的</span></div>
+          <div class="frow"><button class="btn pri" onclick="savePolicy()">保存策略</button>
+            <span style="font-size:12px;color:var(--sub)" id="pMeta">加载中…</span></div>
+        </div>
+      </div>
+
       <!-- 日志 -->
       <div class="page" id="p-logs">
         <div class="phead"><div><h2>日志</h2><div class="desc">本控制台发起的运行，实时输出、自动跟随滚动（计划任务的日志在「定时任务」页每行点开）</div></div>
@@ -558,7 +599,7 @@ select.inp{cursor:pointer}
 <script>
 const $=id=>document.getElementById(id), V=id=>$(id).value.trim();
 let logSeq=0, STATE=null;
-const TITLES={dash:'总览',token:'凭证与账号',bass:'福建活动',xxl:'消消乐',seckill:'秒杀抢券',games:'拓展活动',sched:'定时任务',logs:'日志'};
+const TITLES={dash:'总览',token:'凭证与账号',bass:'福建活动',xxl:'消消乐',seckill:'秒杀抢券',games:'拓展活动',sched:'定时任务',logs:'日志',settings:'设置'};
 const PLAT_CN={qwhdhub:'全国签到',BASS:'福建活动'};
 function nav(b){document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));$('p-'+b.dataset.p).classList.add('on');
@@ -836,6 +877,7 @@ function render(){
   renderLuck();
   renderXunbao();
   renderPolicy();
+  renderSettings();
   renderTodo();
   renderSkWindow();
   updSched();
@@ -851,7 +893,7 @@ function renderAccounts(){
   box.innerHTML='<div class="tablewrap"><table class="fbtab"><thead><tr>'+
     '<th>号码</th><th>平台</th><th>配置文件</th><th>凭证</th><th>失败推送</th><th style="width:88px">操作</th>'+
     '</tr></thead><tbody>'+accts.map(a=>{
-      const notify=(a.has_bark||a.has_sendkey)
+      const notify=(a.has_bark||a.has_sendkey||a.has_pushplus)
         ? '<span class="badge ok">已配置</span>' : '<span class="badge na">未配置</span>';
       const tok=a.token_state==='filled'?'<span class="badge signed">已填写</span>':'<span class="badge na">空</span>';
       return `<tr><td>${a.phone?mask(a.phone):'（未填手机号）'}</td>
@@ -888,20 +930,23 @@ function editAccount(file){
       placeholder="${a.has_bark?'已配置（留空则不修改）':'https://api.day.app/你的key'}"></div>
     <div class="frow"><label>Server酱</label><input class="inp" id="eaKey" style="min-width:280px"
       placeholder="${a.has_sendkey?'已配置（留空则不修改）':'SendKey'}"></div>
+    <div class="frow"><label>PushPlus</label><input class="inp" id="eaPushplus" style="min-width:280px"
+      placeholder="${a.has_pushplus?'已配置（留空则不修改）':'32 位十六进制令牌'}"></div>
     <div class="frow"><button class="btn pri" onclick="saveAccount('${esc(file)}')">保存</button>
       <button class="btn" onclick="closeModal()">取消</button>
-      ${(a.has_bark||a.has_sendkey)?`<button class="btn danger" onclick="cf('清除该账号的推送配置？',()=>clearNotify('${esc(file)}'))">清除推送配置</button>`:''}</div>`);
+      ${(a.has_bark||a.has_sendkey||a.has_pushplus)?`<button class="btn danger" onclick="cf('清除该账号的推送配置？',()=>clearNotify('${esc(file)}'))">清除推送配置</button>`:''}</div>`);
 }
 async function saveAccount(file){
   const body={action:'account_save',file:file,phone:V('eaPhone')};
   // 留空不提交，避免「打开看一眼再保存」把已配好的推送清掉
   if(V('eaBark'))body.bark_url=V('eaBark');
   if(V('eaKey'))body.serverchan_sendkey=V('eaKey');
+  if(V('eaPushplus'))body.pushplus_token=V('eaPushplus');
   const r=await act(body);
   if(r&&r.ok)closeModal();
 }
 async function clearNotify(file){
-  const r=await act({action:'account_save',file:file,bark_url:'',serverchan_sendkey:''});
+  const r=await act({action:'account_save',file:file,bark_url:'',serverchan_sendkey:'',pushplus_token:''});
   if(r&&r.ok)closeModal();
 }
 // 计划任务日志：失败原因要能一键看到，不用自己去 logs 目录翻
@@ -1100,13 +1145,20 @@ function renderPolicy(){
     if($('pXunbao'))$('pXunbao').checked=(p.xunbao!==false);
     if($('pCouponWorld'))$('pCouponWorld').checked=(p.coupon_world!==false);
     const x=p.xxl||{};
-    if($('xLevel'))$('xLevel').value=(x.level!=null?x.level:49);
-    if($('xStar'))$('xStar').value=(x.star!=null?x.star:3);
-    if($('xTimes'))$('xTimes').value=(x.times!=null?x.times:5);
-    if($('xGap'))$('xGap').value=(x.gap!=null?x.gap:12);
+    if($('sLevel'))$('sLevel').value=(x.level!=null?x.level:49);
+    if($('sStar'))$('sStar').value=(x.star!=null?x.star:3);
+    if($('sTimes'))$('sTimes').value=(x.times!=null?x.times:5);
+    if($('sGap'))$('sGap').value=(x.gap!=null?x.gap:12);
     const sk=p.seckill||{};
-    if($('skAt')&&sk.at)$('skAt').value=sk.at;
+    if($('sAt'))$('sAt').value=sk.at||'';
   }
+  // 消消乐 / 秒杀页不再单独存一份参数，只展示设置页里保存的值
+  const xx=p.xxl||{}, skk=p.seckill||{};
+  if($('xxlParams'))$('xxlParams').textContent=
+    `关卡 ${xx.level!=null?xx.level:49} · 星级 ${xx.star!=null?xx.star:3}`
+    +` · ${xx.times!=null?xx.times:5} 局 · 间隔 ${xx.gap!=null?xx.gap:12} 秒`;
+  if($('skAtShow'))$('skAtShow').textContent=
+    skk.at?skk.at+'（今天的时刻）':'留空则按服务端场次自动选';
   const f=Number(b.feed)||0;
   const fullCn=({stop:'停手',claim:'领奖续喂',continue:'直接升阶'})[b.on_stage_full]||b.on_stage_full;
   $('pMeta').textContent=b.feed_all
@@ -1132,11 +1184,43 @@ async function savePolicy(){
           feed_hour:Number(V('pFeedHour'))||0,
           on_stage_full:V('pFull'),prize:V('pPrize'),
           tasks:$('pTasks').checked,fb_tasks:$('pFb').checked},
-    xxl:{level:Number(V('xLevel'))||49,star:Number(V('xStar'))||3,
-         times:Number(V('xTimes'))||5,gap:Number(V('xGap'))||12},
-    seckill:{at:($('skAt')?V('skAt'):'')}};
+    xxl:{level:Number(V('sLevel'))||49,star:Number(V('sStar'))||3,
+         times:Number(V('sTimes'))||5,gap:Number(V('sGap'))||12},
+    seckill:{at:($('sAt')?V('sAt'):'')}};
   const r=await act(body);
   if(r&&r.ok&&r.policy){STATE.policy=r.policy;PREFS_ONCE=true;renderPolicy();}
+}
+// ---------------- 设置页：推送设置（设置一次、长期生效）----------------
+let SET_ONCE=false;
+function renderSettings(){
+  const st=(STATE&&STATE.settings)||{};
+  if(!$('sBark'))return;
+  if(!SET_ONCE){
+    SET_ONCE=true;
+    $('sBark').value=st.bark_url||'';
+    $('sSendkey').value=st.serverchan_sendkey||'';
+    $('sPushplus').value=st.pushplus_token||'';
+  }
+  const on=[];
+  if(st.bark_url)on.push('Bark');
+  if(st.serverchan_sendkey)on.push('Server酱');
+  if(st.pushplus_token)on.push('PushPlus');
+  $('sMeta').textContent=on.length
+    ? ('已开启：'+on.join(' + '))
+    : '还没配推送方式（失败时不会通知手机）';
+}
+async function saveSettings(){
+  const push={bark_url:V('sBark'),serverchan_sendkey:V('sSendkey'),pushplus_token:V('sPushplus')};
+  const r=await act({action:'settings_save',push:push});
+  if(r&&r.ok){
+    if(STATE)STATE.settings=push;
+    SET_ONCE=true;renderSettings();
+  }
+}
+// 从别的页面跳到设置页
+function gotoSettings(){
+  const b=document.querySelector('nav button[data-p="settings"]');
+  if(b)nav(b);
 }
 // 下拉框：显示「尾号 · 手机号」，值仍是后端要的配置标识（各页原来一个显示路径、一个显示 fj1，容易看糊涂）
 function fillSelKV(id,items){
@@ -1347,8 +1431,12 @@ async function runGames(mode){
   if(!r||!r.ok)capDrop();
 }
 function runXxl(){if(!confirm('消消乐属于伪造游戏通关成绩，中奖靠服务端概率，确定要跑吗？'))return;
+  // 参数存在「设置 → 自动策略」里，这里直接照着跑，不再另存一份
+  const x=((STATE&&STATE.policy)||{}).xxl||{};
   capStart('xxl');
-  act({action:'xxl_run',file:V('xxlFile'),level:V('xLevel'),star:V('xStar'),times:V('xTimes'),gap:V('xGap')})
+  act({action:'xxl_run',file:V('xxlFile'),
+       level:(x.level!=null?x.level:49),star:(x.star!=null?x.star:3),
+       times:(x.times!=null?x.times:5),gap:(x.gap!=null?x.gap:12)})
     .then(r=>{if(!r||!r.ok)capDrop();});}
 function xxlQuery(){
   capStart('xxl');
@@ -1357,12 +1445,14 @@ function xxlQuery(){
 function detectLevel(){
   capStart('xxl',lines=>{
     const m=lines.join('\n').match(/自动探测当前关卡:\s*(\d+)/);
-    if(m){$('xLevel').value=m[1];toast('已把探测到的关卡号 '+m[1]+' 填进输入框');}
+    if(m&&$('sLevel')){$('sLevel').value=m[1];toast('已把探测到的关卡号 '+m[1]+' 填进设置页，去「设置」保存后长期生效');}
+    else if(m){toast('探测到关卡号 '+m[1]+'（设置页没有输入框，请手动填）');}
     else toast('没探到关卡号（可能体力不足或凭证失效），看下方输出',true);
   });
   act({action:'xxl_run',file:V('xxlFile'),detect:1}).then(r=>{if(!r||!r.ok)capDrop();});}
 function runSeckill(){
-  const at=V('skAt').trim(), n=new Date(), mins=n.getHours()*60+n.getMinutes();
+  const skk=(((STATE&&STATE.policy)||{}).seckill)||{}, at=(skk.at||'').trim(),
+        n=new Date(), mins=n.getHours()*60+n.getMinutes();
   if(mins>=13*60&&!confirm('今天的场次（12:00~13:00）已结束，现在出手会被拒。仍要继续吗？'))return;
   capStart('sk');
   act({action:'seckill_run',file:V('skFile'),at:at||''}).then(r=>{if(!r||!r.ok)capDrop();});}

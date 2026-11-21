@@ -159,7 +159,12 @@ class TestPageContent(unittest.TestCase):
                 cmds.append(cmd)
                 return True
 
-        a = next(x for x in dashboard.scan_accounts() if x["plat"] == "BASS")
+        # configs_fj/ 带凭证、不进仓库，CI 上没有真实账号，这里给一个假的
+        a = {"key": "fj1", "plat": "BASS", "file": "configs_fj/fj1.json", "phone": "13800001234",
+                 "token_state": "filled", "has_bark": False, "has_sendkey": False, "has_pushplus": False}
+        real_scan = dashboard.scan_accounts
+        dashboard.scan_accounts = lambda: [a]
+        self.addCleanup(setattr, dashboard, "scan_accounts", real_scan)
         real = dashboard.RUNNER
         dashboard.RUNNER = FakeRunner()
         try:

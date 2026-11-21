@@ -76,7 +76,7 @@ with sync_playwright() as p:
     # 到账台账：用户只看「到手多少流量」，这里必须真渲染出数字而不是空白
     check("到账台账汇总", page.eval_on_selector_all("#awSum .cell", "e=>e.length") == 4)
     aw_txt = page.inner_text("#awSum") + page.inner_text("#awTab")
-    check("台账有今日/本月口径", "今日到手流量" in aw_txt and "本月到手流量" in aw_txt)
+    check("台账有今日/本月口径", "今日已得流量" in aw_txt and "本月已得流量" in aw_txt)
     check("台账未出现充值类券", "充值9.9折" not in page.inner_text("#awTab"))
     page.screenshot(path=str(OUT / "shot_dash.png"), full_page=True)
 

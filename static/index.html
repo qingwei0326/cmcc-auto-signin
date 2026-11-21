@@ -652,8 +652,8 @@ function render(){
      const pts=vals.map((v,i)=>`${(i*100/(n-1)).toFixed(1)},${(25-23*v/mx).toFixed(1)}`).join(' ');
      return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;})();
   $('sumbar').innerHTML=`
-    <div class="kpi"><div class="k">本月到手流量</div><div class="v">${flowMShow>=1024?(flowMShow/1024).toFixed(2)+'<small>GB</small>':flowMShow.toFixed(0)+'<small>MB</small>'}</div><div class="c">签到 / 领奖 / 转盘合计</div>${spF}</div>
-    <div class="kpi"><div class="k">本月已得话费</div><div class="v">${fy(feeYuan)}<small>元</small></div><div class="c">${feeM} 张 · 只算无门槛券，手气红包等有门槛的不计入（历史 ${feeAll} 张 / ${fy(feeYuanAll)} 元）</div>${spFee}</div>
+    <div class="kpi"><div class="k">本月已得流量</div><div class="v">${flowMShow>=1024?(flowMShow/1024).toFixed(2)+'<small>GB</small>':flowMShow.toFixed(0)+'<small>MB</small>'}</div><div class="c">签到 / 领奖 / 转盘合计</div>${spF}</div>
+    <div class="kpi"><div class="k">本月已得话费</div><div class="v">${fy(feeYuan)}<small>元</small></div><div class="c">${feeM} 张 · 无门槛券（话费手气红包不计入）· 历史 ${feeAll} 张 / ${fy(feeYuanAll)} 元</div>${spFee}</div>
     <div class="kpi"><div class="k">凭证可用</div><div class="v">${okTok}<small>/ ${accts.length} 份</small></div><div class="c">一个号码两份（全国 + 福建）</div></div>
     <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">过期需重新抓包导入</div></div>`;
   // 运行记录统计条
@@ -675,13 +675,18 @@ function render(){
   // 到账台账（用户只关心「今天到手多少流量 / 几张能用的券」）
   const aw=STATE.awards||{}, awM=aw.month||{}, awT=aw.today||{}, awBy=aw.by_account||{}, awDay=aw.by_day||{};
   const awFmt=mb=>mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');
-  // 有门槛的券（手气红包 / 满减 / 充值券）不计入可用张数，但鼠标悬停能看到是哪几张
+  // 有门槛的券（满减 / 充值券）不计入可用张数；话费手气红包连这里都不出现
   const thM=(aw.month_threshold||[]).map(x=>x.name).filter(Boolean);
+  const thTip=thM.length?` title="不计入可用张数：${esc(thM.join('、'))}"`:'';
+  const thCell=(awM.recharge_count||0)
+    ? '<div class="cell"'+thTip+'><div class="k">有门槛才能用</div><div class="v">'
+      +awM.recharge_count+'<small> 张 · ¥'+fy(awM.recharge_yuan)+'</small></div></div>'
+    : '';                       // 没有就不占位，免得出现「0 张」这种废话
   if($('awSum'))$('awSum').innerHTML=`
-    <div class="cell"><div class="k">今日到手流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">本月到手流量</div><div class="v">${awFmt(awM.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">本月可用话费券</div><div class="v">${awM.fee_count||0}<small> 张 · ¥${fy(awM.fee_yuan)}</small></div></div>
-    <div class="cell"${thM.length?` title="不计入可用张数：${esc(thM.join('、'))}"`:''}><div class="k">有门槛才能用</div><div class="v">${awM.recharge_count||0}<small> 张 · ¥${fy(awM.recharge_yuan)}</small></div></div>`;
+    <div class="cell"><div class="k">今日已得流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
+    <div class="cell"><div class="k">今日已得话费</div><div class="v">${awT.fee_count||0}<small> 张 · ¥${fy(awT.fee_yuan)}</small></div></div>
+    <div class="cell"><div class="k">本月已得流量</div><div class="v">${awFmt(awM.flow_mb||0)}</div></div>
+    <div class="cell"><div class="k">本月已得话费</div><div class="v">${awM.fee_count||0}<small> 张 · ¥${fy(awM.fee_yuan)}</small></div></div>${thCell}`;
   const awRows=aw.recent||[];
   if($('awTab'))$('awTab').innerHTML= awRows.length
     ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">面额</th><th class="num">折合流量</th></tr>'+
@@ -725,12 +730,12 @@ function render(){
           <span class="stamp" title="这些数字是上次运行脚本时记下的，不是实时值">数据截至 ${esc(s.last_run||'从未运行')}</span></div>
         <div class="stats">
           ${isQ?`
-          <div class="stat"><div class="k">本月到手</div><div class="v">${awFmt(Math.max(s.flow_mb_month||0,(awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0))}<small class="sum">近 7 天见图</small></div></div>
+          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt(Math.max(s.flow_mb_month||0,(awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0))}<small class="sum">近 7 天见图</small></div></div>
           <div class="stat"><div class="k">连签天数</div><div class="v">${fmtNum(s.sign_days)}</div></div>
           <div class="stat"><div class="k">本月任务</div><div class="v">${s.tasks_month||0}<small class="sum">累计 ${s.tasks_done_total||0}</small></div></div>
           <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${s.last_reward||'—'}</div></div>`
           :`
-          <div class="stat"><div class="k">本月到账</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张券 · ¥${fy((awBy[(a.phone||'').slice(-4)]||{}).fee_yuan||0)}</small></div></div>
+          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张券 · ¥${fy((awBy[(a.phone||'').slice(-4)]||{}).fee_yuan||0)}</small></div></div>
           <div class="stat"><div class="k">饲料余额</div><div class="v y">${fmtNum(s.fodder)}</div></div>
           <div class="stat"><div class="k">流量可兑</div><div class="v">${s.fb_exchange||'—'}</div></div>
           <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${s.stage||'—'}</div></div>`}
@@ -933,7 +938,9 @@ function renderLuck(){
     }).join('');
     const summary=(a.last_draws!=null)?`　上次抽 ${a.last_draws} 次，中 ${a.last_wins||0} 次`:'';
     const today=todayLocal();
-    const daySum=(a.day===today&&a.day_draws)?`　<b>今日抽 ${a.day_draws} 次，中 ${a.day_wins||0} 次</b>`:'';
+    // 只数「本程序发出的抽奖请求」：手厅里还有你自己手点的次数，
+    // 服务端没有查记录接口，拿不到包含手动的总数，所以这里不说「今日共抽」。
+    const daySum=(a.day===today&&a.day_draws)?`　<b>本程序今日抽 ${a.day_draws} 次，中 ${a.day_wins||0} 次</b>`:'';
     return `<div style="margin-top:14px">
       <div class="fbhead">${esc(k)} · ${a.phone?mask(a.phone):''}　剩余次数 <b>${a.surplus!=null?a.surplus:'—'}</b>${daySum}${summary}　<code>${esc(a.updated||'')}</code></div>
       ${ps.length?`<table class="fbtab"><thead><tr><th style="width:110px">时间</th><th>奖品</th><th style="width:90px">有效期</th></tr></thead><tbody>${rows}</tbody></table>`:''}

@@ -578,10 +578,13 @@ select.inp{cursor:pointer}
 
       <!-- 日志 -->
       <div class="page" id="p-logs">
-        <div class="phead"><div><h2>日志</h2><div class="desc">本控制台发起的运行，实时输出、自动跟随滚动（计划任务的日志在「定时任务」页每行点开）</div></div>
+        <div class="phead"><div><h2>日志</h2><div class="desc">本控制台发起的运行，实时输出、自动跟随滚动；重启控制台后保留最近 4000 行（计划任务的日志在「定时任务」页每行点开）</div></div>
           <div class="ops"><button class="btn sm" data-nobusy onclick="clearConsole()">清屏</button></div></div>
         <div class="panel" style="padding:14px">
           <div class="console" id="console" role="log" aria-label="运行日志"></div>
+          <div id="consoleEmpty" style="padding:10px 2px 0;color:var(--sub);font-size:13px">还没有本控制台发起的运行记录。
+            在任一页点执行后，输出会实时出现在这里；定时任务自己跑的输出在
+            <a href="#sched" onclick="nav(document.querySelector('nav button[data-p=sched]'));return false">定时任务</a> 页每行的「日志」按钮里。</div>
         </div>
       </div>
 
@@ -659,6 +662,16 @@ function fmtNum(v){return v==null?'—':v;}
 function flowTxt(v){return v>=1024?(v/1024).toFixed(2)+' GB':Math.round(v)+' MB';}
 function flowFmt(v){return v>=1024?(v/1024).toFixed(2)+'<small>GB</small>':Math.round(v)+'<small>MB</small>';}
 
+// 票据有效性以「每 2 分钟探测」为准：stats 里的 token_* 是上次跑任务时记下的，
+// 可能已经是几小时前的结论。总览卡片和「凭证与账号」表都走这一个函数，免得两页说法不一。
+function tokState(a,s){
+  s=s||(STATE.stats||{})[a.key]||{};
+  if(a.token_state==='empty')return 'empty';
+  if(a.plat==='qwhdhub'){
+    const live=(STATE.token_life||[]).find(x=>x.key===a.key);
+    if(live&&live.state==='alive')return 'ok';
+    if(live&&live.state==='expired')return 'expired';}
+  return (a.plat==='qwhdhub'?s.token_qwhd:s.token_bass)||'unchecked';}
 function render(){
   if(!STATE)return;
   const S=STATE.stats, accts=STATE.raw_accounts;
@@ -667,13 +680,6 @@ function render(){
     ? `<div class="envbar"><b>任务暂时跑不了</b>\n${esc(env.msg)}</div>` : '';
   // 票据有效性以「每 2 分钟探测」为准：stats 里的 token_* 是上次跑任务时记下的，
   // 可能已经是几小时前的结论，直接用会出现「待办说已失效、卡片说有效」的自相矛盾。
-  const liveTok={};
-  (STATE.token_life||[]).forEach(x=>{
-    if(x.state==='alive')liveTok[x.key]='ok';
-    else if(x.state==='expired')liveTok[x.key]='expired';
-  });
-  const tokState=(a,s)=>((a.plat==='qwhdhub'&&liveTok[a.key])?liveTok[a.key]
-    :(a.plat==='qwhdhub'?s.token_qwhd:s.token_bass)||(a.token_state==='filled'?'unchecked':'empty'));
   // KPI
   let okTok=0,flowM=0;
   const days={};
@@ -728,7 +734,7 @@ function render(){
         <td class="${r.ok?'ok':'bad'}">${r.ok?'成功':'失败'}</td></tr>`).join('')
     : '<tr><td style="color:var(--sub);padding:14px">暂无运行记录 — 跑一次签到或刷新状态后自动记录</td></tr>';
   // 到账台账（用户只关心「今天到手多少流量 / 几张能用的券」）
-  const aw=STATE.awards||{}, awM=aw.month||{}, awT=aw.today||{}, awBy=aw.by_account||{}, awDay=aw.by_day||{};
+  const aw=STATE.awards||{}, awM=aw.month||{}, awT=aw.today||{};
   const awFmt=mb=>mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');
   if($('awSum'))$('awSum').innerHTML=`
     <div class="cell"><div class="k">今日已得流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
@@ -754,7 +760,9 @@ function render(){
       const tkState=tokState(a,s);
       const hmap={}; (s.history||[]).forEach(h=>{hmap[h.date]=h;});
       // 到账流水里的日流量并进来：转盘/领奖不走 history，不并就会漏（明明中了 1GB 却显示无记录）
-      const awD=awDay[(a.phone||'').slice(-4)]||{};
+      const tail=(a.phone||'').slice(-4);
+      const awP=((aw.by_plat||{})[tail]||{})[plat]||{};
+      const awD=((aw.by_day_plat||{})[tail]||{})[plat]||{};
       Object.keys(awD).forEach(d=>{
         const row=hmap[d]||{date:d,flow_mb:0,tasks:0,feeds:0};
         row.flow_mb=(row.flow_mb||0)+awD[d]; hmap[d]=row;});
@@ -781,12 +789,12 @@ function render(){
           <span class="stamp" title="这些数字是上次运行脚本时记下的，不是实时值">数据截至 ${esc(s.last_run||'从未运行')}</span></div>
         <div class="stats">
           ${isQ?`
-          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt(Math.max(s.flow_mb_month||0,(awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0))}<small class="sum">近 7 天见图</small></div></div>
+          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt(Math.max(s.flow_mb_month||0,awP.flow_mb||0))}<small class="sum">${awP.fee_count?`¥${fy(awP.fee_yuan)} · ${awP.fee_count} 张券`:'签到 / 秒杀'}</small></div></div>
           <div class="stat"><div class="k">连签天数</div><div class="v">${fmtNum(s.sign_days)}</div></div>
           <div class="stat"><div class="k">本月任务</div><div class="v">${s.tasks_month||0}<small class="sum">累计 ${s.tasks_done_total||0}</small></div></div>
           <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${s.last_reward||'—'}</div></div>`
           :`
-          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">¥${fy((awBy[(a.phone||'').slice(-4)]||{}).fee_yuan||0)} · ${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张券</small></div></div>
+          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt(awP.flow_mb||0)}<small class="sum">${awP.fee_count?`¥${fy(awP.fee_yuan)} · ${awP.fee_count} 张券`:'养成 / 转盘 / 寻宝'}</small></div></div>
           <div class="stat"><div class="k">饲料余额</div><div class="v y">${fmtNum(s.fodder)}</div></div>
           <div class="stat"><div class="k">流量可兑</div><div class="v">${s.fb_exchange||'—'}</div></div>
           <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${s.stage||'—'}</div></div>`}
@@ -895,7 +903,7 @@ function renderAccounts(){
     '</tr></thead><tbody>'+accts.map(a=>{
       const notify=(a.has_bark||a.has_sendkey||a.has_pushplus)
         ? '<span class="badge ok">已配置</span>' : '<span class="badge na">未配置</span>';
-      const tok=a.token_state==='filled'?'<span class="badge signed">已填写</span>':'<span class="badge na">空</span>';
+      const tok=tokenBadge(tokState(a));
       return `<tr><td>${a.phone?mask(a.phone):'（未填手机号）'}</td>
         <td>${PLAT_CN[a.plat]||esc(a.plat)}</td>
         <td><code>${esc(a.file)}</code></td><td>${tok}</td><td>${notify}</td>
@@ -1529,13 +1537,14 @@ async function pullLogs(){
       else if(l.line.startsWith('$'))d.lastChild.className='dim';
       cons.appendChild(d);});
     while(cons.children.length>2500)cons.removeChild(cons.firstChild);
+    $('consoleEmpty').style.display='none';
     if(atBottom)cons.scrollTop=cons.scrollHeight;}
   const wasRunning=lastRunning; lastRunning=!!r.running;
   setBusy(r.running,r.label);
   if(!r.running){
     if(CAP)capEnd();                                  // 跑完了，把输出落到页面结果区
     if(wasRunning)pullState();}}
-function clearConsole(){cons.innerHTML='';}
+function clearConsole(){cons.innerHTML='';$('consoleEmpty').style.display='';}
 // 点弹层外的灰底也能关闭
 document.addEventListener('click',e=>{if(e.target&&e.target.id==='modal')closeModal();});
 // 字号缩放：桌面窗口里没有浏览器的 Ctrl+滚轮，得自己给一个（记住选择）

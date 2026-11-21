@@ -425,8 +425,10 @@ def _parse_bass_legacy(key: str, text: str):
 # ======================================================================
 
 class TaskRunner:
-    def __init__(self):
-        self.logs = deque(maxlen=4000)
+    LOG_KEEP = 4000
+
+    def __init__(self, persist_path=None):
+        self.logs = deque(maxlen=self.LOG_KEEP)
         self.seq = 0
         self.running = False
         self.label = ""
@@ -434,10 +436,46 @@ class TaskRunner:
         self._parser = None   # (fn, key) 完成后解析输出
         self._buf = []
         self._cancel = threading.Event()
+        # 日志落盘：控制台重启后「日志」页还能看到上次跑的输出，
+        # 不然今天跑了十几次，打开日志页却是一整块空白。
+        self._persist = Path(persist_path) if persist_path else None
+        self._plock = threading.Lock()
+        self._load_persisted()
+
+    def _load_persisted(self):
+        if not self._persist:
+            return
+        try:
+            lines = self._persist.read_text(encoding="utf-8").splitlines()[-self.LOG_KEEP:]
+        except Exception:
+            return
+        rows = []
+        for raw in lines:
+            try:
+                r = json.loads(raw)
+                rows.append({"t": str(r["t"]), "line": str(r["line"])})
+            except Exception:
+                continue
+        for r in rows:
+            self.seq += 1
+            self.logs.append({"seq": self.seq, **r})
+        # 启动时顺手截短，文件不会无限长
+        try:
+            self._persist.write_text(
+                "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        except Exception:
+            pass
 
     def push(self, line: str):
         self.seq += 1
-        self.logs.append({"seq": self.seq, "t": datetime.now().strftime("%H:%M:%S"), "line": line.rstrip("\n")})
+        row = {"seq": self.seq, "t": datetime.now().strftime("%m-%d %H:%M:%S"), "line": line.rstrip("\n")}
+        self.logs.append(row)
+        if self._persist:
+            try:
+                with self._plock, self._persist.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"t": row["t"], "line": row["line"]}, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
 
     def start(self, label, cmd, parser=None, shell=False):
         return self.start_sequence(label, [(cmd, parser)], shell=shell)
@@ -533,7 +571,7 @@ class TaskRunner:
         return True
 
 
-RUNNER = TaskRunner()
+RUNNER = TaskRunner(DATA / "console.log")
 
 
 def py(*args):
@@ -1225,6 +1263,17 @@ def build_state():
     }
 
 
+# 到账流水的「来源」属于哪张卡。全国签到那边只有签到奖品和签到有礼的每周秒杀，
+# 其余（养成、转盘、消消乐、寻宝）都走福建 bass 鉴权。认不出的新来源归福建，
+# 因为新加的活动脚本基本都是福建那套。
+QWHD_SOURCES = ("每日签到", "每周秒杀")
+
+
+def award_platform(source) -> str:
+    src = str(source or "")
+    return "qwhdhub" if any(src.startswith(x) for x in QWHD_SOURCES) else "BASS"
+
+
 def _awards_view(limit=40) -> dict:
     """到账台账：只挑「到手可用」的，按天/按号汇总给前端。
 
@@ -1281,21 +1330,35 @@ def _awards_view(limit=40) -> dict:
 
     by = {}
     by_day = {}
+    # 同一号码有「全国签到」「福建活动」两张卡，按来源拆开记，
+    # 不然两张卡显示同一个数字，看着像拿了两份。
+    by_plat = {}          # 尾号 → {qwhdhub|BASS: {flow_mb, fee_count, fee_yuan}}
+    by_day_plat = {}      # 尾号 → {qwhdhub|BASS: {日期: MB}}
     fee_day = {}          # 日期 → 当天拿到的无门槛话费券张数（给「本月已得话费」画迷你趋势）
     for r in recs:
         if (not str(r.get("at", "")).startswith(month)
                 or r.get("need_recharge") or r.get("ignored")):
             continue
         tail = str(r.get("account") or "")[-4:] or "?"
+        plat = award_platform(r.get("source"))
         b = by.setdefault(tail, {"flow_mb": 0.0, "fee_count": 0, "fee_yuan": 0.0, "last": ""})
+        bp = by_plat.setdefault(tail, {}).setdefault(
+            plat, {"flow_mb": 0.0, "fee_count": 0, "fee_yuan": 0.0})
         if r.get("kind") == "flow":
-            b["flow_mb"] = round(b["flow_mb"] + float(r.get("size_mb") or 0), 1)
+            mb = float(r.get("size_mb") or 0)
+            b["flow_mb"] = round(b["flow_mb"] + mb, 1)
+            bp["flow_mb"] = round(bp["flow_mb"] + mb, 1)
             d = str(r.get("at", ""))[:10]
             dd = by_day.setdefault(tail, {})
-            dd[d] = round(dd.get(d, 0) + float(r.get("size_mb") or 0), 1)
+            dd[d] = round(dd.get(d, 0) + mb, 1)
+            dp = by_day_plat.setdefault(tail, {}).setdefault(plat, {})
+            dp[d] = round(dp.get(d, 0) + mb, 1)
         elif r.get("kind") == "fee":
+            yuan = float(r.get("yuan") or 0)
             b["fee_count"] += 1
-            b["fee_yuan"] = round(b["fee_yuan"] + float(r.get("yuan") or 0), 2)
+            b["fee_yuan"] = round(b["fee_yuan"] + yuan, 2)
+            bp["fee_count"] += 1
+            bp["fee_yuan"] = round(bp["fee_yuan"] + yuan, 2)
             d = str(r.get("at", ""))[:10]
             fee_day[d] = fee_day.get(d, 0) + 1
         if not b["last"]:
@@ -1305,6 +1368,7 @@ def _awards_view(limit=40) -> dict:
                   if r.get("kind") == "fee" and not r.get("need_recharge")]
     return {"recent": recent, "today": agg(today), "month": agg(month),
             "by_account": by, "by_day": by_day, "fee_day": fee_day,
+            "by_plat": by_plat, "by_day_plat": by_day_plat,
             # 历史累计：话费券张数 + 合计面额（只算无门槛可直接兑换的）
             "fee_total": len(usable_fee),
             "fee_yuan_total": round(sum(float(r.get("yuan") or 0) for r in usable_fee), 2),

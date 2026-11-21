@@ -55,12 +55,12 @@ class TestCommon(unittest.TestCase):
     def test_notify_settings_prefer_env(self):
         os.environ["CMCC_BARK_URL"] = "https://bark.example/x"
         try:
-            bark, key = common.collect_notify_settings({"bark_url": "https://other/y"})
-            self.assertEqual(bark, "https://bark.example/x")
+            ch = common.collect_notify_settings({"bark_url": "https://other/y"})
+            self.assertEqual(ch["bark_url"], "https://bark.example/x")
         finally:
             del os.environ["CMCC_BARK_URL"]
-        bark, key = common.collect_notify_settings({"bark_url": "https://other/y"})
-        self.assertEqual(bark, "https://other/y")
+        ch = common.collect_notify_settings({"bark_url": "https://other/y"})
+        self.assertEqual(ch["bark_url"], "https://other/y")
 
     def test_notify_without_config_does_nothing(self):
         self.assertFalse(common.notify("t", "b", bark_url="", serverchan_sendkey=""))

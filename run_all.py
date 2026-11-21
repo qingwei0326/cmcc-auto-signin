@@ -652,17 +652,20 @@ def main():
         for key in keys:
             for f in sorted(PLATFORMS[key]["dir"].glob("*.json")):
                 cfgs.append(load_json(f, {}))
-        bark, sc_key = collect_notify_settings(*cfgs)
+        ch = collect_notify_settings(*cfgs)
 
         if TOKEN_DEAD_ACCOUNTS:
             # 票过期不是「脚本坏了」，用户只需要知道「该重抓哪几个号」，一条就够
             title, detail = token_dead_notice(TOKEN_DEAD_ACCOUNTS)
-            notify_once("token_dead", title, detail, bark, sc_key, hours=12)
+            notify_once("token_dead", title, detail, ch["bark_url"],
+                        ch["serverchan_sendkey"], hours=12,
+                        pushplus_token=ch["pushplus_token"])
         bad = [f"{k}:{n}" for k, n, ok, _ in results if not ok and n not in TOKEN_DEAD_ACCOUNTS]
         if bad:
             notify_once("run_failed", "中国移动签到失败",
                         f"{good}/{len(results)} 成功\n失败账号：{', '.join(bad)}",
-                        bark, sc_key, hours=20)
+                        ch["bark_url"], ch["serverchan_sendkey"], hours=20,
+                        pushplus_token=ch["pushplus_token"])
 
     return 0 if good == len(results) else 1
 

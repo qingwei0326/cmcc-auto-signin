@@ -32,8 +32,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from common import (atomic_write_json, child_cmd, is_token_dead, load_policy,
-                    parse_result, save_policy, script_path, update_json)
+from common import (atomic_write_json, child_cmd, is_token_dead, load_global_settings,
+                    load_policy, parse_result, pushplus_token_ok, save_global_settings,
+                    save_policy, script_path, update_json)
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）
 if getattr(sys, "frozen", False):
@@ -250,7 +251,8 @@ def scan_accounts():
             out.append({"key": f.stem, "plat": plat, "file": str(f.relative_to(BASE)),
                         "phone": str(cfg.get("phone") or ""), "token_state": state,
                         "has_bark": bool(str(cfg.get("bark_url") or "").strip()),
-                        "has_sendkey": bool(str(cfg.get("serverchan_sendkey") or "").strip())})
+                        "has_sendkey": bool(str(cfg.get("serverchan_sendkey") or "").strip()),
+                        "has_pushplus": bool(str(cfg.get("pushplus_token") or "").strip())})
     return out
 
 
@@ -894,8 +896,13 @@ def do_action(body: dict):
         elif body.get("detect"):
             cmd.append("--detect-level")
         else:
-            cmd += ["--level", body.get("level", 49), "--star", body.get("star", 3),
-                    "--times", body.get("times", 5), "--gap", body.get("gap", 12)]
+            # 前端现在从「设置 → 自动策略」读参数，传过来的是数字，
+            # subprocess 只接受字符串，这里统一转一道，否则会报
+            # 「expected str, bytes or os.PathLike object, not int」
+            cmd += ["--level", str(body.get("level", 49)),
+                    "--star", str(body.get("star", 3)),
+                    "--times", str(body.get("times", 5)),
+                    "--gap", str(body.get("gap", 12))]
         return _start("消消乐", cmd)
 
     # ---- token 管理 ----
@@ -969,7 +976,7 @@ def do_action(body: dict):
             return {"ok": False, "err": "手机号应为 11 位数字（1 开头）"}
         if phone:
             cfg["phone"] = phone
-        for field in ("bark_url", "serverchan_sendkey"):
+        for field in ("bark_url", "serverchan_sendkey", "pushplus_token"):
             if field not in body:
                 continue
             v = str(body.get(field) or "").strip()
@@ -977,11 +984,45 @@ def do_action(body: dict):
                 return {"ok": False, "err": "Bark 地址应以 http:// 或 https:// 开头"}
             if v and field == "serverchan_sendkey" and not re.fullmatch(r"[0-9A-Za-z]+", v):
                 return {"ok": False, "err": "SendKey 只能含字母和数字"}
+            if v and field == "pushplus_token" and not pushplus_token_ok(v):
+                return {"ok": False, "err": "PushPlus Token 格式不对（应为 32 位十六进制）"}
             cfg[field] = v
         if "note" in body:
             cfg["note"] = str(body.get("note") or "")[:200]
         atomic_write_json(f, cfg, indent=2)
         return {"ok": True, "msg": f"已保存 {f.name}"}
+
+    if act == "settings_save":
+        # 「设置一次、长期生效」：推送方式等全局项，存到 gui_data/settings.json
+        b = body.get("push") or {}
+        bark = str(b.get("bark_url") or "").strip()
+        sc = str(b.get("serverchan_sendkey") or "").strip()
+        pp = str(b.get("pushplus_token") or "").strip()
+        if bark and not bark.lower().startswith(("http://", "https://")):
+            return {"ok": False, "err": "Bark 地址应以 http:// 或 https:// 开头"}
+        if sc and not re.fullmatch(r"[0-9A-Za-z]+", sc):
+            return {"ok": False, "err": "SendKey 只能含字母和数字"}
+        if pp and not pushplus_token_ok(pp):
+            return {"ok": False, "err": "PushPlus Token 格式不对（应为 32 位十六进制）"}
+        save_global_settings({
+            "bark_url": bark,
+            "serverchan_sendkey": sc,
+            "pushplus_token": pp,
+        })
+        return {"ok": True, "msg": "已保存全局设置"}
+
+    if act == "notify_test":
+        # 发一条测试推送，验证通道是否通
+        from common import notify as _notify
+        ch = load_global_settings()
+        sent = _notify("中国移动签到 · 测试推送",
+                       "这是一条测试消息。收到即说明推送通道正常。",
+                       str(ch.get("bark_url") or ""),
+                       str(ch.get("serverchan_sendkey") or ""),
+                       str(ch.get("pushplus_token") or ""))
+        if sent:
+            return {"ok": True, "msg": "已发送测试推送，看看手机有没有收到"}
+        return {"ok": False, "err": "没发出去：先在上面填一个推送方式并保存"}
 
     # ---- 定时任务 ----
     if act == "policy_save":
@@ -1180,6 +1221,7 @@ def build_state():
         "sched_cn": SCHED_CN,
         "env": {"ok": env_ok, "msg": env_msg},
         "policy": load_policy(),
+        "settings": load_global_settings(),
     }
 
 

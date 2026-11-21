@@ -48,7 +48,7 @@ except ImportError:
     print("缺少 pycryptodome，请先运行：python -m pip install pycryptodome", file=sys.stderr)
     sys.exit(1)
 
-from common import setup_utf8
+from common import record_award, setup_utf8
 
 setup_utf8()
 
@@ -230,6 +230,8 @@ def main() -> int:
             if pn:
                 got += 1
                 print(f"[{i + 1}] ✓ 完成  level={level} star={args.star}  →  中奖：{pn}")
+                # 中了就进「到账台账」，和转盘/领奖同一个口径
+                record_award(cfg.get("phone") or "", "消消乐", pn)
             else:
                 print(f"[{i + 1}] ✓ 完成  level={level} star={args.star}  →  未中奖（谢谢参与）")
         else:

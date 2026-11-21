@@ -392,6 +392,7 @@ POLICY_FILE = BASE / "gui_data" / "policy.json"
 # 「设置一次、长期生效」的默认值。键名与控制台、run_all 共用，改这里就全变了。
 POLICY_DEFAULT = {
     "luck": True,                # 每天把「优惠专区·天天大转盘」的免费次数抽完
+    "coupon_world": True,        # 每天做一次「券来世界」访问任务（500 饲料）
     "xunbao": True,              # 每天把「环闽寻宝记」的骰子投完（当天不用就作废）
     "xunbao_tasks": True,        # 顺手报「参与天天大转盘」换骰子（好友助力不报）
     "bass": {

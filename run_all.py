@@ -543,6 +543,9 @@ def main():
         # 天天大转盘的免费次数当天不用就清零，跟着每日奖励一起抽完。
         # 抽奖只消耗已有次数（run_luck 传 --no-tasks），不会替人做加次数任务。
         args.luck = args.luck or bool(pol.get("luck", True))
+        # 券来世界（App 首页访问活动）：每天一次 500 饲料，先打开页面再上报
+        if pol.get("coupon_world", True):
+            extra_map["bass"].append("--coupon-world")
         # 寻宝的骰子当天不用就作废，跟着每日奖励一起投掉
         args.xunbao = args.xunbao or bool(pol.get("xunbao", True))
         args.xunbao_tasks = args.xunbao_tasks or bool(pol.get("xunbao_tasks", True))

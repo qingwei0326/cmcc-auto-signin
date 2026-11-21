@@ -49,6 +49,7 @@ from cmcc_sign import (
     notify,
     save_activity_session,
 )
+from common import emit_result, record_award
 
 log = logging.getLogger("cmcc_seckill")
 
@@ -156,6 +157,28 @@ def acquire_session_with_retry(cfg: Config, deadline: float,
 def save_session(s, referer: str, cfg: Config = None) -> None:
     """把活动会话 cookie + referer 存下来，之后可脱离 app_token 复用。"""
     save_activity_session(s, referer, cfg)
+
+
+def record_seckill_prize(resp: dict, cfg: Config, zone: dict) -> str:
+    """把抢到的奖品记进「收获」台账。
+
+    1 元话费券是**无门槛、可直接兑换**的（不是「充 X 元才能用」），
+    所以按 common.classify_award 的口径它属于 kind=fee / need_recharge=false，
+    和「天天大转盘」的话费券一样进控制台的到手收益统计。
+
+    没有这一步的话，秒杀抢到的券在控制台上完全看不见——
+    「收获」页只统计 awards.json 里的流水。
+    """
+    data = resp.get("data") or {}
+    name = str(data.get("prizeName") or (zone.get("prize") or {}).get("name") or "").strip()
+    if not name:
+        return ""
+    try:
+        record_award(getattr(cfg, "phone", "") or "", "每周秒杀", name)
+    except Exception as e:
+        log.warning("登记奖品流水失败: %s", e)
+    log.info("已记入收获：%s", name)
+    return name
 
 
 def load_session(cfg: Config = None):
@@ -323,8 +346,13 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
       但只在 start_srv_ms 前 pre_window_s 秒的窗口内重试。
       窗口太早（比如 --at 设成凌晨而场次在中午）会打几千次请求触发风控，
       所以超窗就放弃并如实报告。
-    - **已开抢**：受 max_attempts 硬上限约束，避免对着已抢空的库存狂打触发风控。
-      被拒后每 2 秒核对一次 leaveStock，为 0 立刻停手。
+    - **已开抢**：受 max_attempts 硬上限约束，避免狂打触发风控。
+      被拒后每 2 秒核对一次 leaveStock 只作观测，**不作为停手理由**。
+
+    ⚠️ leaveStock 归零不代表售罄（2026-11-21 12:36 实测：leaveStock=0.0 时
+    redeem 仍返回 SUCCESS 并真拿到券）。所以本循环不会因为库存为 0 而放弃，
+    只有拿到明确的终态码（SUCCESS / PRIZE_NO_STOCK / ZONE_TODAY_COMPLETE 等）
+    或打满 max_attempts 才收手。
 
     阶段判定用**服务器时间**而非响应码——响应码可能是别的原因导致的失败。
     """
@@ -376,13 +404,11 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
             last_stock_check = now
             stock = query_stock(s, referer, payload["secId"])
             log.info("库存核对: %s", "未知" if stock is None else f"剩 {stock:g}")
-            if stock == 0:
-                return None, "库存已抢完（leaveStock=0），停手"
+            # ⚠️ leaveStock 归零**不能**作为停手理由：2026-11-21 12:36 实测
+            # leaveStock=0.0 时 redeem 仍返回 SUCCESS。留着这个判断只会白丢券。
         time.sleep(interval)
 
     stock = query_stock(s, referer, payload["secId"])
-    if stock == 0:
-        return None, "库存已抢完（leaveStock=0）"
     if stock is None:
         return None, f"连续 {max_attempts} 发未中（库存未知）"
     return None, f"连续 {max_attempts} 发未中（剩余库存 {stock:g}）"
@@ -423,7 +449,8 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         et = datetime.fromtimestamp(int(z["endTime"]) / 1000, TZ_CN)
         prize = z.get("prize") or {}
         stock = prize.get("leaveStock")
-        stock_txt = "未知" if stock is None else (f"剩 {stock:g}" if stock else "已抢完")
+        # leaveStock 归零不等于售罄（2026-11-21 实测），所以文案别写「已抢完」
+        stock_txt = "未知" if stock is None else f"剩 {stock:g}"
         log.info("  场次%s %s ~ %s  %s (prizeId=%s, 库存%s)",
                  z["id"], st.strftime("%m-%d %H:%M:%S"), et.strftime("%H:%M:%S"),
                  prize.get("name"), prize.get("id"), stock_txt)
@@ -442,15 +469,21 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
                   f"今日已抢到，无需重复抢购\n手机尾号 {cfg.phone[-4:]}")
         log.info("本场已抢到（prize.status=1），无需再抢")
         notify(cfg, "移动秒杀：今日已抢到", detail)
+        # 已经抢到过了，也要把这张券补记进「收获」台账
+        record_seckill_prize({"data": {"prizeName": zone["prize"]["name"]}}, cfg, zone)
+        emit_result({"plat": "seckill", "token": "ok", "success": True,
+                     "last_reward": zone["prize"]["name"], "flow_mb": 0.0})
         return 0
 
     # 开抢前先看库存：没货就不补签也不打 redeem，白费请求还容易被风控
+    #
+    # ⚠️ 实测修正（2026-11-21 12:36）：**leaveStock==0 不等于「券已被抢完」**。
+    # 当时 4167 的 leaveStock 已经是 0.0，redeem 依然返回 SUCCESS 并真拿到券。
+    # leaveStock 更像是「服务端当轮剩余概率/权重」，会归零但**不代表本号抢不到**。
+    # 真正判断「本号已中过」的是 prize.status == "1"（上面已判）。
+    # 所以这里绝不能因为 leaveStock 为 0 就放弃——那会让明天直接白丢一张券。
     if (zone.get("prize") or {}).get("leaveStock") == 0:
-        reason = "选定场次库存已为 0（已被抢完），不发起抢购"
-        log.warning("秒杀未成功: %s", reason)
-        notify(cfg, "移动秒杀未成功",
-               f"{reason}\n场次 {st.strftime('%m-%d %H:%M')} {zone['prize']['name']}\n手机尾号 {cfg.phone[-4:]}")
-        return 1
+        log.info("leaveStock 为 0，但这不等于售罄（2026-11-21 实测 leaveStock=0 仍能中奖），继续出手")
 
     eligible = ensure_eligible(s, referer, cfg)
     log.info("秒杀资格（当日签到）: %s", "已具备" if eligible else "未获取！")
@@ -478,7 +511,10 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         log.info("单发响应: %s", json.dumps(resp, ensure_ascii=False))
         ok = resp.get("code") == "SUCCESS"
         if ok:
-            notify(cfg, "移动秒杀成功", f"{zone['prize']['name']}\n手机尾号 {cfg.phone[-4:]}")
+            name = record_seckill_prize(resp, cfg, zone)
+            notify(cfg, "移动秒杀成功", f"{name or zone['prize']['name']}\n手机尾号 {cfg.phone[-4:]}")
+            emit_result({"plat": "seckill", "token": "ok", "success": True,
+                         "last_reward": name or zone["prize"]["name"], "flow_mb": 0.0})
         return 0 if ok else 1
 
     if not eligible:
@@ -496,7 +532,10 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         detail = (f"{zone['prize']['name']}\n场次 {st.strftime('%m-%d %H:%M')}，"
                   f"请去 App「我的奖品」核销\n手机尾号 {cfg.phone[-4:]}")
         log.info("秒杀成功！%s", zone["prize"]["name"])
+        record_seckill_prize(resp or {}, cfg, zone)
         notify(cfg, "移动秒杀成功 🎉", detail)
+        emit_result({"plat": "seckill", "token": "ok", "success": True,
+                     "last_reward": zone["prize"]["name"], "flow_mb": 0.0})
         return 0
 
     if resp is not None and resp.get("status") == "ZONE_TODAY_COMPLETE":
@@ -504,6 +543,10 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
                   f"今日已完成中奖，无需重复抢购\n手机尾号 {cfg.phone[-4:]}")
         log.info("今日已完成中奖，无需重复抢购")
         notify(cfg, "移动秒杀：今日已抢到", detail)
+        # 之前已经抢到过（本次没参与），也该在收获里看到这张券
+        record_seckill_prize(resp or {}, cfg, zone)
+        emit_result({"plat": "seckill", "token": "ok", "success": True,
+                     "last_reward": zone["prize"]["name"], "flow_mb": 0.0})
         return 0
 
     detail = f"{reason}\n场次 {st.strftime('%m-%d %H:%M')} {zone['prize']['name']}\n手机尾号 {cfg.phone[-4:]}"

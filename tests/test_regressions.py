@@ -1352,6 +1352,27 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             self.assertEqual(args[1], "游戏币")
             self.assertEqual(args[2], "100MB流量日包券")
 
+    def test_record_award_allow_dup(self):
+        """抽奖一次中多张相同奖品时，每张都要记；默认仍按分钟去重。"""
+        import common
+        with tempfile.TemporaryDirectory() as td:
+            real = common.AWARDS_FILE
+            common.AWARDS_FILE = Path(td) / "awards.json"
+            try:
+                for _ in range(3):
+                    common.record_award("13900005678", "游戏币", "2元话费加赠券")
+                st = json.loads(common.AWARDS_FILE.read_text(encoding="utf-8"))
+                self.assertEqual(len(st["records"]), 1, "默认应去重")
+
+                common.AWARDS_FILE.unlink()
+                for _ in range(3):
+                    common.record_award("13900005678", "游戏币", "2元话费加赠券",
+                                        allow_dup=True)
+                st = json.loads(common.AWARDS_FILE.read_text(encoding="utf-8"))
+                self.assertEqual(len(st["records"]), 3, "allow_dup 应全部记账")
+            finally:
+                common.AWARDS_FILE = real
+
     def test_xtoken_fallback_extracts_qwhd_token(self):
         """HAR 里没有 appTokenLogin 时，用请求头的 x-token 兜底。
 

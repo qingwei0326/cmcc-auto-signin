@@ -533,11 +533,11 @@ select.inp{cursor:pointer}
             <label style="min-width:auto">邮箱</label><input class="inp" id="mUser" placeholder="you@gmail.com" style="min-width:230px">
             <label style="min-width:auto">应用专用密码</label><input class="inp" id="mPass" type="password" placeholder="16 位授权码" style="min-width:180px"></div>
           <div class="frow"><label>邮箱类型</label>
-            <select class="inp" id="mProvider" onchange="mailProvider()" style="min-width:110px">
-              <option value="gmail">Gmail</option><option value="qq">QQ邮箱</option><option value="163">163邮箱</option>
+            <select class="inp" id="mProvider" onchange="mailProvider()" style="min-width:130px">
+              <option value="qq">QQ邮箱（推荐）</option><option value="163">163邮箱</option><option value="gmail">Gmail（不推荐，需 OAuth2）</option>
             </select>
             <label style="min-width:auto">IMAP</label>
-            <input class="inp" id="mHost" value="imap.gmail.com" style="min-width:170px">
+            <input class="inp" id="mHost" value="imap.qq.com" style="min-width:170px">
             <label style="min-width:auto">端口</label><input class="inp" id="mPort" type="number" value="993" style="min-width:80px">
             <label style="min-width:auto">标题含</label><input class="inp" id="mKeyword" value="HAR" style="min-width:90px"></div>
           <div class="frow"><label>允许的发件人</label>
@@ -1264,7 +1264,7 @@ function renderMail(){
   if(!MAIL_ONCE){
     MAIL_ONCE=true;
     $('mEnabled').checked=!!m.enabled;
-    $('mProvider').value=m.provider||'gmail';
+    $('mProvider').value=m.provider||'qq';
     $('mUser').value=m.user||'';
     $('mPass').value='';                 // 不回显密码，留空=沿用已存的
     $('mHost').value=m.host||'imap.gmail.com';

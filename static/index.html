@@ -913,8 +913,10 @@ function renderLuck(){
         <td>${p.life?p.life+' 天':''}</td></tr>`;
     }).join('');
     const summary=(a.last_draws!=null)?`　上次抽 ${a.last_draws} 次，中 ${a.last_wins||0} 次`:'';
+    const today=todayLocal();
+    const daySum=(a.day===today&&a.day_draws)?`　<b>今日抽 ${a.day_draws} 次，中 ${a.day_wins||0} 次</b>`:'';
     return `<div style="margin-top:14px">
-      <div class="fbhead">${esc(k)} · ${a.phone?mask(a.phone):''}　剩余次数 <b>${a.surplus!=null?a.surplus:'—'}</b>${summary}　<code>${esc(a.updated||'')}</code></div>
+      <div class="fbhead">${esc(k)} · ${a.phone?mask(a.phone):''}　剩余次数 <b>${a.surplus!=null?a.surplus:'—'}</b>${daySum}${summary}　<code>${esc(a.updated||'')}</code></div>
       ${ps.length?`<table class="fbtab"><thead><tr><th style="width:110px">时间</th><th>奖品</th><th style="width:90px">有效期</th></tr></thead><tbody>${rows}</tbody></table>`:''}
     </div>`;
   }).join('');

@@ -88,3 +88,59 @@ class TestLedger(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLuckDayCounter(unittest.TestCase):
+    """一天跑几轮时，抽奖次数要按天累加，并和「中了几次」分开。
+
+    用户看到程序跑了 3 次、界面只写「抽 0 次」会以为数字错了，
+    所以这里把 3239 那种「跑了两轮、第二轮剩 0 次」的场景钉住。
+    """
+
+    def setUp(self):
+        import cmcc_luck
+        self.L = cmcc_luck
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "luck_state.json"
+        self.patches = [mock.patch.object(cmcc_luck, "STATE_FILE", self.path)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def _state(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def test_counts_accumulate_same_day(self):
+        self.L.save_state("184****3239", {"surplus": 0}, draws=2, wins=1)
+        self.L.save_state("184****3239", {"surplus": 0}, draws=1, wins=0)
+        st = self._state()["3239"]
+        self.assertEqual(st["day_draws"], 3)
+        self.assertEqual(st["day_wins"], 1)
+
+    def test_second_run_with_zero_draws_keeps_total(self):
+        self.L.save_state("184****3239", {"surplus": 0}, draws=2, wins=1)
+        self.L.save_state("184****3239", {"surplus": 0})   # 第三轮没次数可抽
+        st = self._state()["3239"]
+        self.assertEqual(st["day_draws"], 2)
+        self.assertEqual(st["day_wins"], 1)
+
+    def test_counters_reset_next_day(self):
+        class D1:
+            @staticmethod
+            def now():
+                return datetime(2026, 11, 20, 12, 0)
+        class D2:
+            @staticmethod
+            def now():
+                return datetime(2026, 11, 21, 12, 0)
+        with mock.patch.object(self.L, "datetime", D1):
+            self.L.save_state("184****3239", {}, draws=2, wins=1)
+        with mock.patch.object(self.L, "datetime", D2):
+            self.L.save_state("184****3239", {})
+        st = self._state()["3239"]
+        self.assertEqual(st["day"], "2026-11-21")
+        self.assertEqual(st["day_draws"], 0)

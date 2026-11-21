@@ -127,14 +127,27 @@ def collect_targets(key=None):
     return out
 
 
-def save_state(phone, info):
-    """多账号共用一份文件，读-改-写要加跨进程锁，否则并发跑号会互相覆盖。"""
+def save_state(phone, info, draws=0, wins=0):
+    """多账号共用一份文件，读-改-写要加跨进程锁，否则并发跑号会互相覆盖。
+
+    draws/wins 是**当天累计**（含「谢谢参与」），跨天自动归零。
+    不记这个就没法和手厅里的「已抽次数」对账：一天跑三轮、只中一次时，
+    界面上只写「抽 0 次」会让人怀疑数字是错的。
+    """
     key = (phone or "unknown").replace("*", "")[-4:] or "unknown"
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    today = datetime.now().strftime("%Y-%m-%d")
 
     def mutate(st):
         acc = st.setdefault(key, {})
         acc.update(info)
+        if acc.get("day") != today:
+            acc["day"] = today
+            acc["day_draws"] = 0
+            acc["day_wins"] = 0
+        if draws or wins:
+            acc["day_draws"] = int(acc.get("day_draws") or 0) + int(draws)
+            acc["day_wins"] = int(acc.get("day_wins") or 0) + int(wins)
         acc["updated"] = stamp
 
     try:
@@ -244,7 +257,7 @@ def run_one(tag, phone_hint, tok, args):
     # 否则界面上「最近抽到」会莫名其妙变没。
     if prizes:
         info.update({"last_prizes": prizes, "last_draws": len(prizes), "last_wins": wins})
-    save_state(phone, info)
+    save_state(phone, info, draws=len(prizes), wins=wins)
     print(f"  小计：抽 {len(prizes)} 次，中 {wins} 次")
     return {"tag": tag, "phone": phone, "surplus": int(final.get("surplusLuckCount") or 0),
             "draws": len(prizes), "wins": wins, "failed": failed}

@@ -316,6 +316,19 @@ def parse_qwhd_output(key: str, text: str):
     _parse_qwhd_legacy(key, text)
 
 
+def parse_seckill_output(key: str, text: str):
+    """秒杀结果解析：只取奖品名，填进「最近奖品」。
+
+    真正的收益统计走 common.record_award（脚本自己写 awards.json），
+    这里只负责让账号卡片上的「最近奖品」也显示秒杀券。
+    """
+    r = parse_result(text)
+    if not r or r.get("plat") != "seckill":
+        return
+    if r.get("last_reward"):
+        update_stats(key, last_reward=r["last_reward"])
+
+
 def _parse_qwhd_legacy(key: str, text: str):
     """兜底：旧版脚本没有 @@RESULT 行时，仍按日志文案解析。"""
     upd = {}
@@ -830,6 +843,18 @@ def do_action(body: dict):
             cmd += ["--max", str(body["max"])]
         return _start("优惠专区抽奖", cmd)
 
+    if act == "xunbao_run":
+        cmd = py("cmcc_xunbao.py")
+        if body.get("key"):
+            cmd += ["--key", str(body["key"])]
+        if body.get("dry"):
+            cmd.append("--dry-run")
+        if body.get("tasks"):
+            cmd.append("--tasks")
+        if body.get("max"):
+            cmd += ["--max", str(body["max"])]
+        return _start("环闽寻宝记", cmd)
+
     if act == "seckill_run":
         f = safe_conf_path(body.get("file"))
         if f is None or not f.is_file():
@@ -844,7 +869,8 @@ def do_action(body: dict):
             cmd.append("--once")
         elif at:
             cmd += ["--at", at]
-        return _start(f"秒杀抢券 · {f.stem}", cmd)
+        return _start(f"秒杀抢券 · {f.stem}", cmd,
+                      parser=(parse_seckill_output, f.stem))
 
     if act == "games_run":
         f = safe_conf_path(body.get("file"))
@@ -984,6 +1010,9 @@ def do_action(body: dict):
         }}
         # 转盘免费次数当天清零，默认开；界面勾掉才不自动抽
         patch["luck"] = bool(body.get("luck", True))
+        # 寻宝骰子同样当天作废；任务上报只涉及「参与天天大转盘」这类真做过的
+        patch["xunbao"] = bool(body.get("xunbao", True))
+        patch["xunbao_tasks"] = bool(body.get("xunbao_tasks", True))
         xxl = body.get("xxl")
         if isinstance(xxl, dict):
             try:
@@ -1141,6 +1170,7 @@ def build_state():
         "flowbank": _load_json_safe(DATA / "flowbank_state.json"),
         "daily": _load_json_safe(DATA / "daily_state.json"),
         "luck": _load_json_safe(DATA / "luck_state.json"),
+        "xunbao": _load_json_safe(DATA / "xunbao_state.json"),
         "awards": _awards_view(),
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
@@ -1157,8 +1187,8 @@ def _awards_view(limit=40) -> dict:
     """到账台账：只挑「到手可用」的，按天/按号汇总给前端。
 
     用户的原话是「别让我看喂了几次，就告诉我今天到手多少流量」，
-    所以这里的口径是**实际到手的流量 + 能直接兑换的话费券**，
-    要充值才生效的券只计数、不进列表。
+    所以这里的口径是**实际到手的流量 + 无门槛可直接兑换的话费券**。
+    有门槛的券（充值/满减/手气红包）只计数、不进列表、不计入张数。
     """
     try:
         import common as C
@@ -1170,6 +1200,8 @@ def _awards_view(limit=40) -> dict:
     recs = C.load_awards()          # 新的在前
     recent, seen = [], {}
     for r in recs:
+        if r.get("ignored"):
+            continue                 # 话费型手气红包：用户要求直接不显示
         # 同一秒同一奖品的重复登记（多账号/重复读接口）只留一条
         sig = (r.get("at"), r.get("account"), r.get("name"))
         if sig in seen:
@@ -1182,26 +1214,34 @@ def _awards_view(limit=40) -> dict:
             break
 
     def agg(prefix):
-        flow, fee, recharge = 0.0, 0, 0
+        flow, fee, recharge, yuan, th_yuan = 0.0, 0, 0, 0.0, 0.0
         for r in recs:
             if not str(r.get("at", "")).startswith(prefix):
                 continue
+            if r.get("ignored"):
+                continue             # 话费型手气红包：不计入任何数字
+            amt = float(r.get("yuan") or 0)
             if r.get("need_recharge"):
                 recharge += 1
+                th_yuan += amt
                 continue
             if r.get("kind") == "flow":
                 flow += float(r.get("size_mb") or 0)
             elif r.get("kind") == "fee":
                 fee += 1
-        return {"flow_mb": round(flow, 1), "fee_count": fee, "recharge_count": recharge}
+                yuan += amt
+        return {"flow_mb": round(flow, 1), "fee_count": fee, "fee_yuan": round(yuan, 2),
+                "recharge_count": recharge, "recharge_yuan": round(th_yuan, 2)}
 
     by = {}
     by_day = {}
+    fee_day = {}          # 日期 → 当天拿到的无门槛话费券张数（给「本月已得话费」画迷你趋势）
     for r in recs:
-        if not str(r.get("at", "")).startswith(month) or r.get("need_recharge"):
+        if (not str(r.get("at", "")).startswith(month)
+                or r.get("need_recharge") or r.get("ignored")):
             continue
         tail = str(r.get("account") or "")[-4:] or "?"
-        b = by.setdefault(tail, {"flow_mb": 0.0, "fee_count": 0, "last": ""})
+        b = by.setdefault(tail, {"flow_mb": 0.0, "fee_count": 0, "fee_yuan": 0.0, "last": ""})
         if r.get("kind") == "flow":
             b["flow_mb"] = round(b["flow_mb"] + float(r.get("size_mb") or 0), 1)
             d = str(r.get("at", ""))[:10]
@@ -1209,11 +1249,26 @@ def _awards_view(limit=40) -> dict:
             dd[d] = round(dd.get(d, 0) + float(r.get("size_mb") or 0), 1)
         elif r.get("kind") == "fee":
             b["fee_count"] += 1
+            b["fee_yuan"] = round(b["fee_yuan"] + float(r.get("yuan") or 0), 2)
+            d = str(r.get("at", ""))[:10]
+            fee_day[d] = fee_day.get(d, 0) + 1
         if not b["last"]:
             b["last"] = r.get("name") or ""
 
+    usable_fee = [r for r in recs
+                  if r.get("kind") == "fee" and not r.get("need_recharge")]
     return {"recent": recent, "today": agg(today), "month": agg(month),
-            "by_account": by, "by_day": by_day}
+            "by_account": by, "by_day": by_day, "fee_day": fee_day,
+            # 历史累计：话费券张数 + 合计面额（只算无门槛可直接兑换的）
+            "fee_total": len(usable_fee),
+            "fee_yuan_total": round(sum(float(r.get("yuan") or 0) for r in usable_fee), 2),
+            # 本月有门槛的券明细（只有名字）：列表里不出现，但要让用户知道「哪张券不算」
+            # 话费型手气红包（ignored）连这里也不出现——用户要求直接不显示
+            "month_threshold": [{"name": r.get("name") or "", "at": r.get("at") or "",
+                                 "yuan": float(r.get("yuan") or 0)}
+                                for r in recs
+                                if str(r.get("at", "")).startswith(month)
+                                and r.get("need_recharge") and not r.get("ignored")]}
 
 
 def _list_token_life() -> list:

@@ -327,6 +327,17 @@ select.inp{cursor:pointer}
           </div>
           <div id="luckBox"></div>
         </div>
+        <div class="panel">
+          <h3>环闽寻宝记 <span class="hint">投骰子走棋盘，到终点开藏宝阁</span></h3>
+          <div class="infobox">骰子当天不用就作废。点「投掉现有骰子」会先把「参与天天大转盘」这类
+            真做过的任务报掉换骰子，再一路投到没骰子为止；走到第 29 格会自动开宝箱。
+            <b>好友助力不会代报</b>（那个得真有好友点链接）。中奖直接进上面的到账台账。</div>
+          <div class="frow">
+            <button class="btn pri" onclick="act({action:'xunbao_run'},()=>setTimeout(pullState,3000))">投掉现有骰子</button>
+            <button class="btn" onclick="act({action:'xunbao_run',dry:1},()=>setTimeout(pullState,2500))">只查进度</button>
+          </div>
+          <div id="xunbaoBox"></div>
+        </div>
       </div>
 
       <!-- 福建活动 -->
@@ -361,6 +372,7 @@ select.inp{cursor:pointer}
             </select></div>
           <div class="frow"><label>天天大转盘</label>
             <label class="chk" title="福建移动「优惠专区 · 天天大转盘」每天有免费次数，当天不用就清零"><input type="checkbox" id="pLuck">自动把免费次数抽完</label>
+            <label class="chk" title="环闽寻宝记：骰子当天不用就作废，顺带投掉"><input type="checkbox" id="pXunbao">自动投掉寻宝骰子</label>
             <span style="font-size:12px;color:var(--sub)">跟每日奖励同一次运行，只花已有次数，不替你做加次数任务</span>
           </div>
           <div class="frow"><label style="color:var(--warn)">伪造类</label>
@@ -824,6 +836,7 @@ function render(){
   renderFlowbank();
   renderDaily();
   renderLuck();
+  renderXunbao();
   renderPolicy();
   renderTodo();
   renderSkWindow();
@@ -947,6 +960,32 @@ function renderLuck(){
     </div>`;
   }).join('');
 }
+function renderXunbao(){
+  const box=$('xunbaoBox'); if(!box)return;
+  const xb=STATE.xunbao||{};
+  const keys=Object.keys(xb);
+  if(!keys.length){
+    box.innerHTML='<div class="empty">还没有记录。点「只查进度」看走到第几格。</div>';
+    return;
+  }
+  const today=todayLocal();
+  box.innerHTML=keys.map(k=>{
+    const a=xb[k]||{};
+    const seq=a.seq||0, total=a.total||29;
+    const pct=total?Math.min(100,Math.round(seq/total*100)):0;
+    const daySum=(a.day===today&&a.day_rolls)?`　<b>本程序今日投 ${a.day_rolls} 次，中 ${a.day_prizes||0} 个</b>`:'';
+    const ps=(a.last_prizes||[]);
+    const tasks=(a.tasks||[]);
+    const taskTxt=tasks.length?`　任务：${tasks.filter(t=>!t.done).map(t=>t.name).join('、')||'全完成'}`:'';
+    return `<div style="margin-top:14px">
+      <div class="fbhead">${esc(k)} · ${a.phone?mask(a.phone):''}　进度 <b>第 ${seq}/${total} 格</b>　骰子 <b>${a.dice!=null?a.dice:'—'}</b>${a.treasure_claim_required?'　★ 宝箱待开':''}${daySum}　<code>${esc(a.updated||'')}</code></div>
+      <div style="height:6px;border-radius:3px;background:var(--line);margin:8px 0 4px">
+        <div style="height:6px;border-radius:3px;width:${pct}%;background:var(--ok)"></div></div>
+      <div style="color:var(--sub);font-size:12px">${taskTxt}</div>
+      ${ps.length?`<table class="fbtab"><thead><tr><th>最近到手</th></tr></thead><tbody>${ps.map(n=>`<tr><td>${esc(n)}</td></tr>`).join('')}</tbody></table>`:''}
+    </div>`;
+  }).join('');
+}
 // 每日奖励：下一档可领时间 = 上一个已领档时间 + 该档间隔
 function nextDailyTime(tiers){
   const cur=tiers.find(t=>t.current&&t.status!=='RECEIVED');
@@ -1060,6 +1099,7 @@ function renderPolicy(){
     $('pTasks').checked=!!b.tasks;
     $('pFb').checked=!!b.fb_tasks;
     if($('pLuck'))$('pLuck').checked=(p.luck!==false);
+    if($('pXunbao'))$('pXunbao').checked=(p.xunbao!==false);
     const x=p.xxl||{};
     if($('xLevel'))$('xLevel').value=(x.level!=null?x.level:49);
     if($('xStar'))$('xStar').value=(x.star!=null?x.star:3);
@@ -1086,6 +1126,7 @@ function feedAllToggle(p){
 async function savePolicy(){
   const body={action:'policy_save',
     luck:($('pLuck')?$('pLuck').checked:true),
+    xunbao:($('pXunbao')?$('pXunbao').checked:true),
     bass:{feed:$('pFeedAll').checked?0:(Number(V('pFeed'))||0),
           feed_all:$('pFeedAll').checked,
           feed_hour:Number(V('pFeedHour'))||0,

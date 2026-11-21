@@ -34,4 +34,6 @@ if _common is not None:
     # 不隔离的话每跑一次测试就往用户真实台账里塞几条「游戏币 话费券」，
     # 而且 account 是空的（测试没有账号上下文），看着像脏数据。
     _common.AWARDS_FILE = Path(_TMP) / "awards.json"
+    # 掼蛋机器人自己的日志也别写进项目 logs/
+    os.environ["CMCC_GUANDAN_LOG"] = str(Path(_TMP) / "guandan_bot.log")
     _common.NOTIFY_STATE_FILE = Path(_TMP) / "notify_state.json"

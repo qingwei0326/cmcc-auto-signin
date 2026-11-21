@@ -106,6 +106,8 @@ def parse_har_text(text):
 
     qwhd = {}
     bass = None
+    guandan = None
+    saw_migu = False
     mobiles = set()
     # x-token 兜底：APP 已登录时不再发 appTokenLogin，但每个 wx.10086.cn 请求
     # 都带 x-token 头，里面就是同一张 App 票据（JSESSIONID=..; UID=..; ticketID=..）
@@ -159,6 +161,36 @@ def parse_har_text(text):
 
         # ---- 响应里的 ticketID 时刻 = 票据签发时间 ----
 
+        # ---- 咪咕掼蛋：POST api/login 的 cat 就是游戏 token ----
+        if "migufun.com" in url:
+            saw_migu = True
+        if "gd-api.migufun.com/api/login" in url:
+            raw = (req.get("postData") or {}).get("text") or ""
+            cat = ""
+            if raw.strip().startswith("{"):
+                try:
+                    cat = str(json.loads(raw).get("cat") or "")
+                except Exception:
+                    cat = ""
+            info = {}
+            rtxt = str(((e.get("response") or {}).get("content") or {}).get("text") or "")
+            if rtxt.strip().startswith("{"):
+                try:
+                    info = json.loads(rtxt).get("data") or {}
+                except Exception:
+                    info = {}
+            if cat.startswith("ANDTYZ"):
+                cand = {"cat": cat, "uid": info.get("mid") or None,
+                        "u": info.get("u") or "", "expire": info.get("tokenExpire") or 0,
+                        "ts": ts, "phone_mask": ""}
+                try:
+                    ext = json.loads(info.get("ext") or "{}")
+                    cand["phone_mask"] = str(ext.get("msisdn") or "")
+                except Exception:
+                    pass
+                if guandan is None or cand["expire"] >= (guandan.get("expire") or 0):
+                    guandan = cand
+
         # ---- BASS ----
         auth = hdr.get("authorization", "")
         if auth.lower().startswith("bearer ") and any(h in url for h in BASS_HOSTS):
@@ -179,7 +211,7 @@ def parse_har_text(text):
             mobiles.add(phone)
 
     return {"qwhd": qwhd, "bass": bass, "mobiles": sorted(mobiles),
-            "masked": masked_hint}
+            "masked": masked_hint, "guandan": guandan, "saw_migu": saw_migu}
 
 
 def _read_json(path):
@@ -366,6 +398,23 @@ def apply(text, key=None):
                 report.append(f"✗ BASS 实测不可用（token 已过期），请重新抓包")
     else:
         report.append("BASS 无可用 token（未找到 wap.fj.10086.cn 的 Authorization: Bearer）")
+
+    # ---- 咪咕掼蛋写 gui_data/guandan_auth.json ----
+    if p.get("guandan"):
+        g = p["guandan"]
+        out = BASE / "gui_data" / "guandan_auth.json"
+        old = _read_json(out)
+        # device/seat 是本机状态，抓包里没有，别覆盖掉
+        merged = dict(old)
+        merged.update({k: v for k, v in g.items() if k != "ts"})
+        merged.setdefault("device", "00-00-00-00")
+        merged["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _write_json(out, merged)
+        left = ((g.get("expire") or 0) / 1000.0 - time.time()) / 86400.0
+        tag = f"约 {left:.1f} 天" if g.get("expire") else "有效期未知"
+        report.append(f"掼蛋 cat {g['cat'][:16]}… → gui_data/guandan_auth.json（{tag}）")
+    elif p.get("saw_migu"):
+        report.append("掼蛋 抓包里没有 gd-api.migufun.com/api/login 请求，拿不到 cat")
 
     report.extend(_verify(report))
     return report

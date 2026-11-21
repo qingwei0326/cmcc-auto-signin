@@ -449,10 +449,36 @@ def frame_list():
                    "vals": [1, GD_MATCH, 2, OpGm["List"], 3, 0, 18, [0, 1]]})
 
 
-def frame_ready(match_id=6):
-    """准备/加入匹配。"""
+def frame_query():
+    """查询报名/匹配状态（OpRise.Query）。进桌前先探一下。"""
     return _frame({"req": MSG_GAME,
-                   "vals": [1, GD_MATCH, 2, OpGm["Rise"], 3, match_id, 18, [0, 1]]})
+                   "vals": [1, GD_MATCH, 2, OpGm["Rise"], 3, 6, 18, [0, 1]]})
+
+
+def frame_sign(match_id, flag=0):
+    """报名（OpRise.Sign）。"""
+    return _frame({"req": MSG_GAME,
+                   "vals": [1, GD_MATCH, 2, OpGm["Rise"], 3, 2,
+                            4, match_id, 5, flag, 18, [0, 3]]})
+
+
+def frame_lock(flag=0):
+    """锁房（OpRise.Lock）。"""
+    return _frame({"req": MSG_GAME,
+                   "vals": [1, GD_MATCH, 2, OpGm["Rise"], 3, 13,
+                            4, flag, 18, [0, 2]]})
+
+
+def frame_leave(reason=2):
+    return _frame({"req": MSG_GAME,
+                   "vals": [1, GD_MATCH, 2, OpGm["Leave"], 3, reason, 18, [0, 1]]})
+
+
+def frame_trustee(on=1):
+    """托管开关（断线/超时兜底）。"""
+    return _frame({"req": MSG_GAME,
+                   "vals": [1, GD_MATCH, 2, OpGm["Game"], 3, OpGd["Trustee"],
+                            4, on, 18, [1, 2]]})
 
 
 def frame_join(uid, room, match_id, table, seat=0):

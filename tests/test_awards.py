@@ -153,6 +153,19 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(v["by_account"]["1234"]["flow_mb"], 1024.0)
         self.assertIn(datetime.now().strftime("%Y-%m-%d"), v["by_day"]["1234"])
 
+    def test_paid_pack_hidden_from_view_and_totals(self):
+        """「3元5GB日包」要花 3 元：不进明细、不进「本月已得流量」、也不进有门槛清单。"""
+        C.record_award("13800001234", "天天大转盘", "1GB流量日包")
+        C.record_award("13800001234", "天天大转盘", "3元5GB日包")
+        v = D._awards_view()
+        names = [r["name"] for r in v["recent"]]
+        self.assertIn("1GB流量日包", names)
+        self.assertNotIn("3元5GB日包", names, "付费流量包不该出现在台账列表里")
+        self.assertEqual(v["month"]["flow_mb"], 1024.0, "只算白拿的 1GB")
+        self.assertNotIn("3元5GB日包", [x["name"] for x in v["month_threshold"]])
+        self.assertEqual(v["by_account"]["1234"]["flow_mb"], 1024.0)
+        self.assertEqual(v["month"]["fee_count"], 0, "3 元是售价，不是话费券面额")
+
     def test_view_splits_by_platform(self):
         """一个号两张卡：福建寻宝中的流量不能同时出现在「全国签到」卡上。"""
         C.record_award("13800001234", "环闽寻宝", "7GB流量券包")
@@ -271,6 +284,8 @@ class TestPaidCoupon(unittest.TestCase):
     环闽寻宝的落点奖里就有这种付费券包（15元购10GB、13元购30GB），
     按老规则会被 parse_size_mb 读成 10GB 算进「今日已得流量」，
     等于把要花钱的东西记成白拿的，用户一对账就会发现数字虚高。
+    2026-11-22 转盘又抽到「3元5GB日包」，同样是**要先花 3 块钱**的流量包，
+    名字里没有「购」字，所以还要认「N元 + 流量」这个开头（用户要求不计入）。
     """
 
     def test_pay_to_buy_flow_not_counted(self):
@@ -278,6 +293,28 @@ class TestPaidCoupon(unittest.TestCase):
         self.assertEqual(c["size_mb"], 0.0)
         self.assertTrue(c["need_recharge"])
         self.assertEqual(c["yuan"], 0.0)       # 15 是售价，不是券面额
+        self.assertTrue(c["ignored"])          # 不显示、不计入
+
+    def test_price_prefix_flow_pack_ignored(self):
+        """「3元5GB日包」= 花 3 元买的日包，不能算 5GB 到手流量。"""
+        for name in ("3元5GB日包", "3元5G日包", "10元20GB流量包"):
+            c = C.classify_award(name)
+            self.assertEqual(c["size_mb"], 0.0, name)
+            self.assertEqual(c["yuan"], 0.0, name)
+            self.assertTrue(c["ignored"], name)
+
+    def test_fee_coupon_with_price_not_treated_as_pack(self):
+        """「1元话费券」开头的 1 元是**券面额**，不是售价，要照常计入。"""
+        c = C.classify_award("1元话费券")
+        self.assertEqual(c["kind"], "fee")
+        self.assertEqual(c["yuan"], 1.0)
+        self.assertFalse(c["ignored"])
+        self.assertFalse(c["need_recharge"])
+
+    def test_zero_yuan_pack_is_free(self):
+        c = C.classify_award("0元5GB日包")
+        self.assertEqual(c["size_mb"], 5120.0)
+        self.assertFalse(c["ignored"])
 
     def test_free_flow_pack_still_counted(self):
         c = C.classify_award("7GB流量券包")

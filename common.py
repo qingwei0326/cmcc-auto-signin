@@ -227,9 +227,36 @@ THRESHOLD_WORDS = ("充值", "满", "首充", "续费", "开通", "办理", "门
 RECHARGE_WORDS = THRESHOLD_WORDS      # 旧名，保留兼容已有调用
 REDPACKET_WORD = "手气红包"            # 话费型手气红包直接忽略；流量型照常计入
 
-# 「15元购10GB」「13元购30GB」这种是**要先掏钱买**的券包，不是白拿的流量。
-# 名字里带「数字+元+购/办」，就按付费处理：不进「已得流量」，只标成有门槛。
+# 「15元购10GB」「13元购30GB」「3元5G日包」这种是**要先掏钱买**的券包 / 流量包，
+# 不是白拿的流量。按付费处理：不计入「已得流量」，也不进台账明细
+# （用户 2026-11-22：3元5G日包要花钱，所以不计入）。
 PAY_WORDS = ("元购", "元办", "元享", "元升级", "元包", "元/月")
+# 名字以「N元」开头 + 带流量（3元5G日包 / 10元20GB流量包）→ 售价，不是白拿
+PAY_PREFIX_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*元")
+
+
+def is_paid_pack(text, size_mb=None) -> bool:
+    """判断是不是「要先花钱买」的流量包 / 券包。
+
+    - 「15元购10GB流量7天包券」→ 有「元购」
+    - 「3元5G日包」→ 开头就是售价
+    - 「1元话费券」→ 开头也是钱，但那是**话费券面额**，不带流量，不算付费包
+    - 「0元5G日包」→ 免费，照常计入
+    """
+    t = str(text or "")
+    if any(w in t for w in PAY_WORDS):
+        return True
+    m = PAY_PREFIX_RE.match(t)
+    if not m:
+        return False
+    try:
+        price = float(m.group(1))
+    except Exception:
+        return False
+    if price <= 0:
+        return False
+    mb = parse_size_mb(t) if size_mb is None else float(size_mb or 0)
+    return mb > 0 or "流量" in t or "日包" in t or "月包" in t
 
 
 def parse_size_mb(text) -> float:
@@ -263,18 +290,18 @@ def parse_fee_yuan(text) -> float:
 def classify_award(name) -> dict:
     """把奖品名分成 流量 / 话费券 / 折扣券 / 其他，标出门槛、面额、是否直接忽略。
 
-    规则（用户 2026-11-21 定）：
+    规则（用户 2026-11-21 / 22 定）：
     - **话费类「手气红包」**：满额才能抵扣，直接**不算也不显示**（`ignored=True`）
     - **流量类「手气红包」**：照常计入到手流量（流量是无门槛到账的），
       所以流量类判门槛时不看「手气红包」这个词
+    - **要先花钱买的流量包**（3元5G日包、15元购10GB）：东西没白到手，
+      **不算也不显示**（`ignored=True`），面额也记 0（那是售价不是券面额）
     - 其它带「充值 / 满 / 首充 …」的券：算有门槛，只计数不列明细
     """
     t = str(name or "").strip()
     mb = parse_size_mb(t)
-    paid = any(w in t for w in PAY_WORDS)
-    if paid:
-        # 付费券包（15元购10GB…）：东西还没到手，不能计入「已得流量」
-        mb = 0.0
+    paid = is_paid_pack(t, mb)
+    # 先按「名字里写的容量」判类型（付费包也是流量包），再决定要不要计容量
     if mb > 0 and ("流量" in t or "G" in t.upper() or "M" in t.upper() or "包" in t):
         kind = "flow"
     elif "流量" in t:
@@ -285,6 +312,9 @@ def classify_award(name) -> dict:
         kind = "coupon"      # 折扣券/兑换券；need_recharge 会标出哪些要充值
     else:
         kind = "other"
+    if paid:
+        # 付费券包（3元5GB日包 / 15元购10GB…）：还没到手，不能计入「已得流量」
+        mb = 0.0
     words = THRESHOLD_WORDS if kind != "flow" else tuple(
         w for w in THRESHOLD_WORDS if w != REDPACKET_WORD)
     if kind == "fee" and "券包" in t:
@@ -295,7 +325,8 @@ def classify_award(name) -> dict:
             "yuan": 0.0 if paid else parse_fee_yuan(t),
             # 话费型手气红包：不算「到手可用」，也不进台账明细（流量型照常算）
             # 「加赠券」是充值时额外送的，不是到手可用的话费，和话费手气红包一样不显示
-            "ignored": kind == "fee" and (REDPACKET_WORD in t or "加赠" in t)}
+            # 付费流量包（3元5G日包）：要花钱才有，不算到手也不显示
+            "ignored": paid or (kind == "fee" and (REDPACKET_WORD in t or "加赠" in t))}
 
 
 def record_award(account, source, name, url="", size_mb=None, kind=None,
@@ -361,7 +392,10 @@ def load_awards():
         cls = classify_award(r.get("name"))
         r["need_recharge"] = cls["need_recharge"]      # 以当前规则为准（流量红包要改回 False）
         r["ignored"] = cls["ignored"]
-        if not r.get("yuan") and cls["yuan"]:
+        if is_paid_pack(r.get("name")):
+            r["size_mb"] = 0.0                        # 付费包：老流水里存的容量要清掉
+            r["yuan"] = 0.0                           # 那是售价，不是面额
+        elif not r.get("yuan") and cls["yuan"]:
             r["yuan"] = cls["yuan"]                    # 老流水没存面额，读的时候补上
     return out
 
@@ -398,7 +432,7 @@ def daily_report(day_prefix=None):
     """生成「今日战报」：当天到手的东西按账号分组，带流量/话费合计。
 
     口径与 awards_summary 一致：
-      · ignored 的（话费手气红包、话费加赠券）不算数也不列明细；
+      · ignored 的（话费手气红包、话费加赠券、要先花钱买的流量包）不算数也不列明细；
       · 有门槛的券（需充值）只计数，不算进「到手流量/话费」。
     返回 (标题, 正文)。
     """

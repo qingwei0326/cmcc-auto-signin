@@ -27,7 +27,7 @@
 | 福袋 | 每累计喂食 300 次触发 | 随机 |
 | 优惠抽奖 | 转盘，刷任务换次数 | 流量券 / 话费券 |
 | 一起消消乐 | 每次读取真实关卡再上报；自动做金币任务换体力 | 每天约 5 点体力 + 金币兑换 |
-| 咪咕掼蛋 | 协议已逆向（登录卡在咪咕 SDK 的 `cat` 令牌），可还原牌谱 / 给 AI 出牌建议 | 待接入 |
+| 咪咕掼蛋 | 协议已逆向；牌谱还原 + AI 出牌建议可用，自动打牌卡在登录令牌（`cat` 一次性） | 待接入 |
 
 > 日常只需要双击 `签到控制台.exe`，其余内容都是排查和进阶用。
 
@@ -401,8 +401,11 @@ python cmcc_guandan.py --har <HAR> --playbook    # 还原整副牌谱
 python cmcc_guandan.py --har <HAR> --advise      # 我每一手 vs 引擎建议
 ```
 
-**卡点**：登录要的 `cat` 令牌由咪咕 SDK 在 App 内签发（3 天有效），
-没有任何 HTTP 接口能拿到，所以目前只能「读」不能「打」。
+**卡点**：登录要的 `cat` 令牌由咪咕 SDK 在 App 内签发，抓包外拿不到；
+而且实测抓包 30 分钟后再重放就 `code=132 第三方验证失败`（和伪造值同一个错），
+说明它要么一次性、要么只有几分钟寿命，也可能绑设备。
+`python guandan_bot.py --login-only` 就是用来验证这条链的探针。
+
 牌型规则已用真实对局验证：27 张手牌、对手出 444+222 时，
 引擎给的跟牌与真人完全一致。协议细节见 `docs/guandan.md`。
 
@@ -520,6 +523,7 @@ python pull_token_phone.py --save     # Termux
 ├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
 ├── run_seckill.bat         定时秒杀抢券（11:55 启动，等到 12:00）
 ├── run_games.bat          定时拓展活动（12:05，周六游戏中心抽奖窗口）
+├── run_guandan.bat        定时打掼蛋（需先导入含 api/login 的 HAR）
 ├── run_hidden.py          无窗口启动器（计划任务用它跑 bat，不再闪黑窗口）
 ├── common.py               共用基础设施：原子写、通知、会话、接口调用
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
@@ -532,6 +536,8 @@ python pull_token_phone.py --save     # Termux
 ├── cmcc_wed.py             周三充值日（拼图任务、抽奖、集齐领券）
 ├── cmcc_guandan.py         咪咕掼蛋：抓包还原牌谱、协议组帧、级牌推断
 ├── guandan_rules.py        掼蛋牌型识别/比大小/拆牌/出牌决策
+├── guandan_ws.py           极简 WebSocket 客户端（标准库，不引新依赖）
+├── guandan_bot.py          掼蛋自动打牌：登录链 + 进桌 + 出牌
 ├── har_import.py           从 HAR 提取 qwhdhub + BASS 凭证并写配置
 ├── dashboard.py            图形控制台后端（HTTP API + 任务调度）
 ├── static/index.html       控制台前端页面（打包时由 --add-data 带上）
@@ -735,7 +741,7 @@ python probe_token_life.py --report
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests -v      # 330 个用例，约 14 秒
+python -m unittest discover -s tests -v      # 344 个用例，约 14 秒
 python tests/browser_smoke.py                # 可选：真实浏览器冒烟（需 playwright）
 ```
 

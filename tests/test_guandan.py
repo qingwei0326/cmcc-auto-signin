@@ -17,7 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _guard  # noqa: F401  隔离全局配置
 
 import cmcc_guandan as Q
+import guandan_bot as B
 import guandan_rules as G
+
+B.QUIET = True
 
 
 def mkmsg(flow, obj):
@@ -228,3 +231,136 @@ class FrameBuilderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- 自动打牌
+
+class FakeWS(object):
+    def __init__(self):
+        self.sent = []
+
+    def send_text(self, text):
+        self.sent.append(text)
+
+    def close(self):
+        pass
+
+
+def _kv_of(text):
+    """把帧拆成 {协议字段: 值}，避免在测试里数下标。"""
+    body = json.loads(text.split("~j~", 1)[1])
+    return Q.pairs(body["vals"])
+
+
+class ListParseTest(unittest.TestCase):
+    RAW = json.dumps([
+        [],
+        ["mK261122_460", "中国移动APP全民掼蛋挑战赛 日赛", "11月场日赛第一场", "移动话费赛",
+         "http://a.png|https://b.png", "周期积分累计赛，初始积分0", "00:00-12:00", "免费参赛",
+         "", "https://x.json", "mK261101_459", "1434:1:20001:1000000:1:0", "", "",
+         '{"md": "09/20-12/31"}',
+         "mK261122_461", "中国移动APP全民掼蛋挑战赛 日赛", "11月场日赛第二场", "移动话费赛",
+         "http://a.png", "周期积分累计赛", "12:00-19:00", "免费参赛", "", "https://x.json",
+         "mK261101_459", "", "", '{"md": "09/20-12/31"}'],
+    ], ensure_ascii=False)
+
+    def test_picks_open_session(self):
+        # 只在 00:00-12:00 那一场里选 460（另一场 461 此刻没开）
+        mid = B._pick_from_list(self.RAW)
+        self.assertIn(mid, (460, 461))
+
+    def test_window_regex(self):
+        self.assertEqual(B._parse_window("00:00-12:00"), (0, 720))
+        self.assertEqual(B._parse_window("19:00-24:00"), (1140, 1440))
+        self.assertIsNone(B._parse_window("https://x.json"))
+        self.assertIsNone(B._parse_window(""))
+
+    def test_positions(self):
+        hand = [34, 66, 66, 99]
+        self.assertEqual(B._positions(hand, [66, 99]), [1, 3])
+        self.assertIsNone(B._positions(hand, [46]))
+
+    def test_mask(self):
+        ext = json.dumps({"msisdn": "184****3239"})
+        self.assertEqual(B._mask_of(ext), "184****3239")
+        self.assertEqual(B._mask_of("not json"), "")
+
+
+class BotPlayTest(unittest.TestCase):
+    def make(self, host=2):
+        bot = B.Bot({"cat": "c", "uid": 1, "u": "u"}, host=host)
+        bot.ws = FakeWS()
+        return bot
+
+    def test_lead_when_host_known(self):
+        bot = self.make(host=2)
+        bot.host_ok = True
+        bot.hand = [46, 78, 34, 66, 99, 40]
+        bot.act()
+        self.assertEqual(len(bot.ws.sent), 1)
+        kv = _kv_of(bot.ws.sent[0])
+        self.assertEqual(kv[2], B.OpGm["Game"])
+        self.assertEqual(kv[3], B.OpGd["Action"])
+        self.assertTrue(kv[6], "应该真的出了牌")
+        self.assertLess(len(bot.hand), 6)
+
+    def test_pass_when_host_unknown(self):
+        bot = self.make()
+        bot.host_ok = False
+        bot.hand = [46, 78, 34]
+        bot.last = G.classify([40, 72, 72, 99, 99], 5)
+        bot.act()
+        kv = _kv_of(bot.ws.sent[0])
+        self.assertEqual(kv[5], G.T_PASS)
+        self.assertEqual(kv[6], [])
+
+    def test_lead_lowest_single_when_host_unknown(self):
+        bot = self.make()
+        bot.host_ok = False
+        bot.hand = [46, 78, 99]
+        bot.last = None
+        bot.act()
+        kv = _kv_of(bot.ws.sent[0])
+        self.assertEqual(kv[5], G.T_SINGLE)
+        self.assertEqual(kv[6], [99])                   # ♣3 最小
+
+    def test_on_action_acts_on_my_turn(self):
+        bot = self.make(host=2)
+        bot.host_ok = True
+        bot.hand = [46, 78, 34, 66, 99, 40, 72, 72]
+        # 座 4 出 888+33，下家是 1 号位（我）
+        inner = {2: 18, 3: 10, 4: 1, 5: 0, 6: 4,
+                 7: json.dumps([0, 5, 40, 72, 72, 99, 99, 4, 27, 1, 0, 0, 0, 1, 20000, 0, 0])}
+        bot.on_action(inner)
+        self.assertTrue(bot.ws.sent, "轮到我时应主动出牌")
+        kv = _kv_of(bot.ws.sent[0])
+        self.assertIn(kv[5], (G.T_PASS, G.T_SINGLE, G.T_PAIR, G.T_TRIPLE, G.T_TRIPLE2))
+
+    def test_deal_then_play_removes_cards(self):
+        bot = self.make(host=2)
+        bot.host_ok = True
+        bot.on_deal(DEAL)
+        self.assertEqual(len(bot.hand), 27)
+        bot.on_deal(DEAL)
+        bot.last = None
+        bot.act()
+        self.assertLess(len(bot.hand), 27)
+
+
+class ImportGuandanTest(unittest.TestCase):
+    def test_extract_cat_from_har(self):
+        import har_import
+        har = {"log": {"entries": [
+            {"request": {"url": "https://gd-api.migufun.com/api/login", "method": "POST",
+                         "postData": {"text": json.dumps({"ap": 1001, "mode": 3,
+                                                          "cat": "ANDTYZsidssolg" + "a" * 32})}},
+             "response": {"content": {"text": json.dumps({"success": True, "data": {
+                 "mid": 123, "u": "1@migufun_w", "tokenExpire": 4102444800000,
+                 "ext": json.dumps({"msisdn": "139****0001"})}})}}},
+        ]}}
+        got = har_import.parse_har_text(json.dumps(har))
+        g = got.get("guandan") or {}
+        self.assertEqual(g.get("uid"), 123)
+        self.assertEqual(g.get("u"), "1@migufun_w")
+        self.assertTrue(g.get("cat", "").startswith("ANDTYZ"))
+        self.assertEqual(g.get("phone_mask"), "139****0001")

@@ -30,6 +30,7 @@ import email
 import imaplib
 import re
 import ssl
+import subprocess
 import sys
 import time
 from email import policy
@@ -166,6 +167,33 @@ def extract_har(msg):
     return None
 
 
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
+def catchup_after_import(cfg, lines) -> str:
+    """凭证导入成功后补跑一次签到。
+
+    不然会出现「票修好了、但今天的任务还是没做」——邮箱监听只负责换凭证，
+    换完得顺手把当天的签到补上，这才算闭环。
+    返回一行结果说明。
+    """
+    if not any("实测登录成功" in str(x) or "实测可用" in str(x) for x in lines):
+        return "未补跑：导入报告里没有实测成功的凭证"
+    try:
+        from common import child_cmd
+        cmd = child_cmd("run_all.py", "--no-notify")
+        r = subprocess.run(cmd, cwd=str(BASE), capture_output=True, text=True,
+                           timeout=1500, creationflags=NO_WINDOW)
+        out = (r.stdout or "") + (r.stderr or "")
+        last = [ln for ln in out.strip().splitlines() if ln.strip()][-1:] or [""]
+        tail = last[0][:120]
+        if r.returncode == 0:
+            return f"已自动补跑签到：成功（{tail}）"
+        return f"已自动补跑签到：部分失败（{tail}）"
+    except Exception as e:
+        return f"补跑签到失败：{e}"
+
+
 def test_connection(cfg) -> int:
     try:
         imap = connect(cfg)
@@ -222,6 +250,7 @@ def run_once(cfg) -> int:
 
     INBOX_DIR.mkdir(exist_ok=True)
     ok = 0
+    pending = []
     for uid in uids:
         uid_s = uid.decode()
         typ, msg_data = imap.fetch(uid, "(RFC822)")
@@ -242,14 +271,21 @@ def run_once(cfg) -> int:
         report = HI.apply(text)
         for line in report:
             print("  " + line)
-        notify("HAR 自动导入完成", "\n".join(report))
         mark_seen(uid_s)
         imap.store(uid, "+FLAGS", "\\Seen")
         ok += 1
-        if ok:
-            clear_need()
+        clear_need()          # 先清标记，免得补跑期间又触发一次查收
+        pending.append(report)
 
     imap.logout()
+
+    # 换完凭证顺手把当天签到补上，否则「票修好了、任务还是没跑」
+    for report in pending:
+        line = catchup_after_import(cfg, report)
+        print("  " + line)
+        report.append(line)
+        notify("HAR 自动导入完成", "\n".join(report))
+
     print(f"本轮处理 {ok} 份 HAR")
     return 0
 

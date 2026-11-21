@@ -50,7 +50,7 @@ from urllib.parse import urlsplit
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import atomic_write_json, emit_result, load_json, setup_utf8
+from common import atomic_write_json, emit_result, load_json, record_award, setup_utf8
 
 # ---------------------------------------------------------------- 常量
 
@@ -545,6 +545,7 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
                 res["last_reward"] = prize
                 if prize:
                     lines.append(f"获得奖品: {prize}")
+                    record_award(getattr(cfg, "phone", "") or "", "每日签到", prize)
                 elif status == "PRIZE_NO_CONFIG":
                     lines.append("今日无单日奖品（奖励按累计签到门槛发放）")
         else:

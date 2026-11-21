@@ -6,7 +6,7 @@ cmcc_fj.py —— 福建移动 BASS 活动平台自动化
 
 用法：
     python cmcc_fj.py --dry-run      只查状态，不做任何改动（先跑这个）
-    python cmcc_fj.py                签到 + 领每日奖励
+    python cmcc_fj.py                签到 + 领每日奖励和昨日投喂奖励
     python cmcc_fj.py --claim        额外领取阶段奖励
     python cmcc_fj.py --roll         额外掷骰子（消耗次数）
     python cmcc_fj.py --delay 900    执行前随机等待 0~900 秒
@@ -20,8 +20,9 @@ import sys
 import time
 from pathlib import Path
 
-from common import (api_get, api_post, emit_result, load_config as _load_config,
-                    load_json, make_session, now_ms, setup_utf8, show, update_json)
+from common import (api_get, api_post, emit_result, file_lock, load_config as _load_config,
+                    load_json, make_session, now_ms, record_award, setup_utf8, show,
+                    update_json)
 
 setup_utf8()
 
@@ -38,6 +39,7 @@ EP = {
     "daily_list":     "/bass-cultivateGameServer/index/getDailyReceiveTask",
     "daily_receive":  "/bass-cultivateGameServer/index/dailyReceive",
     "next_receive":   "/bass-cultivateGameServer/index/getNextReceiveTask",
+    "feed_reward_claim": "/bass-cultivateGameServer/index/nextReceive",
     "stage_info":     "/bass-cultivateGameServer/stage/getUserStageInfo",
     "stage_prizes":   "/bass-cultivateGameServer/stage/getStagePrizes",
     "stage_receive":  "/bass-cultivateGameServer/stage/receiveStagePrize",
@@ -113,12 +115,14 @@ def flow_mb_of(text):
     return float(m.group(1)) if m else 0.0
 
 
-def _got_prize(res, name):
+def _got_prize(res, name, cfg=None):
     """打印并登记领到的奖品：流量折算 MB，话费券只记名字。"""
     print(f"     领到：{name or '接口未返回奖品名'}")
     res["flow_mb"] += flow_mb_of(name)
     if name:
         res["last_reward"] = name
+        # 领到的那一刻就记流水，控制台不用再靠日志文案反推
+        record_award((cfg or {}).get("phone") or "", "养成领奖", name)
 
 
 # 阶段奖励每阶固定 3 档：1=话费券 2=流量券 3=折扣券
@@ -137,31 +141,56 @@ CYCLE_NAME = {1: "每月一次", 2: "每周一次", 0: "不限次"}
 
 
 def feed_reward_state(s, cfg):
-    """「喂养累计」次日奖励（App 里的「昨日投喂奖励」）：可领未领时返回描述，否则 None。
-
-    它在 getNextReceiveTask 里：taskStatus=COMPLETED、currentTask=False，
-    与每日三档（getDailyReceiveTask）不是一套；expireTime 当晚 24 点作废。
-    领取端点尚未抓包确认（实测 dailyReceive 不认 recordId、POST 该路径回 code=1），
-    所以这里只观测、不领取，先把「漏领」变成看得见。
-    """
+    """返回昨日投喂奖励及是否取得了明确状态。"""
     r = call(s, cfg, "next_receive")
-    d = r.get("data") if r.get("ok") else None
+    if not r.get("ok"):
+        return None, str(r.get("code")) == "1503"
+    d = r.get("data")
     if not isinstance(d, dict):
-        return None
+        return None, False
     if str(d.get("taskStatus") or "").upper() != "COMPLETED":
-        return None
+        return None, True
     expire = str(d.get("expireTime") or "")
     if expire:
         try:
             if datetime.datetime.strptime(expire, "%Y-%m-%d %H:%M:%S") <= datetime.datetime.now():
-                return None
+                return None, True
         except ValueError:
             pass
     return {"name": str(d.get("taskName") or "喂养累计"),
             "fodder": d.get("fodder"),
             "record_id": str(d.get("recordId") or ""),
             "expire": expire,
-            "from": str(d.get("limitReceiveTime") or "")}
+            "from": str(d.get("limitReceiveTime") or "")}, True
+
+
+def handle_feed_reward(s, cfg, key, res, dry_run):
+    """查询并按需领取昨日投喂奖励，同一配置的查询和领取串行执行。"""
+    lock_path = DAILY_STATE.with_name(f"feed_reward.{key}")
+    try:
+        with file_lock(lock_path):
+            pending, checked = feed_reward_state(s, cfg)
+            if not checked:
+                print("  投喂累计奖励：暂时无法确认，保留上次记录")
+                return
+            if pending is None:
+                print("  投喂累计奖励：无待领")
+            elif dry_run:
+                print(f"  投喂累计奖励：{pending['fodder']} 饲料可领未领，{pending['expire']} 过期")
+            else:
+                # 成功响应的 data 为空。遇到超时，下一轮先查询状态再决定是否领取。
+                reply = call(s, cfg, "feed_reward_claim", retries=0)
+                _note_token(res, reply)
+                if show("领取昨日投喂奖励", reply):
+                    res["feed_reward_received"] = pending["fodder"]
+                    print(f"     领到饲料 {pending['fodder']}")
+                    pending = None
+                elif str(reply.get("code")) == "1503":
+                    pending = None
+            res["feed_reward"] = pending
+            track_daily(key, feed_reward=pending, feed_reward_checked=True)
+    except TimeoutError:
+        print("  投喂累计奖励：另一次任务正在处理")
 
 
 def track_daily(key, daily_list=None, lucky=None, sign=None,
@@ -195,8 +224,8 @@ def _apply_daily(acc, daily_list, lucky, sign, now,
     stamp = now.strftime("%Y-%m-%d %H:%M")
 
     if feed_reward_checked:
-        # 观测过就整份覆盖：None 表示「已领/已过期」，要清掉旧提醒而不是留着
         acc["feed_reward"] = feed_reward
+        acc["feed_reward_date"] = now.date().isoformat()
 
     if daily_list is not None:
         old = {t.get("name"): t for t in (acc.get("tiers") or [])}
@@ -250,7 +279,7 @@ def _apply_daily(acc, daily_list, lucky, sign, now,
 
 
 def daily_nothing_to_do(key):
-    """本地记录显示今天三档奖励已领完、签到也完成 → 本轮无事可做。
+    """签到、三档奖励和昨日投喂奖励都有当天的完成记录时跳过轮询。
 
     每小时的轮询一天要跑 17 次，而三档通常早上 8 点前就领完了，
     后面十几次全是空转（每次还要调 4 个接口）。这里直接短路，
@@ -258,7 +287,8 @@ def daily_nothing_to_do(key):
     """
     acc = (load_json(DAILY_STATE, {}) or {}).get(key) or {}
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    if acc.get("tiers_date") != today:
+    if (acc.get("tiers_date") != today or acc.get("feed_reward_date") != today
+            or acc.get("feed_reward")):
         return False
     tiers = acc.get("tiers") or []
     if not tiers or any(str(t.get("status")).upper() != "RECEIVED" for t in tiers):
@@ -434,14 +464,14 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
                 pause()
                 rp, pid, pname = receive_stage_prize(s, cfg, prize_kind)
                 if show(f"领阶段奖励(prizeId={pid})", rp):
-                    _got_prize(res, pname)
+                    _got_prize(res, pname, cfg)
                     continue
                 # 带 prizeId 不被服务端接受时，退回默认档，至少不卡住
                 print("     -  指定档位失败，退回默认档重试")
                 pause()
                 rp2, _pid2, pname2 = receive_stage_prize(s, cfg, "fee")
                 if show("领阶段奖励(默认档)", rp2):
-                    _got_prize(res, pname2)
+                    _got_prize(res, pname2, cfg)
                     continue
                 print("  -  领阶段奖励失败，停止喂养")
                 break
@@ -492,7 +522,7 @@ def main():
     ap.add_argument("--fb-all", action="store_true",
                     help="流量银行任务忽略周期，周/月任务也强制尝试")
     ap.add_argument("--daily-only", action="store_true",
-                    help="只补签到 + 领每日奖励三档（跳过喂养/流量银行），用于定时轮询，10 秒内结束")
+                    help="补签到、领取每日三档和昨日投喂奖励，用于定时轮询")
     ap.add_argument("--delay", type=int, default=0, help="执行前随机等待上限（秒）")
     ap.add_argument("--prize", choices=list(PRIZE_KIND), default=None,
                     help="阶段奖励档位：fee=话费券 flow=流量券 discount=折扣券"
@@ -532,7 +562,7 @@ def main():
 
     # 轮询短路：今天该领的都领完了，就不必再调接口
     if args.daily_only and not args.dry_run and daily_nothing_to_do(key):
-        print("  今日三档奖励已领完、签到也已完成，本轮无事可做（1 秒退出）。")
+        print("  今日签到和奖励已处理，本轮无事可做（1 秒退出）。")
         res["today_signed"] = True
         res["idle"] = True
         emit_result(res)
@@ -606,15 +636,13 @@ def main():
         print(f"  福袋：{d.get('currentFeedCount')}/{d.get('nextTriggerCount')}"
               f"  还差 {d.get('needMoreFeeds')} 次喂食{flag}")
     pause()
-    fr = feed_reward_state(s, cfg)
-    if fr:
-        print(f"  投喂累计奖励：{fr['fodder']} 饲料可领未领，{fr['expire']} 过期"
-              f"（领取端点待抓包确认，先在 App 领）")
-    else:
-        print("  投喂累计奖励：无待领")
-    res["feed_reward"] = fr
+    handle_feed_reward(s, cfg, key, res, args.dry_run)
+    if "feed_reward_received" in res:
+        info = call(s, cfg, "index_info")
+        data = info.get("data")
+        res["fodder"] = data.get("fodderSurplus") if info["ok"] and isinstance(data, dict) else None
     track_daily(key, dl["data"] if dl["ok"] and isinstance(dl["data"], list) else None,
-                lucky_data, sign_data, feed_reward=fr, feed_reward_checked=True)
+                lucky_data, sign_data)
 
     pause()
     st = call(s, cfg, "stage_info")
@@ -680,8 +708,7 @@ def main():
     if args.daily_only:
         # 补签成功后要回写一次，否则面板上仍显示"未签"
         if sign_data is not None:
-            track_daily(key, None, None, sign_data,
-                        feed_reward=fr, feed_reward_checked=True)
+            track_daily(key, None, None, sign_data)
         # 自动策略里开了每日喂养时，就在这一轮顺带喂（run_all 只在 feed_hour 那一轮注入）
         if args.feed > 0 or args.feed_all:
             run_feed(s, cfg, args, res, prize_kind, key, track_daily)
@@ -766,12 +793,12 @@ def main():
         if status == "1":
             r, pid, pname = receive_stage_prize(s, cfg, prize_kind)
             if show(f"领阶段奖励(prizeId={pid})", r):
-                _got_prize(res, pname)
+                _got_prize(res, pname, cfg)
             else:
                 pause()
                 r2c, _p, pname2 = receive_stage_prize(s, cfg, "fee")
                 if show("领阶段奖励(默认档)", r2c):
-                    _got_prize(res, pname2)
+                    _got_prize(res, pname2, cfg)
         else:
             fodders = ((stc.get("data") or {}).get("feedFodders"))
             print(f"  -  阶段未满（{fodders}），暂无可领奖励")

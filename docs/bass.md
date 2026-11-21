@@ -112,17 +112,17 @@ GET /bass-cultivateGameServer/index/getNextReceiveTask
  "limitReceiveTime": "2026-11-20 06:00:00", "expireTime": "2026-11-21 00:00:00"}
 ```
 
-**实测要点（2026-11-20）**
+**实测要点**
 
 - 与三档**不是一套**：三档在 `getDailyReceiveTask`、看 `currentTask`；
   这条在 `getNextReceiveTask`、看 `taskStatus=COMPLETED`（可领未领）
 - `expireTime` **当晚 24 点作废**，隔日补领无效；`limitReceiveTime` 为次日 06:00 起可领
 - 达标条件见 `getIndexInfo` 的 `nextReceiveNeedFeedCount` / `nextReceiveGetFodder`
-- **领取端点未确认**：`GET /index/dailyReceive` 带 `recordId`/`id` 仍回
-  `1503 当日领取奖励已全部领取`（只认三档、忽略 recordId）；
-  `POST /index/dailyReceive` 回 `code=1 接口请求失败`。
-  需要一次 App 领取动作的抓包才能写自动领取；在此之前脚本只观测，
-  并在控制台「每日奖励 & 福袋」面板与总览待办条提醒，避免静默漏领
+- **领取**：`GET /bass-cultivateGameServer/index/nextReceive`，查询参数为 `appId` 和
+  `timestamp`。App 抓包中返回 `code=0000`、`success=true`、`data=null`。余额随后
+  增加 750 饲料，再查 `getNextReceiveTask` 返回 `1503`。
+- 福建活动常规运行和每小时领奖任务都会检查并领取待领的昨日投喂奖励。
+  `--dry-run` 只查询。领取超时后，下一轮先重新查询状态再决定是否领取。
 - 没到间隔时间返回 `1504 不要着急!还未到可领取时间`
 - 服务端直接给 `limitReceiveTime`（该档可领时刻）和 `surplusTime`（剩余秒数），
   不需要自己按 60 分钟推算
@@ -250,6 +250,20 @@ GET /bass-preferentialAreaServer/luck/qrySubscription     → 订阅状态
 - `doTask` 的 `taskType` 取自 `index` 的 `taskList`（如 3=请好友帮忙、5=浏览调研）
 - 任务奖励就是抽奖次数，实测刷 4 个任务能把次数从 0 刷到 1~3
 - `qrySubscription` 返回 `subscriptionStatus:false, first:true` 表示未订阅 + 首抽
+
+**2026-11-21 App 实测**
+
+- 从中国移动 App 手动打开优惠专区转盘，可触发赠送 **1 次**抽奖。抓包中活动页的首次成功响应已显示「中国移动 APP 中参与」已完成、剩余 1 次。「签到领福利」使用已到账的抽奖次数，App 赠送由用户手动触发。
+- 「逛移动爱购商城」单独增加抽奖次数。抓包中该任务由未完成变为已完成，剩余次数从 1 增至 2。任务从活动页面的商城入口实际完成。
+
+**2026-11-21 12:04 抓包（首次跑通 `join`）**
+
+- `index` 回显 `surplusLuckCount:2`、`canJoin:true`，说明免费次数会攒着不清零到当天？——实测当天 12:04 仍有 2 次，`run_luck` 用这 2 次真抽，返回「2-3元话费券手气红包」+「谢谢参与」，抽完回读 `surplusLuckCount:0`。
+  所以 `join` 链路（`GET luck/join?appId=26&timestamp=…`）已用真号验证，不再只是推断。
+- `taskList` 每次刷新顺序/内容会变（同一份抓包里两次 `index` 的 task 列表 id 不同），所以刷任务只能按当次返回的 `id` 走，不能写死。
+- 新增两个与本模块无关但值得记的接口：
+  - `POST bass-commonActServer/marathon/H5Api/getTaskInfo` body `{appId,timestamp,id:"100106"}` → 「浏览天天大转盘」，`browseTime:1`（马拉松式任务体系）。
+  - `POST bass-commonAreaServer/H5Api/evaluate/evaluateInfo` body `{appId,timestamp,pageType:13,evaluatePageTitle}` → 「请您评一评」，文案写着「提交后可随机获得奖励」，提交接口未抓到，暂不实现。
 
 ---
 

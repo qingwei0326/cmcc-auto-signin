@@ -34,7 +34,7 @@ from pathlib import Path
 
 import requests
 
-from common import setup_utf8, update_json
+from common import mask_phone, record_award, setup_utf8, update_json
 
 setup_utf8()
 
@@ -158,7 +158,7 @@ def run_one(tag, phone_hint, tok, args):
             return {"code": "-1", "msg": f"请求异常: {e}"}
 
     print("\n" + "-" * 62)
-    print(f"【{tag}】{phone_hint or ''}  bearer {tok[:8]}…")
+    print(f"【{tag}】{mask_phone(phone_hint)}")
 
     idx = get("index")
     if str(idx.get("code")) == "401":
@@ -172,7 +172,7 @@ def run_one(tag, phone_hint, tok, args):
     phone = d.get("userPhone") or phone_hint or ""
     surplus = int(d.get("surplusLuckCount") or 0)
     tasks = d.get("taskList") or []
-    print(f"  账号 {phone or '(未返回)'}   剩余次数 {surplus}")
+    print(f"  账号 {mask_phone(phone) or '(未返回)'}   剩余次数 {surplus}")
     if tasks:
         print("  可加次数任务：" + "、".join(str(t.get("taskName")) for t in tasks))
 
@@ -207,6 +207,7 @@ def run_one(tag, phone_hint, tok, args):
     n = min(surplus, args.max)
     print(f"  [抽奖] 计划 {n} 次")
     prizes, wins = [], 0
+    failed = False
     for i in range(n):
         r = get("join")
         code = str(r.get("code"))
@@ -224,26 +225,29 @@ def run_one(tag, phone_hint, tok, args):
             })
             if is_win:
                 wins += 1
+                # 中奖即记流水：控制台「到账台账」靠它显示今天到手多少流量
+                record_award(phone or phone_hint, "天天大转盘", name,
+                             url=dd.get("prizeUrl") or "")
         elif code == "1600":
             print(f"    [{i + 1}/{n}] 次数已用完，停止")
             break
         else:
+            failed = True
             print(f"    [{i + 1}/{n}] 失败 code={code} {r.get('msg')}")
             if code in ("401", "-1"):
                 break
         time.sleep(random.uniform(1.5, 2.5))
 
     final = get("index").get("data") or {}
-    save_state(phone, {
-        "phone": phone,
-        "surplus": int(final.get("surplusLuckCount") or 0),
-        "last_prizes": prizes,
-        "last_draws": len(prizes),
-        "last_wins": wins,
-    })
+    info = {"phone": phone, "surplus": int(final.get("surplusLuckCount") or 0)}
+    # 这一轮一次没抽（次数已用完 / 接口回 1600）就别把上次的中奖记录清成空，
+    # 否则界面上「最近抽到」会莫名其妙变没。
+    if prizes:
+        info.update({"last_prizes": prizes, "last_draws": len(prizes), "last_wins": wins})
+    save_state(phone, info)
     print(f"  小计：抽 {len(prizes)} 次，中 {wins} 次")
     return {"tag": tag, "phone": phone, "surplus": int(final.get("surplusLuckCount") or 0),
-            "draws": len(prizes), "wins": wins}
+            "draws": len(prizes), "wins": wins, "failed": failed}
 
 
 # ---------------------------------------------------------------- 入口
@@ -308,11 +312,12 @@ def main():
         if r.get("skip"):
             print(f"  ✗ {r['tag']}  跳过/失败")
         else:
-            print(f"  ✓ {r['tag']}  {r.get('phone', '')}  剩余 {r.get('surplus')} 次"
+            mark = "✗" if r.get("failed") else "✓"
+            print(f"  {mark} {r['tag']}  {mask_phone(r.get('phone'))}  剩余 {r.get('surplus')} 次"
                   f"  本次抽 {r.get('draws')} 中 {r.get('wins')}")
     if args.dry_run:
         print("\n（--dry-run，未做任务也未抽奖）")
-    return 0
+    return 1 if any(r.get("skip") or r.get("failed") for r in results) else 0
 
 
 if __name__ == "__main__":

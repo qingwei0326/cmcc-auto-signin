@@ -6,17 +6,26 @@ har_import.py —— 从 HAR 里同时提取 qwhdhub app_token 与 BASS Bearer t
     手机号从 userCheckId（十六进制）反解，反解失败时在请求体里正则兜底。
   · BASS 的 token 来自任意 wap.fj.10086.cn / app.fmcc.com.cn 请求的 Authorization 头，
     形如 Bearer <36位UUID>。
-  · BASS 的 HAR 本身不含手机号，所以归属账号靠「同一份 HAR 里的 qwhdhub 号码」推断；
-    推断不到时用调用方显式指定的 key（configs/<key>.json 的 phone）兜底。
+  · BASS 的 HAR 本身不含手机号，归属账号依次按三条线索判定：
+      1) 同一份 HAR 里的 qwhdhub 号码；
+      2) 调用方显式指定的 key（configs/<key>.json 的 phone）；
+      3) 用该 bearer 调一次 luck/index，回显的脱敏号码（184****3239）——
+         福建活动页压根不发 appTokenLogin，没有这条线索时每份福建抓包
+         都会掉进「认不出属于哪个号码」，所以这是主路径。
   · 只写 token 相关字段，其余配置原样保留。
 """
 
 import json
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from common import atomic_write_json, app_base, find_har_files
+
+FJ_LUCK_INDEX = "https://wap.fj.10086.cn/bass-preferentialAreaServer/luck/index"
+BASS_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 "
+           "(KHTML, like Gecko) Mobile/15E148/wkwebview")
 
 BASE = app_base()
 
@@ -157,6 +166,27 @@ def _fj_targets():
     return out
 
 
+def _masked_phone_of_bearer(tok, timeout=12):
+    """用 BASS bearer 调一次只读接口，拿回脱敏号码（如 184****3239）。
+
+    这是判断「这个 Bearer 到底属于哪个号」唯一可靠的依据：
+    HAR 里的 Bearer 是 36 位 UUID，本身不含任何号码信息。
+    token 失效时接口不报错，只是 userPhone 返回 null，所以拿到空串就当失败。
+    """
+    try:
+        import requests
+        s = requests.Session()
+        s.trust_env = False
+        r = s.get(FJ_LUCK_INDEX,
+                  params={"appId": 26, "timestamp": int(time.time() * 1000)},
+                  headers={"Authorization": "Bearer " + tok, "User-Agent": BASS_UA},
+                  timeout=timeout)
+        d = (r.json() or {}).get("data") or {}
+        return str(d.get("userPhone") or "")
+    except Exception:
+        return ""
+
+
 def apply(text, key=None):
     """解析并写回配置，返回人类可读的报告行列表。"""
     try:
@@ -222,6 +252,16 @@ def apply(text, key=None):
             phones = p["mobiles"]
 
         hit = next((targets[ph] for ph in phones if ph in targets), None)
+        masked = ""
+        if hit is None:
+            # 线索 3：问接口「我是谁」。福建活动抓包没有 qwhdhub 号码，
+            # 没有这一步就永远匹配不上 fj1/fj2。
+            masked = _masked_phone_of_bearer(tok)
+            if masked:
+                tail = masked[-4:]
+                hit = next((f for ph, f in targets.items() if ph[-4:] == tail), None)
+                if hit:
+                    report.append(f"BASS 归属：接口回显 {masked} → {hit.name}")
         if hit is None and phones:
             # 号码已知、但还没有对应配置（全新安装就是这种情况）：直接建一份。
             # 早先这里只报「请在页面上选择账号」，可下拉框本身就是空的，
@@ -237,9 +277,9 @@ def apply(text, key=None):
                 report.append(f"BASS 首次导入，已新建 configs_fj/{hit.name}（{ph}）")
         if hit is None:
             report.append(
-                f"BASS 拿到 token {tok[:8]}…，但认不出属于哪个号码。"
-                f"请在导入按钮旁选择账号；若列表是空的，先到「凭证与账号 → 新建账号」"
-                f"建一份福建活动配置并填上手机号。"
+                f"BASS 拿到 token {tok[:8]}…，但认不出属于哪个号码："
+                f"接口没回显号码（token 可能已失效）。请在导入按钮旁选择账号；"
+                f"若列表是空的，先到「凭证与账号 → 新建账号」建一份福建活动配置并填上手机号。"
             )
         else:
             cfg = _read_json(hit)
@@ -251,6 +291,13 @@ def apply(text, key=None):
                     cfg["phone"] = phones[0]
                 _write_json(hit, cfg)
                 report.append(f"BASS {hit.name}（{cfg.get('phone')}）→ Bearer {tok[:8]}…")
+            # 「写了」不等于「能用」，写进去之后再问一次接口
+            if not masked:
+                masked = _masked_phone_of_bearer(tok)
+            if masked:
+                report.append(f"✓ BASS 实测可用，接口显示 {masked}")
+            else:
+                report.append(f"✗ BASS 实测不可用（token 已过期），请重新抓包")
     else:
         report.append("BASS 无可用 token（未找到 wap.fj.10086.cn 的 Authorization: Bearer）")
 
@@ -309,6 +356,11 @@ def scan_dir(directory=None):
         # 升序处理，最新的最后落地 → 覆盖旧 token
         files = list(reversed(files))
 
+    return scan_files(files)
+
+
+def scan_files(files):
+    """按给定顺序导入若干个 HAR（命令行直接指文件时用，不再全目录扫）。"""
     lines = []
     used = 0
     for f in files:
@@ -328,6 +380,19 @@ def scan_dir(directory=None):
 
 
 if __name__ == "__main__":
-    res, n = scan_dir()
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg:
+        p = Path(arg)
+        if p.is_file():
+            # 用户明确点了某一份，就只导这一份 —— 早先这个参数被忽略，
+            # 结果「拖进来一份新 HAR」实际把整个目录的旧 HAR 又跑了一遍。
+            res, n = scan_files([p])
+        elif p.is_dir():
+            res, n = scan_dir(str(p))
+        else:
+            print(f"路径不存在：{arg}")
+            sys.exit(2)
+    else:
+        res, n = scan_dir()
     print("\n".join(res))
     print(f"\n共处理 {n} 个有效 HAR")

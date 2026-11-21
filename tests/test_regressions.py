@@ -89,9 +89,19 @@ class TestRunAllRouting(unittest.TestCase):
     def test_daily_only_passes_flag_to_bass(self):
         cmds = self._run(["--daily-only"])
         self.assertTrue(cmds)
-        for c in cmds:
-            self.assertIn("cmcc_fj.py", c[1])
+        bass = [c for c in cmds if "cmcc_fj.py" in c[1]]
+        self.assertTrue(bass)          # 每日奖励那一轮必须真跑 BASS
+        for c in bass:
             self.assertIn("--daily-only", c)
+        # 转盘免费次数跟着这一轮一起抽（cmcc_luck.py 只花已有次数）
+        self.assertTrue(any("cmcc_luck.py" in c[1] for c in cmds))
+
+    def test_luck_uses_existing_draws_and_respects_dry_run(self):
+        cmds = self._run(["--platform", "all", "--luck", "--dry-run"])
+        self.assertEqual([Path(c[1]).name for c in cmds],
+                         ["cmcc_sign.py", "cmcc_fj.py", "cmcc_luck.py"])
+        conf = Path(cmds[1][3])
+        self.assertEqual(cmds[-1][2:], ["--key", conf.stem, "--no-tasks", "--dry-run"])
 
     def test_extra_only_goes_to_bass(self):
         """--extra 是给 BASS 的，不能塞给 qwhd（argparse 会直接报错）。
@@ -1040,7 +1050,9 @@ class TestSeckillSessionRetry(unittest.TestCase):
 
     def test_session_deadline_covers_grace_after_fire(self):
         import cmcc_seckill as SK
-        base = SK.parse_fire_at("11:59:50", datetime(2026, 11, 20, 0, 0, 0))
+        # 注意：session_deadline_for 内部用「今天」的 11:59:50，
+        # 所以基准也必须取今天，否则换个日期这条用例就假失败。
+        base = SK.parse_fire_at("11:59:50")
         self.assertAlmostEqual(SK.session_deadline_for("11:59:50", now=base - 100),
                                base + SK.SESSION_GRACE_AFTER_FIRE, delta=1)
         self.assertAlmostEqual(SK.session_deadline_for("", now=1000.0),
@@ -1787,23 +1799,57 @@ class TestFeedReward(unittest.TestCase):
             return FJ.feed_reward_state(None, {})
 
     def test_completed_is_claimable(self):
-        fr = self._state({"taskStatus": "COMPLETED", "fodder": 950, "recordId": 1,
-                          "expireTime": "2999-01-01 00:00:00"})
+        fr, checked = self._state({"taskStatus": "COMPLETED", "fodder": 950, "recordId": 1,
+                                  "expireTime": "2999-01-01 00:00:00"})
+        self.assertTrue(checked)
         self.assertEqual(fr["fodder"], 950)
         self.assertEqual(fr["record_id"], "1")
 
     def test_received_is_none(self):
-        self.assertIsNone(self._state({"taskStatus": "RECEIVED", "fodder": 950}))
+        self.assertEqual(self._state({"taskStatus": "RECEIVED", "fodder": 950}), (None, True))
 
     def test_expired_is_none(self):
-        self.assertIsNone(self._state({"taskStatus": "COMPLETED",
-                                       "expireTime": "2020-01-01 00:00:00"}))
+        self.assertEqual(self._state({"taskStatus": "COMPLETED",
+                                      "expireTime": "2020-01-01 00:00:00"}), (None, True))
 
-    def test_query_error_is_none(self):
+    def test_no_reward_and_network_failure_are_distinct(self):
         import cmcc_fj as FJ
-        with mock.patch.object(FJ, "call",
-                               lambda *a, **k: {"ok": False, "code": "1503", "data": None}):
-            self.assertIsNone(FJ.feed_reward_state(None, {}))
+        with mock.patch.object(FJ, "call", side_effect=[
+            {"ok": False, "code": "1503", "data": None},
+            {"ok": False, "code": -1, "data": None},
+        ]):
+            self.assertEqual(FJ.feed_reward_state(None, {}), (None, True))
+            self.assertEqual(FJ.feed_reward_state(None, {}), (None, False))
+
+    def test_claim_dry_run_and_timeout_keep_pending_until_success(self):
+        import cmcc_fj as FJ
+        pending = {"ok": True, "code": "0000", "data": {
+            "taskStatus": "COMPLETED", "fodder": 750, "expireTime": "2999-01-01 00:00:00"}}
+        failure = {"ok": False, "code": -1, "msg": "超时", "data": None}
+        success = {"ok": True, "code": "0000", "data": None}
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            path = Path(tmp) / "daily_state.json"
+            with mock.patch.object(FJ, "DAILY_STATE", path), \
+                 mock.patch.object(FJ, "call", side_effect=[
+                    pending, pending, failure, pending, success,
+                 ]) as call:
+                res = {}
+                FJ.handle_feed_reward(None, {}, "test", res, dry_run=True)
+                self.assertEqual(res["feed_reward"]["fodder"], 750)
+                call.assert_called_once_with(None, {}, "next_receive")
+
+                res = {}
+                FJ.handle_feed_reward(None, {}, "test", res, dry_run=False)
+                self.assertEqual(res["feed_reward"]["fodder"], 750)
+                self.assertNotIn("feed_reward_received", res)
+                self.assertEqual(call.call_count, 3)
+                call.assert_called_with(None, {}, "feed_reward_claim", retries=0)
+
+                res = {}
+                FJ.handle_feed_reward(None, {}, "test", res, dry_run=False)
+                self.assertEqual(res["feed_reward_received"], 750)
+                self.assertIsNone(res["feed_reward"])
+                self.assertIsNone(common.load_json(path)["test"]["feed_reward"])
 
     def test_checked_observation_clears_stale_reminder(self):
         import cmcc_fj as FJ

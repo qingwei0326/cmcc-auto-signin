@@ -303,7 +303,7 @@ class TestPolicyAppliesToScheduledRun(unittest.TestCase):
     def _run(self, policy, argv=("run_all.py", "--daily-only")):
         captured = []
 
-        def fake_run_script(script, conf, args, timeout, name="", idx=0, total=0):
+        def fake_run_script(script, conf, args, timeout, name="", idx=0, total=0, **_kw):
             captured.append(list(args))
             return (conf.stem, True, 1.0, "ok")
 
@@ -380,11 +380,23 @@ class TestHumanFacing(unittest.TestCase):
         # 脚本名保留在 title 里供排查，但不出现在正文文案中
         self.assertIn('title="cmcc_seckill.py"', self.html)
 
-    def test_xxl_not_default_on_and_needs_confirm(self):
-        self.assertIn('id="dashXxl"', self.html)
-        self.assertNotIn('id="dashXxl" checked', self.html)
+    def test_benefits_button_routes_lottery_only_for_all_accounts(self):
+        self.assertIn("签到领福利", self.html)
         i = self.html.find("function runAll")
-        self.assertIn("confirm", self.html[i:i + 700])
+        handler = self.html[i:self.html.index("function refreshStatus", i)]
+        self.assertIn("luck:platform==='all'", handler)
+        self.assertNotIn("xxl", handler)
+
+    def test_benefits_action_passes_lottery_and_dry_run_to_batch(self):
+        with mock.patch.object(dashboard, "scan_accounts", return_value=[]), \
+                mock.patch.object(dashboard, "_start", return_value={"ok": True}) as start:
+            dashboard.do_action({"action": "run_all", "platform": "all", "luck": True,
+                                 "dry": True, "xxl": True})
+            label, command = start.call_args.args
+        self.assertIn("签到领福利", label)
+        self.assertIn("--luck", command)
+        self.assertIn("--dry-run", command)
+        self.assertNotIn("--xxl", command)
 
     def test_errors_stay_on_page(self):
         self.assertIn('id="errBox"', self.html)

@@ -154,6 +154,16 @@ table.runtab{width:100%;max-width:880px;border-collapse:collapse;font-size:13px;
 .runtab td{padding:8px 12px;border-bottom:1px solid var(--line)}
 .runtab tr:last-child td{border-bottom:none}
 .runtab td.num{text-align:right;font-variant-numeric:tabular-nums}
+/* 到账台账：内容列必须给足宽度。runtab 是 table-layout:fixed，
+   六列平分 880px 会把「1GB流量日包」压成一字一行。 */
+#awTab{table-layout:auto;max-width:100%}
+#awTab th:nth-child(1){width:110px}
+#awTab th:nth-child(2){width:120px}
+#awTab th:nth-child(3){width:100px}
+#awTab th:nth-child(5){width:92px}
+#awTab th:nth-child(6){width:78px}
+#awTab td:nth-child(4){min-width:180px}
+#awTab .tag{background:var(--card2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px;color:var(--sub)}
 /* 流量银行任务周期表 */
 table.fbtab{width:100%;max-width:960px;border-collapse:collapse;font-size:13px;table-layout:fixed}
 .fbtab th{color:var(--sub);font-weight:400;text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);font-size:12px}
@@ -242,15 +252,23 @@ select.inp{cursor:pointer}
         <div class="phead">
           <div><h2>总览</h2><div class="desc">每个号码的签到状态、本月收益与近 7 天记录</div></div>
           <div class="ops">
-            <button class="btn pri" onclick="runAll('all')">一键签到</button>
+            <button class="btn pri" onclick="runAll('all')" title="全国和福建签到、领取可领饲料、使用大转盘已有次数">签到领福利</button>
             <button class="btn" onclick="runAll('qwhd')">只跑全国签到</button>
             <button class="btn" onclick="runAll('bass')">只跑福建活动</button>
             <label class="chk" title="只查询状态，不签到、不领取、不消耗"><input type="checkbox" id="dashDry">只读检查</label>
-            <label class="chk" title="消消乐属伪造通关成绩，性质比空报浏览更重，默认不勾选"><input type="checkbox" id="dashXxl">含消消乐</label>
           </div>
         </div>
         <div id="todoBox"></div>
         <div class="kpis" id="sumbar"></div>
+        <div class="panel">
+          <h3>到账台账 <span class="hint">真到手的流量和能直接用的话费券，领到就记</span></h3>
+          <div class="strip" id="awSum"></div>
+          <table class="runtab" id="awTab"></table>
+          <div class="infobox" style="margin-top:10px">
+            只记「到手可用」：流量包按 1GB=1024MB 折算；话费券里<b>要充值才生效</b>的（例如充值 9.9 折、满 30 减 5）
+            不在这里列，只在上面的数字里单独计数。数据来源是脚本领到东西那一刻写的流水，
+            所以定时任务跑的也会出现在这里。</div>
+        </div>
         <div id="cards"></div>
         <div class="panel">
           <h3>运行记录 <span class="hint" id="effHint"></span></h3>
@@ -339,6 +357,10 @@ select.inp{cursor:pointer}
               <option value="flow">流量包</option>
               <option value="discount">折扣券</option>
             </select></div>
+          <div class="frow"><label>天天大转盘</label>
+            <label class="chk" title="福建移动「优惠专区 · 天天大转盘」每天有免费次数，当天不用就清零"><input type="checkbox" id="pLuck">自动把免费次数抽完</label>
+            <span style="font-size:12px;color:var(--sub)">跟每日奖励同一次运行，只花已有次数，不替你做加次数任务</span>
+          </div>
           <div class="frow"><label style="color:var(--warn)">伪造类</label>
             <label class="chk"><input type="checkbox" id="pTasks">养成浏览任务（空报）</label>
             <label class="chk"><input type="checkbox" id="pFb">流量银行任务（空报）</label>
@@ -609,8 +631,11 @@ function render(){
     const pts=vals.map((v,i)=>`${(i*100/(n-1)).toFixed(1)},${(25-23*v/mx).toFixed(1)}`).join(' ');
     return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;};
   const spF=spark(days),spT=spark(dayT);
+  // 本月流量以「到账台账」为准（含转盘/领奖），history 只记脚本回合，会漏抽奖
+  const awFlowM=((STATE.awards||{}).month||{}).flow_mb||0;
+  const flowMShow=Math.max(flowM,awFlowM);
   $('sumbar').innerHTML=`
-    <div class="kpi"><div class="k">本月领取流量</div><div class="v">${flowM>=1024?(flowM/1024).toFixed(2)+'<small>GB</small>':flowM.toFixed(0)+'<small>MB</small>'}</div><div class="c">历史合计 ${flow>=1024?(flow/1024).toFixed(2)+' GB':flow.toFixed(0)+' MB'}</div>${spF}</div>
+    <div class="kpi"><div class="k">本月到手流量</div><div class="v">${flowMShow>=1024?(flowMShow/1024).toFixed(2)+'<small>GB</small>':flowMShow.toFixed(0)+'<small>MB</small>'}</div><div class="c">签到 / 领奖 / 转盘合计</div>${spF}</div>
     <div class="kpi"><div class="k">本月完成任务</div><div class="v">${tasksM}<small>个</small></div><div class="c">历史合计 ${tasks} 个</div>${spT}</div>
     <div class="kpi"><div class="k">凭证可用</div><div class="v">${okTok}<small>/ ${accts.length} 份</small></div><div class="c">一个号码两份（全国 + 福建）</div></div>
     <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">过期需重新抓包导入</div></div>`;
@@ -630,6 +655,25 @@ function render(){
         <td class="num">${r.sec>=60?Math.floor(r.sec/60)+'分'+Math.round(r.sec%60)+'秒':r.sec+'秒'}</td>
         <td class="${r.ok?'ok':'bad'}">${r.ok?'成功':'失败'}</td></tr>`).join('')
     : '<tr><td style="color:var(--sub);padding:14px">暂无运行记录 — 跑一次签到或刷新状态后自动记录</td></tr>';
+  // 到账台账（用户只关心「今天到手多少流量 / 几张能用的券」）
+  const aw=STATE.awards||{}, awM=aw.month||{}, awT=aw.today||{}, awBy=aw.by_account||{}, awDay=aw.by_day||{};
+  const awFmt=mb=>mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');
+  if($('awSum'))$('awSum').innerHTML=`
+    <div class="cell"><div class="k">今日到手流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
+    <div class="cell"><div class="k">本月到手流量</div><div class="v">${awFmt(awM.flow_mb||0)}</div></div>
+    <div class="cell"><div class="k">本月可用话费券</div><div class="v">${awM.fee_count||0}<small> 张</small></div></div>
+    <div class="cell"><div class="k">需充值才能用</div><div class="v">${awM.recharge_count||0}<small> 张</small></div></div>`;
+  const awRows=aw.recent||[];
+  if($('awTab'))$('awTab').innerHTML= awRows.length
+    ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">折合流量</th><th>兑换</th></tr>'+
+      awRows.map(r=>`<tr>
+        <td style="color:var(--sub)">${esc((r.at||'').slice(5,16))}</td>
+        <td>${esc(r.account?mask(r.account):'—')}</td>
+        <td>${esc(r.source||'')}</td>
+        <td style="min-width:170px">${esc(r.name||'')}${r.kind==='fee'?' <span class="tag">话费券</span>':''}</td>
+        <td class="num">${(r.size_mb||0)>0?awFmt(r.size_mb):'—'}</td>
+        <td>${r.url?`<a href="${esc(r.url)}" target="_blank" rel="noreferrer">去兑换</a>`:'—'}</td></tr>`).join('')
+    : '<tr><td colspan="6" style="color:var(--sub);padding:14px">还没有到账记录 —— 领到流量或券会自动出现在这里</td></tr>';
   // 账号卡
   $('cards').innerHTML=STATE.accounts.map(g=>{
     const plats=Object.entries(g.plats).map(([plat,a])=>{
@@ -637,6 +681,11 @@ function render(){
       const isQ=plat==='qwhdhub';
       const tkState=tokState(a,s);
       const hmap={}; (s.history||[]).forEach(h=>{hmap[h.date]=h;});
+      // 到账流水里的日流量并进来：转盘/领奖不走 history，不并就会漏（明明中了 1GB 却显示无记录）
+      const awD=awDay[(a.phone||'').slice(-4)]||{};
+      Object.keys(awD).forEach(d=>{
+        const row=hmap[d]||{date:d,flow_mb:0,tasks:0,feeds:0};
+        row.flow_mb=(row.flow_mb||0)+awD[d]; hmap[d]=row;});
       const hist=last7(hmap);
       const hasData=hist.some(h=>(h.flow_mb||0)>0||(h.tasks||0)>0||(h.feeds||0)>0);
       const maxF=Math.max(1,...hist.map(h=>h.flow_mb||0));
@@ -646,7 +695,6 @@ function render(){
         const parts=[];
         if(f)parts.push(f+'MB');
         if(tk)parts.push(tk+'任务');
-        if(fd)parts.push(fd+'次喂养');
         const tip=`${h.date.slice(5)} · ${parts.length?parts.join(' · '):'无记录'}`;
         const cls=(f>0||fd>0||tk>0)?'bar':'bar off';
         return `<div class="${cls}" style="height:${hgt}%"><span class="tip">${tip}</span></div>`;
@@ -658,12 +706,12 @@ function render(){
           <span class="stamp" title="这些数字是上次运行脚本时记下的，不是实时值">数据截至 ${esc(s.last_run||'从未运行')}</span></div>
         <div class="stats">
           ${isQ?`
-          <div class="stat"><div class="k">本月领取</div><div class="v">${flowFmt(s.flow_mb_month||0)}<small class="sum">累计 ${flowTxt(s.flow_mb_total||0)}</small></div></div>
+          <div class="stat"><div class="k">本月到手</div><div class="v">${awFmt(Math.max(s.flow_mb_month||0,(awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0))}<small class="sum">近 7 天见图</small></div></div>
           <div class="stat"><div class="k">连签天数</div><div class="v">${fmtNum(s.sign_days)}</div></div>
           <div class="stat"><div class="k">本月任务</div><div class="v">${s.tasks_month||0}<small class="sum">累计 ${s.tasks_done_total||0}</small></div></div>
           <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${s.last_reward||'—'}</div></div>`
           :`
-          <div class="stat"><div class="k">本月喂养</div><div class="v">${s.feeds_month||0}<small>次</small><small class="sum">累计 ${s.feeds_total||0} 次</small></div></div>
+          <div class="stat"><div class="k">本月到账</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张可用券</small></div></div>
           <div class="stat"><div class="k">饲料余额</div><div class="v y">${fmtNum(s.fodder)}</div></div>
           <div class="stat"><div class="k">流量可兑</div><div class="v">${s.fb_exchange||'—'}</div></div>
           <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${s.stage||'—'}</div></div>`}
@@ -676,7 +724,7 @@ function render(){
             <button class="btn sm" onclick="act({action:'bass_run',key:'${a.key}',dry:1})">只读检查</button>
             <button class="btn sm" onclick="act({action:'bass_run',key:'${a.key}',claim:1,roll:1})">领奖+骰子</button>`}
         </div>
-        ${hist.length&&hasData?`<div class="hist"><div class="t">近 7 天记录（流量 / 任务 / 喂养）</div><div class="bars">${bars}</div><div class="bardates">${dates}</div></div>`:`<div class="hist"><div class="t">近 7 天</div><div class="empty">暂无记录</div></div>`}
+        ${hist.length&&hasData?`<div class="hist"><div class="t">近 7 天记录（流量 / 任务）</div><div class="bars">${bars}</div><div class="bardates">${dates}</div></div>`:`<div class="hist"><div class="t">近 7 天</div><div class="empty">暂无记录</div></div>`}
       </div>`;}).join('');
     return `<div class="acct">
       <div class="acct-head"><span class="phone" title="${g.phone}">${mask(g.phone)}</span></div>
@@ -906,7 +954,7 @@ function renderDaily(){
     const lk=a.lucky||{};
     const sg=a.sign||{};
     const fr=a.feed_reward;
-    const frLine=fr?`<div style="font-size:13px;margin-bottom:7px;color:var(--warn)">⚑ 投喂累计奖励 <b>${esc(fr.fodder)}</b> 饲料可领未领 · ${esc(fr.expire)} 过期（领取端点待确认，先在 App 领）</div>`:'';
+    const frLine=fr?`<div style="font-size:13px;margin-bottom:7px;color:var(--warn)">⚑ 投喂累计奖励 <b>${esc(fr.fodder)}</b> 饲料可领未领 · ${esc(fr.expire)} 过期</div>`:'';
     const pct=lk.need?Math.min(100,Math.round((lk.current/lk.need)*100)):0;
     const bar=lk.need?`<div style="height:6px;background:var(--line);border-radius:3px;margin-top:7px;max-width:440px">
         <div style="height:6px;width:${pct}%;background:${lk.triggered?'var(--ok)':'var(--acc)'};border-radius:3px"></div></div>`:'';
@@ -983,6 +1031,7 @@ function renderPolicy(){
     $('pPrize').value=b.prize||'fee';
     $('pTasks').checked=!!b.tasks;
     $('pFb').checked=!!b.fb_tasks;
+    if($('pLuck'))$('pLuck').checked=(p.luck!==false);
     const x=p.xxl||{};
     if($('xLevel'))$('xLevel').value=(x.level!=null?x.level:49);
     if($('xStar'))$('xStar').value=(x.star!=null?x.star:3);
@@ -1008,6 +1057,7 @@ function feedAllToggle(p){
 }
 async function savePolicy(){
   const body={action:'policy_save',
+    luck:($('pLuck')?$('pLuck').checked:true),
     bass:{feed:$('pFeedAll').checked?0:(Number(V('pFeed'))||0),
           feed_all:$('pFeedAll').checked,
           feed_hour:Number(V('pFeedHour'))||0,
@@ -1053,7 +1103,7 @@ function renderTodo(){
   const dead=ss.filter(x=>x.left_min!=null&&x.left_min<=0);
   if(dead.length)items.push(['warn',`秒杀会话已过期（${dead.map(x=>mask(x.phone||'')||x.file).join('、')}）—— 11:54 的刷新任务会重建，前提是那一刻票据还活着`]);
   const frs=Object.entries(STATE.daily||{}).filter(([k,v])=>v&&v.feed_reward);
-  if(frs.length)items.push(['warn',`<b>投喂累计奖励可领未领</b>：${frs.map(([k,v])=>`${esc(k)} ${esc(v.feed_reward.fodder)} 饲料（${esc(v.feed_reward.expire)} 过期）`).join('、')} —— 当晚作废，先在 App 领掉`]);
+  if(frs.length)items.push(['warn',`<b>投喂累计奖励可领未领</b>：${frs.map(([k,v])=>`${esc(k)} ${esc(v.feed_reward.fodder)} 饲料（${esc(v.feed_reward.expire)} 过期）`).join('、')} —— 当晚作废，可运行福建活动领取`]);
   let noSign=[];
   (STATE.accounts||[]).forEach(g=>Object.entries(g.plats||{}).forEach(([plat,a])=>{
     const st=a.stats||{};
@@ -1290,12 +1340,9 @@ function importHar(){
   fr.readAsText(f);
 }
 function runAll(platform){
-  // 消消乐只跟随「一键签到」；只跑单个平台时不带，避免误消耗游戏次数。
-  // 勾了就要确认：它是伪造通关成绩，门槛不能比消消乐专页还低。
-  const xxl=(platform==='all'&&$('dashXxl')&&$('dashXxl').checked)?1:0;
-  if(xxl&&!confirm('本次一键签到包含消消乐（伪造游戏通关成绩，性质比空报浏览更重）。\n\n确定继续吗？'))return;
   return act({action:'run_all',platform:platform,
-    dry:($('dashDry')&&$('dashDry').checked)?1:0, xxl:xxl});}
+    dry:$('dashDry').checked, luck:platform==='all'});
+}
 // 刷新状态本身就是只读检查，不该顺手改掉用户勾的选项
 function refreshStatus(){act({action:'refresh_status'});}
 // 日志

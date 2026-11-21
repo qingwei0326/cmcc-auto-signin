@@ -141,6 +141,28 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(v["by_account"]["1234"]["flow_mb"], 1024.0)
         self.assertIn(datetime.now().strftime("%Y-%m-%d"), v["by_day"]["1234"])
 
+    def test_view_drops_non_flow_fee_rows(self):
+        """打车券、AI豆券这类两栏都是「—」的行不进明细。
+
+        用户要的是「今天到手多少流量、几张话费券」，混进无关券会显得乱，
+        而且「面额/折合流量」两列全空，看着像数据没读到。
+        """
+        C.record_award("13800001234", "环闽寻宝", "1GB流量日包券")
+        C.record_award("13800001234", "环闽寻宝", "滴滴打车券包")
+        C.record_award("13800001234", "环闽寻宝", "10AI豆兑换券")
+        v = D._awards_view()
+        names = [r["name"] for r in v["recent"]]
+        self.assertIn("1GB流量日包券", names)
+        self.assertNotIn("滴滴打车券包", names)
+        self.assertNotIn("10AI豆兑换券", names)
+
+    def test_view_drops_paid_bundle(self):
+        """「15元购10GB」要花钱买，不能算成到手的 10GB。"""
+        C.record_award("13800001234", "环闽寻宝", "15元购10GB流量7天包券")
+        v = D._awards_view()
+        self.assertEqual([r["name"] for r in v["recent"]], [])
+        self.assertEqual(v["month"]["flow_mb"], 0.0)
+
     def test_flow_redpacket_shows_as_flow(self):
         C.record_award("13900005678", "天天大转盘", "1GB流量手气红包")
         v = D._awards_view()

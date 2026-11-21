@@ -1208,7 +1208,11 @@ def _awards_view(limit=40) -> dict:
             continue
         seen[sig] = 1
         if r.get("need_recharge"):
-            continue                 # 要充值的券不上榜
+            continue                 # 要充值 / 要花钱买的券不上榜
+        if r.get("kind") not in ("flow", "fee"):
+            # 打车券、AI豆兑换券这类既不折流量也不抵话费，列出来两栏全是「—」，
+            # 用户要的是「今天到手多少流量、几张话费券」，所以不进明细。
+            continue
         recent.append(r)
         if len(recent) >= limit:
             break

@@ -391,6 +391,10 @@ prize/list       prize/claim     assist/create  assist/detail  assist/do
 **好友助力和打开消息提醒一律不代报**（`SKIP_TASKS`），要助力只能
 `--invite` 生成链接发给真人。
 
+助力还有一条服务端限制：**同一对号码每月只能互相助力一次**，
+重复会回 `status=8「本月已助力过该发起者」`（实测两个号互相帮过之后就再也点不动，
+换新邀请链接也没用）。自己两个号互帮解决不了，需要第三个人。
+
 ```bash
 python cmcc_xunbao.py --dry-run        # 只查进度/骰子/任务/奖品
 python cmcc_xunbao.py                  # 投掉现有骰子

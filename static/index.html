@@ -266,9 +266,9 @@ select.inp{cursor:pointer}
           <div class="strip" id="awSum"></div>
           <table class="runtab" id="awTab"></table>
           <div class="infobox" style="margin-top:10px">
-            只记「到手可用」：流量包按 1GB=1024MB 折算；话费券里<b>要充值才生效</b>的（例如充值 9.9 折、满 30 减 5）
-            不在这里列，只在上面的数字里单独计数。数据来源是脚本领到东西那一刻写的流水，
-            所以定时任务跑的也会出现在这里。
+            只记<b>到手就能直接用</b>的：流量包按 1GB=1024MB 折算。要充值才生效的券（充值 9.9 折、满 30 减 5）、
+            要花钱买的券包（15 元购 10GB）、满减型手气红包<b>一律不进台账</b>，免得把没到手的东西算成到手。
+            数据来源是脚本领到东西那一刻写的流水，所以定时任务跑的也会出现在这里。
             <br><b>兑换要短信验证码，只能你本人在手厅点</b>，所以这里不提供跳转链接，只记账。</div>
         </div>
         <div id="cards"></div>
@@ -326,17 +326,6 @@ select.inp{cursor:pointer}
             <button class="btn" onclick="act({action:'luck_run',no_tasks:1},()=>setTimeout(pullState,2500))">只抽不刷任务</button>
           </div>
           <div id="luckBox"></div>
-        </div>
-        <div class="panel">
-          <h3>环闽寻宝记 <span class="hint">投骰子走棋盘，到终点开藏宝阁</span></h3>
-          <div class="infobox">骰子当天不用就作废。点「投掉现有骰子」会先把「参与天天大转盘」这类
-            真做过的任务报掉换骰子，再一路投到没骰子为止；走到第 29 格会自动开宝箱。
-            <b>好友助力不会代报</b>（那个得真有好友点链接）。中奖直接进上面的到账台账。</div>
-          <div class="frow">
-            <button class="btn pri" onclick="act({action:'xunbao_run'},()=>setTimeout(pullState,3000))">投掉现有骰子</button>
-            <button class="btn" onclick="act({action:'xunbao_run',dry:1},()=>setTimeout(pullState,2500))">只查进度</button>
-          </div>
-          <div id="xunbaoBox"></div>
         </div>
       </div>
 
@@ -425,6 +414,18 @@ select.inp{cursor:pointer}
             <br><b>周任务只在周一之后、月任务只在 1 号之后才尝试</b>——没到周期直接跳过，不空发请求（这个接口有频控）；
             做了一半的（进行中）不受周期限制，会先收尾。</div>
           <div id="fbTasks"></div>
+        </div>
+        <div class="panel">
+          <h3>环闽寻宝记 <span class="hint">投骰子走棋盘，到终点开藏宝阁</span></h3>
+          <div class="infobox">骰子当天不用就作废。点「投掉现有骰子」会先把「参与天天大转盘」这类
+            真做过的任务报掉换骰子，再一路投到没骰子为止；走到第 29 格会自动开宝箱。
+            <b>好友助力不会代报</b>（那个得真有好友点链接，脚本只能 `--invite` 生成链接）。
+            中奖直接记进「总览 → 到账台账」。</div>
+          <div class="frow">
+            <button class="btn pri" onclick="act({action:'xunbao_run'},()=>setTimeout(pullState,3000))">投掉现有骰子</button>
+            <button class="btn" onclick="act({action:'xunbao_run',dry:1},()=>setTimeout(pullState,2500))">只查进度</button>
+          </div>
+          <div id="xunbaoBox"></div>
         </div>
       </div>
 
@@ -687,18 +688,11 @@ function render(){
   // 到账台账（用户只关心「今天到手多少流量 / 几张能用的券」）
   const aw=STATE.awards||{}, awM=aw.month||{}, awT=aw.today||{}, awBy=aw.by_account||{}, awDay=aw.by_day||{};
   const awFmt=mb=>mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');
-  // 有门槛的券（满减 / 充值券）不计入可用张数；话费手气红包连这里都不出现
-  const thM=(aw.month_threshold||[]).map(x=>x.name).filter(Boolean);
-  const thTip=thM.length?` title="不计入可用张数：${esc(thM.join('、'))}"`:'';
-  const thCell=(awM.recharge_count||0)
-    ? '<div class="cell"'+thTip+'><div class="k">有门槛才能用</div><div class="v">'
-      +awM.recharge_count+'<small> 张 · ¥'+fy(awM.recharge_yuan)+'</small></div></div>'
-    : '';                       // 没有就不占位，免得出现「0 张」这种废话
   if($('awSum'))$('awSum').innerHTML=`
     <div class="cell"><div class="k">今日已得流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
     <div class="cell"><div class="k">今日已得话费</div><div class="v">${awT.fee_count||0}<small> 张 · ¥${fy(awT.fee_yuan)}</small></div></div>
     <div class="cell"><div class="k">本月已得流量</div><div class="v">${awFmt(awM.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">本月已得话费</div><div class="v">${awM.fee_count||0}<small> 张 · ¥${fy(awM.fee_yuan)}</small></div></div>${thCell}`;
+    <div class="cell"><div class="k">本月已得话费</div><div class="v">${awM.fee_count||0}<small> 张 · ¥${fy(awM.fee_yuan)}</small></div></div>`;
   const awRows=aw.recent||[];
   if($('awTab'))$('awTab').innerHTML= awRows.length
     ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">面额</th><th class="num">折合流量</th></tr>'+

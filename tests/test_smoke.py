@@ -13,6 +13,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -431,6 +432,55 @@ class TestTokenLifeProbe(unittest.TestCase):
                 if s.lower().startswith("rem"):
                     self.assertTrue(s.isascii(),
                                     f"{p.name} 的 rem 注释含非 ASCII 字符：{s}")
+
+
+class TestMailWatch(unittest.TestCase):
+    def test_mark_seen_writes_state(self):
+        """mark_seen 曾给 atomic_write_json 多传 default 参数而抛异常，
+        导致导入成功后邮件没标记已读、下次重复导入。守住这个 bug。"""
+        import tempfile
+        import mail_watch as mw
+        with tempfile.TemporaryDirectory() as td:
+            real = mw.STATE
+            mw.STATE = Path(td) / "mail_state.json"
+            try:
+                mw.mark_seen("12345")
+                st = json.loads(mw.STATE.read_text(encoding="utf-8"))
+                self.assertIn("12345", st.get("seen", []))
+                mw.mark_seen("67890")
+                st = json.loads(mw.STATE.read_text(encoding="utf-8"))
+                self.assertEqual(set(st["seen"]), {"12345", "67890"})
+            finally:
+                mw.STATE = real
+
+    def test_run_once_notifies_on_success(self):
+        """用户明确要求：导入成功也要推通知（不只失败时）。守住这条链路。"""
+        from email.message import EmailMessage
+        import mail_watch as mw
+
+        msg = EmailMessage()
+        msg["Subject"] = "Har"
+        msg.set_content("body")
+        msg.add_attachment(b"[]", maintype="application", subtype="octet-stream",
+                           filename="ok.har")
+
+        fake = mock.Mock()
+        fake.search.return_value = ("OK", [b"900"])
+        fake.fetch.return_value = ("OK", [(b"900 (RFC822 {1}", msg.as_bytes())])
+
+        cfg = {"enabled": True, "host": "imap.test", "user": "u@t",
+               "password": "p", "sender": "", "subject_keyword": "HAR"}
+        with mock.patch.object(mw, "conf", return_value=cfg), \
+             mock.patch.object(mw, "should_check", return_value=True), \
+             mock.patch.object(mw, "load_state", return_value={}), \
+             mock.patch.object(mw, "connect", return_value=fake), \
+             mock.patch.object(mw, "mark_seen"), \
+             mock.patch.object(mw, "clear_need"), \
+             mock.patch("har_import.apply", return_value=["BASS 导入成功"]), \
+             mock.patch.object(mw, "notify", return_value=True) as n:
+            mw.run_once(cfg)
+            n.assert_called_once()
+            self.assertIn("HAR 自动导入完成", n.call_args[0][0])
 
 
 if __name__ == "__main__":

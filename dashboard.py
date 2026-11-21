@@ -1090,6 +1090,19 @@ def do_action(body: dict):
         except Exception as e:
             return {"ok": False, "err": f"测试失败：{e}"}
 
+    if act == "notify_report":
+        # 推送「今日战报」：当天到手的东西按账号分组，带流量/话费合计
+        from common import daily_report as _report, notify as _notify
+        title, body_txt = _report()
+        ch = load_global_settings()
+        sent = _notify(title, body_txt,
+                       str(ch.get("bark_url") or ""),
+                       str(ch.get("serverchan_sendkey") or ""),
+                       str(ch.get("pushplus_token") or ""))
+        if sent:
+            return {"ok": True, "msg": "已推送今日战报，看看手机有没有收到"}
+        return {"ok": False, "err": "没发出去：先在上面填一个推送方式并保存"}
+
     if act == "notify_test":
         # 发一条测试推送，验证通道是否通
         from common import notify as _notify

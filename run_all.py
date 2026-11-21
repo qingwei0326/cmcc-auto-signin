@@ -716,13 +716,27 @@ def main():
     elif good == len(results):
         mark_today_done()
 
+    # 推送通道配置：战报和失败提醒都用它
+    cfgs = []
+    for key in keys:
+        for f in sorted(PLATFORMS[key]["dir"].glob("*.json")):
+            cfgs.append(load_json(f, {}))
+    ch = collect_notify_settings(*cfgs)
+
+    # 跑完且没出错 → 推一条「今日战报」：当天到手的东西按账号分组。
+    # notify_once 按天去重，每小时轮询也只会推一条。
+    if not args.no_notify and good == len(results) and not TOKEN_DEAD_ACCOUNTS:
+        try:
+            from common import daily_report
+            title, detail = daily_report()
+            notify_once("daily_report", title, detail, ch["bark_url"],
+                        ch["serverchan_sendkey"], hours=20,
+                        pushplus_token=ch["pushplus_token"])
+        except Exception as e:
+            print(f"  [战报] 生成失败：{e}")
+
     # 失败才推送，避免每天正常签到都打扰；同类事当天只推一条
     if not args.no_notify and (good != len(results) or TOKEN_DEAD_ACCOUNTS):
-        cfgs = []
-        for key in keys:
-            for f in sorted(PLATFORMS[key]["dir"].glob("*.json")):
-                cfgs.append(load_json(f, {}))
-        ch = collect_notify_settings(*cfgs)
 
         if TOKEN_DEAD_ACCOUNTS:
             # 票过期不是「脚本坏了」，用户只需要知道「该重抓哪几个号」，一条就够

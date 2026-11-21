@@ -386,6 +386,75 @@ def awards_summary(month_prefix=None, usable_only=True):
             "recharge_count": recharge, "items": items}
 
 
+def daily_report(day_prefix=None):
+    """生成「今日战报」：当天到手的东西按账号分组，带流量/话费合计。
+
+    口径与 awards_summary 一致：
+      · ignored 的（话费手气红包、话费加赠券）不算数也不列明细；
+      · 有门槛的券（需充值）只计数，不算进「到手流量/话费」。
+    返回 (标题, 正文)。
+    """
+    day = day_prefix or datetime.now().strftime("%Y-%m-%d")
+    rows = [r for r in load_awards() if str(r.get("at", "")).startswith(day)]
+
+    by_acc = {}
+    for r in rows:
+        if r.get("ignored"):
+            continue
+        acc = str(r.get("account") or "").strip() or "未知账号"
+        # 只显示尾号：推送会落到手机锁屏上，不暴露完整手机号
+        # 同一个号可能一会儿记全号一会儿记尾号，统一按尾号归并
+        tail = re.sub(r"\D", "", acc)[-4:] or acc
+        by_acc.setdefault(tail, []).append(r)
+
+    if not by_acc:
+        return f"{day} 今日战报", "今天还没有到手的奖品。"
+
+    total_flow = 0.0
+    total_fee = 0
+    lines = []
+    for acc in sorted(by_acc):
+        items = by_acc[acc]
+        flow = sum(float(r.get("size_mb") or 0) for r in items
+                   if r.get("kind") == "flow" and not r.get("need_recharge"))
+        fee_yuan = sum(float(r.get("yuan") or 0) for r in items
+                       if r.get("kind") == "fee" and not r.get("need_recharge"))
+        fee_cnt = sum(1 for r in items
+                      if r.get("kind") == "fee" and not r.get("need_recharge"))
+        coupon_cnt = sum(1 for r in items if r.get("kind") == "coupon")
+        other_cnt = sum(1 for r in items if r.get("kind") == "other")
+        total_flow += flow
+        total_fee += fee_yuan
+
+        lines.append(f"【{acc}】")
+        for r in items:
+            if r.get("need_recharge"):
+                continue      # 有门槛的券不算到手，明细不列
+            src = r.get("source") or "其它"
+            lines.append(f"  · {r.get('name')}（{src}）")
+        bits = []
+        if flow:
+            bits.append(f"流量 {flow / 1024:.2f} GB" if flow >= 1024 else f"流量 {flow:.0f} MB")
+        if fee_cnt:
+            bits.append(f"话费券 {fee_cnt} 张（{fee_yuan:.0f} 元）")
+        if coupon_cnt:
+            bits.append(f"其它券 {coupon_cnt} 张")
+        if other_cnt:
+            bits.append(f"其它 {other_cnt} 项")
+        lines.append("  小计：" + ("、".join(bits) if bits else "无"))
+        lines.append("")
+
+    foot = []
+    if total_flow:
+        foot.append(f"合计流量 {total_flow / 1024:.2f} GB" if total_flow >= 1024
+                    else f"合计流量 {total_flow:.0f} MB")
+    if total_fee:
+        foot.append(f"合计话费 {total_fee:.0f} 元")
+    foot.append(f"共 {sum(len(v) for v in by_acc.values())} 项")
+    lines.append("—— " + "，".join(foot))
+    return f"{day} 今日战报", "\n".join(lines)
+
+
 # ---------------------------------------------------------------- 自动策略
 
 POLICY_FILE = BASE / "gui_data" / "policy.json"

@@ -1352,6 +1352,40 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             self.assertEqual(args[1], "游戏币")
             self.assertEqual(args[2], "100MB流量日包券")
 
+    def test_daily_report_groups_by_account_and_sums(self):
+        """今日战报：按账号分组、算流量/话费合计，且不列被忽略的券。"""
+        import common
+        with tempfile.TemporaryDirectory() as td:
+            real = common.AWARDS_FILE
+            common.AWARDS_FILE = Path(td) / "awards.json"
+            try:
+                common.atomic_write_json(common.AWARDS_FILE, {"records": [
+                    {"at": "2026-11-21 10:00:00", "account": "13900005678",
+                     "source": "环闽寻宝", "name": "1GB流量日包券", "kind": "flow", "size_mb": 1024.0},
+                    {"at": "2026-11-21 11:00:00", "account": "13900005678",
+                     "source": "每周秒杀", "name": "1元话费券", "kind": "fee", "yuan": 1.0},
+                    {"at": "2026-11-21 12:00:00", "account": "13800138000",
+                     "source": "环闽寻宝", "name": "7GB流量券包", "kind": "flow", "size_mb": 7168.0},
+                    # 话费加赠券属 ignored：不算数也不该出现在正文里
+                    {"at": "2026-11-21 13:00:00", "account": "13800138000",
+                     "source": "消消乐", "name": "5元话费加赠券", "kind": "fee", "yuan": 5.0, "ignored": True},
+                    # 别的日期不算今天
+                    {"at": "2026-11-20 13:00:00", "account": "13900005678",
+                     "source": "x", "name": "昨天的券"},
+                ]})
+                title, body = common.daily_report("2026-11-21")
+                self.assertIn("2026-11-21", title)
+                self.assertIn("5678", body)
+                self.assertIn("8000", body)
+                self.assertIn("8.00 GB", body)       # 1GB + 7GB
+                self.assertIn("1 元", body)
+                self.assertNotIn("加赠券", body)      # ignored 不列明细
+                self.assertNotIn("昨天的券", body)
+                # 手机号不能整串出现在推送正文里
+                self.assertNotIn("13900005678", body)
+            finally:
+                common.AWARDS_FILE = real
+
     def test_dashboard_has_games_page_and_action(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="p-games"', html)

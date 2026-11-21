@@ -14,7 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         # Windows 是实际运行环境；Linux 用来覆盖文件锁的 fcntl 分支
-        os: [windows-latest, ubuntu-latest]
+        # ubuntu-latest 已升到 26.04，setup-python 不再提供 3.9；固定 24.04 才能继续测最低版本
+        os: [windows-latest, ubuntu-24.04]
         # 3.9 是 README 承诺的最低版本，必须真的能跑
         python-version: ["3.9", "3.12"]
     runs-on: ${{ matrix.os }}

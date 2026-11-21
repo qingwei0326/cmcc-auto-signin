@@ -534,7 +534,7 @@ select.inp{cursor:pointer}
             <label style="min-width:auto">应用专用密码</label><input class="inp" id="mPass" type="password" placeholder="16 位授权码" style="min-width:180px"></div>
           <div class="frow"><label>邮箱类型</label>
             <select class="inp" id="mProvider" onchange="mailProvider()" style="min-width:130px">
-              <option value="qq">QQ邮箱（推荐）</option><option value="163">163邮箱</option><option value="gmail">Gmail（不推荐，需 OAuth2）</option>
+              <option value="qq">QQ邮箱（推荐）</option><option value="139">139邮箱</option><option value="163">163邮箱</option><option value="gmail">Gmail（不推荐，需 OAuth2）</option>
             </select>
             <label style="min-width:auto">IMAP</label>
             <input class="inp" id="mHost" value="imap.qq.com" style="min-width:170px">
@@ -1253,7 +1253,7 @@ async function saveSettings(){
 }
 // ---------------- 设置页：邮箱收 HAR ----------------
 let MAIL_ONCE=false;
-const MAIL_PRESETS={gmail:['imap.gmail.com',993],qq:['imap.qq.com',993],'163':['imap.163.com',993]};
+const MAIL_PRESETS={gmail:['imap.gmail.com',993],qq:['imap.qq.com',993],'163':['imap.163.com',993],'139':['imap.139.com',993]};
 function mailProvider(){
   const p=MAIL_PRESETS[$('mProvider').value];
   if(p){$('mHost').value=p[0];$('mPort').value=p[1];}

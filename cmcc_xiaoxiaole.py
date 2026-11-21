@@ -48,11 +48,12 @@ except ImportError:
     print("缺少 pycryptodome，请先运行：python -m pip install pycryptodome", file=sys.stderr)
     sys.exit(1)
 
-from common import record_award, setup_utf8
+from common import atomic_write_json, load_json, record_award, setup_utf8
 
 setup_utf8()
 
 BASE = Path(__file__).parent
+ASSIST_STATE = BASE / "gui_data" / "xxl_assist_state.json"
 HOST = "https://wap.fj.10086.cn"
 API = HOST + "/bass-commonAreaServer/H5Api/eliminate/"
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
@@ -150,8 +151,9 @@ def mutual_assist() -> None:
     """用 configs_fj 下的多个号互相点「请好友助力」。
 
     实测：share/{taskId} 生成助力码 → 另一个号 help/{码} → 被助力方 +200 金币。
-    服务端限制同一对号每月只能互点一次；再点会回「您本月已接受过TA的邀请」，
-    这属于正常情况，不算失败。
+    服务端限制同一对号每月只能互点一次；再点会回「您本月已接受过TA的邀请」。
+    成功过的「号对 + 月份」写进 gui_data/xxl_assist_state.json，下个月前直接跳过，
+    不再白跑接口。截图里写「每天5次」是给 5 个不同好友的，自己两个号做不到。
     """
     confs = sorted((BASE / "configs_fj").glob("*.json"))
     if len(confs) < 2:
@@ -167,32 +169,52 @@ def mutual_assist() -> None:
             continue
     if len(sessions) < 2:
         return
+    month = time.strftime("%Y-%m")
+    state = load_json(ASSIST_STATE, default={}) or {}
+    changed = False
+
+    def pair(a, b):
+        return "|".join(sorted((a, b)))
+
     print("\n多号互助力：")
     for owner, osess in sessions:
+        others = [(h, hs) for h, hs in sessions if h != owner]
+        pending = [(h, hs) for h, hs in others if state.get(pair(owner, h)) != month]
+        pending_names = {h for h, _ in pending}
+        for h, _ in others:
+            if h not in pending_names:
+                print(f"  - {h} 与 {owner} {month} 已互点，跳过")
+        if not pending:
+            continue
         sh = get_json(osess, "share/2")
         code = sh.get("data")
         if not code:
             print(f"  - {owner} 生成助力码失败: code={sh.get('code')} msg={sh.get('msg')!r}")
             continue
-        for helper, hsess in sessions:
-            if helper == owner:
-                continue
+        for helper, hsess in pending:
             r = get_json(hsess, "help/" + str(code))
             msg = str(r.get("msg") or "")
             if str(r.get("code")) == "0000":
                 print(f"  ✓ {helper} 帮 {owner}（{owner} +200 金币）")
+                state[pair(owner, helper)] = month
+                changed = True
             elif "本月已接受过" in msg:
-                print(f"  - {helper} 与 {owner} 本月已互点过")
+                print(f"  - {helper} 与 {owner} 本月已互点过（服务端口径）")
+                state[pair(owner, helper)] = month
+                changed = True
             else:
                 print(f"  ✗ {helper} 帮 {owner}: code={r.get('code')} msg={msg!r}")
+    if changed:
+        atomic_write_json(ASSIST_STATE, state)
 
 
 def do_coin_tasks(s: requests.Session) -> dict:
     """做金币任务，再把金币换成体力（爱心 id=12，200 金币/点）。
 
-    taskType=1（好友助力）必须真人点链接，服务端会拒绝直接上报，不代做；
+    taskType=1（好友助力）直接 doTask 会失败，由 mutual_assist() 用多号互点处理，这里跳过；
     taskType=2 是浏览/访问类，先 GET 任务页再 doTask；
     taskType=3（分享活动）实测 doTask 直接成功，可自动做。
+    已 hasComplete 的任务一律跳过，服务端每周/每月重置后再做。
     """
     info = get_json(s, "getTaskInfo")
     if str(info.get("code")) != "0000":

@@ -450,9 +450,10 @@ class TestHumanFacing(unittest.TestCase):
 
     def test_detect_level_autofills_input(self):
         self.assertIn("function detectLevel", self.html)
-        self.assertIn("自动探测当前关卡", self.html)
-        # 关卡号现在存在「设置 → 自动策略」里，探测结果回填到设置页
-        self.assertIn("$('sLevel').value=m[1]", self.html)
+        # 关卡改为运行时自动读取，探测按钮只做只读展示，不再回填/手填
+        self.assertIn("当前真实关卡", self.html)
+        self.assertIn("运行时自动使用", self.html)
+        self.assertNotIn("$('sLevel')", self.html)
 
     def test_cards_show_data_timestamp(self):
         self.assertIn("数据截至", self.html)

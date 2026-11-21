@@ -928,19 +928,21 @@ def do_action(body: dict):
         f = safe_conf_path(body.get("file"))
         if f is None or not f.is_file():
             return {"ok": False, "err": "配置文件非法或不存在"}
+        pol = load_policy().get("xxl") or {}
         cmd = py("cmcc_xiaoxiaole.py", "--config", str(f))
-        if body.get("dry"):
+        # 「探测关卡」按钮也走只读：脚本的 dry-run 会打印真实关卡，绝不能真开局
+        if body.get("dry") or body.get("detect"):
             cmd.append("--dry-run")
-        elif body.get("detect"):
-            cmd.append("--detect-level")
         else:
             # 前端现在从「设置 → 自动策略」读参数，传过来的是数字，
             # subprocess 只接受字符串，这里统一转一道，否则会报
             # 「expected str, bytes or os.PathLike object, not int」
-            cmd += ["--level", str(body.get("level", 49)),
-                    "--star", str(body.get("star", 3)),
-                    "--times", str(body.get("times", 5)),
-                    "--gap", str(body.get("gap", 12))]
+            cmd += ["--level", str(body.get("level", pol.get("level", 49))),
+                    "--star", str(body.get("star", pol.get("star", 3))),
+                    "--times", str(body.get("times", pol.get("times", 5))),
+                    "--gap", str(body.get("gap", pol.get("gap", 12)))]
+            if pol.get("tasks"):
+                cmd.append("--tasks")
         return _start("消消乐", cmd)
 
     # ---- token 管理 ----
@@ -1100,6 +1102,8 @@ def do_action(body: dict):
                     "star": min(3, max(0, int(xxl.get("star") or 3))),
                     "times": min(20, max(1, int(xxl.get("times") or 5))),
                     "gap": min(120, max(5, int(xxl.get("gap") or 12))),
+                    # 做金币任务 → 200 金币换 1 点体力，避免卡在「没体力」不动关卡
+                    "tasks": bool(xxl.get("tasks", True)),
                 }
             except Exception:
                 return {"ok": False, "err": "消消乐参数必须是数字"}

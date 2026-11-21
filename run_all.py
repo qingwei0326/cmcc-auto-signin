@@ -53,19 +53,46 @@ def token_dead_notice(accounts) -> tuple:
 
 # 每日自动喂养的「今天已喂过」标记，防止计划任务补跑时重复消耗饲料
 FEED_STATE = BASE / "gui_data" / "feed_state.json"
+# 三档饲料的领取状态（由 cmcc_fj 写入），用来判断能不能「领齐再一起喂」
+DAILY_STATE = BASE / "gui_data" / "daily_state.json"
+
+
+def all_tiers_claimed() -> bool:
+    """今天三档饲料（150/250/350）是否都已领到手。
+
+    档位之间要隔 60 分钟，全领完至少要约 3 小时。用户要求先把饲料领完
+    再一次性喂，而不是到点就先喂一部分，所以喂养必须等这个条件。
+    """
+    st = load_json(DAILY_STATE, default={}) or {}
+    today = datetime.date.today().isoformat()
+    confs = sorted((BASE / "configs_fj").glob("*.json"))
+    if not confs:
+        return False
+    for c in confs:
+        d = st.get(c.stem) or {}
+        if d.get("tiers_date") != today:
+            return False
+        tiers = d.get("tiers") or []
+        if len(tiers) < 3:
+            return False
+        if any(str(t.get("status") or "").upper() != "RECEIVED" for t in tiers[:3]):
+            return False
+    return True
 
 
 def feed_due(pol: dict) -> bool:
     """今天这一轮要不要自动喂养。
 
-    两个条件：现在正好是策略指定的那个小时、且今天还没喂过。
-    后者防的是计划任务「错过补跑」再触发一次，白烧 250×N 饲料。
+    三个条件：过了策略指定的最早时间、三档饲料今天已全部领到手、今天还没喂过。
+    最后一条防的是计划任务「错过补跑」再触发一次，白烧 250×N 饲料。
     """
     try:
         hour = int(pol.get("feed_hour"))
     except Exception:
         return False
-    if datetime.datetime.now().hour != hour:
+    if datetime.datetime.now().hour < hour:
+        return False
+    if not all_tiers_claimed():
         return False
     st = load_json(FEED_STATE, default={}) or {}
     return st.get("date") != datetime.date.today().isoformat()

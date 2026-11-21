@@ -528,7 +528,8 @@ select.inp{cursor:pointer}
         <div class="panel">
           <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span></h3>
           <div class="infobox">这里定的是<b>自动任务</b>的行为，不用每次手动勾：
-            <br>· <b>每天自动喂养</b>：只在指定小时的那一轮喂，<b>一天最多喂一次</b>，饲料不足会自动停手；
+            <br>· <b>每天自动喂养</b>：等三档饲料（150/250/350，档间隔 60 分钟）<b>全部领齐后</b>，
+            在指定时间之后那一轮<b>一次性喂完</b>，不再领一档喂一档；<b>一天最多喂一次</b>，饲料不足自动停手；
             勾「喂到饲料用完」就不用填轮数，按当天饲料自动算
             <br>· <b>阶段喂满时</b>：停手等你 / 领奖后继续喂 / 放弃本阶奖品直接升阶
             <br>· <b>伪造类</b>默认关闭；打开等于让脚本空报浏览，自行判断
@@ -539,7 +540,7 @@ select.inp{cursor:pointer}
             <label class="chk" title="轮数按当天饲料自动算，喂到不足 250 为止，不用填数字"><input type="checkbox" id="pFeedAll" onchange="feedAllToggle('p')">喂到饲料用完</label>
             <label style="min-width:auto">在</label>
             <input class="inp" id="pFeedHour" type="number" min="0" max="23" value="12" style="min-width:64px">
-            <span style="font-size:12px;color:var(--sub)">点那一轮</span></div>
+            <span style="font-size:12px;color:var(--sub)">点之后（三档领齐即喂）</span></div>
           <div class="frow"><label>阶段喂满时</label>
             <select class="inp" id="pFull" style="min-width:210px">
               <option value="stop">停手，等我自己决定</option>

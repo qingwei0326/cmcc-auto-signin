@@ -521,24 +521,48 @@ class TestHumanFacing(unittest.TestCase):
 class TestFeedOncePerDay(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.real = run_all.FEED_STATE
+        self.real_feed = run_all.FEED_STATE
+        self.real_base = run_all.BASE
+        self.real_daily = run_all.DAILY_STATE
         run_all.FEED_STATE = Path(self.tmp.name) / "feed_state.json"
+        run_all.DAILY_STATE = Path(self.tmp.name) / "daily_state.json"
+        run_all.BASE = Path(self.tmp.name)
+        d = run_all.BASE / "configs_fj"
+        d.mkdir()
+        (d / "1234.json").write_text("{}", encoding="utf-8")
+        self.set_tiers()
 
     def tearDown(self):
-        run_all.FEED_STATE = self.real
+        run_all.FEED_STATE = self.real_feed
+        run_all.BASE = self.real_base
+        run_all.DAILY_STATE = self.real_daily
         self.tmp.cleanup()
 
-    def test_due_only_in_configured_hour(self):
+    def set_tiers(self, statuses=("RECEIVED", "RECEIVED", "RECEIVED")):
+        today = datetime.now().date().isoformat()
+        run_all.DAILY_STATE.write_text(json.dumps({
+            "1234": {"tiers_date": today,
+                     "tiers": [{"status": s} for s in statuses]},
+        }), encoding="utf-8")
+
+    def test_due_only_after_configured_hour(self):
         hour = datetime.now().hour
         self.assertTrue(run_all.feed_due({"feed_hour": hour}))
-        self.assertFalse(run_all.feed_due({"feed_hour": (hour + 3) % 24}))
+        if hour < 23:
+            self.assertFalse(run_all.feed_due({"feed_hour": hour + 1}))
+
+    def test_not_due_until_all_tiers_claimed(self):
+        """三档没领齐不能先喂，用户要求领完再一起喂。"""
+        self.set_tiers(("RECEIVED", "RECEIVED", "PENDING"))
+        self.assertFalse(run_all.feed_due({"feed_hour": 0}))
+        self.set_tiers()
+        self.assertTrue(run_all.feed_due({"feed_hour": 0}))
 
     def test_second_run_same_day_is_skipped(self):
         """计划任务补跑不能重复烧饲料。"""
-        hour = datetime.now().hour
-        self.assertTrue(run_all.feed_due({"feed_hour": hour}))
+        self.assertTrue(run_all.feed_due({"feed_hour": 0}))
         run_all.mark_fed()
-        self.assertFalse(run_all.feed_due({"feed_hour": hour}))
+        self.assertFalse(run_all.feed_due({"feed_hour": 0}))
 
     def test_bad_hour_never_due(self):
         self.assertFalse(run_all.feed_due({}))

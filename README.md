@@ -304,6 +304,7 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 | `prize` | 领奖档位：`fee` 话费 / `flow` 流量 / `discount` 折扣 |
 | `tasks` / `fb_tasks` | 空报浏览类，默认 `false` |
 | `luck` | `true` = 每天顺带把「优惠专区 · 天天大转盘」的免费次数抽完（只花已有次数，不替人做加次数任务），默认 `true` |
+| `xunbao` / `xunbao_tasks` | `true` = 每天顺带把「环闽寻宝记」的骰子投完、到终点开宝箱；`xunbao_tasks` 控制是否顺手报「参与天天大转盘」换骰子（好友助力永不代报），默认都 `true` |
 
 命令行等价写法：`python run_all.py --daily-only` 会自动读取该策略并注入
 `--feed N`（或 `--feed-all`）`--auto-claim --prize flow` 等参数；
@@ -363,6 +364,42 @@ GET /bass-preferentialAreaServer/luck/join               → 抽奖
 
 **关键**：`preferentialAreaServer` 与养成游戏共用同一套 bass 鉴权，所以
 `configs_fj/*.json` 里的 `bearer_token` 可直接用于抽奖，**不需要抓包**。
+
+### 环闽寻宝记（`cmcc_xunbao.py`）
+
+活动页 `https://wap.fj.10086.cn/bass-activityH5/pages/nationalDay2026/index`，
+后端是 `bass-commonAreaServer/H5Api/hmxb/*`，全部 POST JSON，body 只要 `appId` + `timestamp`：
+
+```
+activity/status  activity/init   dice/balance   dice/roll
+task/list        task/report     treasure/open  treasure/poolPreview
+prize/list       prize/claim     assist/create  assist/detail  assist/do
+```
+
+玩法是投骰子在一张 29 格的八闽棋盘上走，落点有福袋/锦鲤/歇脚/事件/集市，
+走到第 29 格开「藏宝阁」宝箱（奖池头奖 888 元话费券包）。
+
+**两个坑**：
+
+1. **UA 必须带 App 标记** `leadeon/12.5.7/CMCCIT`。只写 `leadeon/12` 时
+   `activity/status` 能过，但所有用户态接口都回 `2004 请前往中国移动App参与活动`。
+2. 骰子当天不用就作废；来源是任务（好友助力 3 次/天、打开消息提醒一次性 5 个、
+   参与天天大转盘 1 次/天）。
+
+程序只做「投掉现有骰子 + 领待领取奖品 + 到终点开宝箱」，
+`--tasks` 只上报「参与天天大转盘」这类本程序真的做过的跳转任务；
+**好友助力和打开消息提醒一律不代报**（`SKIP_TASKS`），要助力只能
+`--invite` 生成链接发给真人。
+
+```bash
+python cmcc_xunbao.py --dry-run        # 只查进度/骰子/任务/奖品
+python cmcc_xunbao.py                  # 投掉现有骰子
+python cmcc_xunbao.py --key fj2 --tasks  # 顺手上报大转盘任务换骰子
+python cmcc_xunbao.py --key fj1 --invite # 只生成好友助力链接
+```
+
+中奖会写进「到账台账」。注意「15元购10GB」这类是**付费券包**，
+按 `common.PAY_WORDS` 判成有门槛，不算「已得流量」。
 
 ---
 

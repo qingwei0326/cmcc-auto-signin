@@ -174,8 +174,14 @@ class TestXxlExitCode(unittest.TestCase):
             cfg.write_text(json.dumps({"bearer_token": "x" * 36}), encoding="utf-8")
             argv = ["cmcc_xiaoxiaole.py", "--config", str(cfg),
                     "--times", str(times), "--gap", "0"]
+            # record_award 必须挡住：这条用例会造一个「500MB月包券」，
+            # 不拦的话每跑一次测试就往真实台账（gui_data/awards.json）里
+            # 塞一条假到账，今天「已得流量」会凭空虚高 500MB。
+            self.awards = []
             with mock.patch.object(XXL, "post", fake_post), \
                  mock.patch.object(XXL, "time", fake_time), \
+                 mock.patch.object(XXL, "record_award",
+                                   lambda *a, **k: self.awards.append(a)), \
                  mock.patch.object(sys, "argv", argv), \
                  redirect_stdout(io.StringIO()):
                 return XXL.main()
@@ -184,6 +190,14 @@ class TestXxlExitCode(unittest.TestCase):
         limit = {"code": "0000", "data": {"playToken": "t", "reachedLimit": False}}
         ends = [{"code": "0000", "data": {"prizeName": "500MB月包券"}}]
         self.assertEqual(self._run(limit, ends), 0)
+
+    def test_win_is_recorded_to_ledger(self):
+        """中奖要进到账台账，否则「今天到手多少」少算消消乐那一份。"""
+        limit = {"code": "0000", "data": {"playToken": "t", "reachedLimit": False}}
+        ends = [{"code": "0000", "data": {"prizeName": "500MB月包券"}}]
+        self._run(limit, ends)
+        self.assertTrue(self.awards)
+        self.assertEqual(self.awards[0][2], "500MB月包券")
 
     def test_daily_limit_reached_is_zero(self):
         """次数用尽是预期内收尾，不该天天触发失败推送。"""
@@ -1037,6 +1051,89 @@ class TestWedPuzzle(unittest.TestCase):
         for name, args in calls:
             self.assertEqual(name, "cmcc_wed.py")
             self.assertIn("--dry-run", args)
+
+
+class TestSeckillLeaveStockNotSoldOut(unittest.TestCase):
+    """leaveStock 归零 ≠ 售罄（2026-11-21 12:36 实测）。
+
+    当时 4167 的 leaveStock 已经是 0.0，redeem 依然返回 SUCCESS 并真拿到券。
+    所以任何「库存为 0 就放弃」的分支都会白丢一张券，必须没有。
+    """
+
+    def _zone(self, leave_stock, status=None):
+        return {"id": 6, "startTime": "1795233600000", "endTime": "1795237200000",
+                "prize": {"id": "2021015394", "name": "1元话费券",
+                          "leaveStock": leave_stock, "status": status}}
+
+    def _window(self):
+        """返回 (start_srv_ms, deadline_srv_ms)：以「当前时刻」为基准。
+
+        不能写死 12:00/13:00 的绝对时间戳——那些时刻一过，
+        fire_redeem 会直接判定「场次窗口已结束」而提前返回，
+        用例就会变成跟运行时刻挂钩的假失败。
+        """
+        now_ms = int(time.time() * 1000)
+        return now_ms - 60_000, now_ms + 3_600_000
+
+    def test_fire_redeem_does_not_stop_when_leave_stock_is_zero(self):
+        """循环内的库存核对不得因 leaveStock=0 而停手。"""
+        import cmcc_seckill as SK
+        zone = self._zone(0.0)
+        start_ms, deadline_ms = self._window()
+        calls = {"n": 0}
+
+        def fake_post(s, referer, url, payload=None):
+            calls["n"] += 1
+            return {"code": "SUCCESS", "status": None,
+                    "data": {"prizeName": "1元话费券"}}
+
+        with mock.patch.object(SK, "api_post", side_effect=fake_post), \
+                mock.patch.object(SK, "query_stock", return_value=0.0), \
+                mock.patch.object(SK.time, "sleep", lambda d: None):
+            resp, reason = SK.fire_redeem(
+                None, "R", zone, interval=0.0, max_attempts=3,
+                deadline_srv_ms=deadline_ms, offset_ms=0.0,
+                start_srv_ms=start_ms)
+        self.assertEqual(reason, "SUCCESS",
+                         "leaveStock=0 时仍应继续打 redeem 并拿到 SUCCESS")
+        self.assertIsNotNone(resp)
+
+    def test_fire_redeem_reports_not_sold_out(self):
+        """打满次数后的失败原因不得写成「库存已抢完」这种误导性文案。"""
+        import cmcc_seckill as SK
+        zone = self._zone(0.0)
+        start_ms, deadline_ms = self._window()
+
+        def fake_post(s, referer, url, payload=None):
+            return {"code": "FAILED", "status": "TRAFFIC_LIMITED", "msg": "参与人数太多"}
+
+        with mock.patch.object(SK, "api_post", side_effect=fake_post), \
+                mock.patch.object(SK, "query_stock", return_value=0.0), \
+                mock.patch.object(SK.time, "sleep", lambda d: None):
+            resp, reason = SK.fire_redeem(
+                None, "R", zone, interval=0.0, max_attempts=2,
+                deadline_srv_ms=deadline_ms, offset_ms=0.0,
+                start_srv_ms=start_ms)
+        self.assertNotIn("抢完", reason, "失败原因不能断言库存已被抢完")
+
+    def test_prize_is_recorded_as_directly_redeemable_award(self):
+        """秒杀中的 1 元话费券要进收获台账，且按「无门槛可直接兑换」归类。"""
+        import cmcc_seckill as SK
+        import common as C
+        cfg = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg.phone = "13800001234"
+        zone = self._zone(0.0)
+        resp = {"code": "SUCCESS", "data": {"prizeName": "1元话费券"}}
+        with tempfile.TemporaryDirectory() as d:
+            awards = Path(d) / "awards.json"
+            with mock.patch.object(C, "AWARDS_FILE", awards):
+                name = SK.record_seckill_prize(resp, cfg, zone)
+                recs = C.load_awards()
+        self.assertEqual(name, "1元话费券")
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["kind"], "fee")
+        self.assertFalse(recs[0]["need_recharge"], "1 元话费券无门槛，应可直接兑换")
+        self.assertEqual(recs[0]["source"], "每周秒杀")
 
 
 class TestSeckillSessionRetry(unittest.TestCase):

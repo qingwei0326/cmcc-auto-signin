@@ -220,8 +220,16 @@ def find_har_files(extra_dirs=None):
 AWARDS_FILE = BASE / "gui_data" / "awards.json"
 AWARDS_KEEP = 600       # 只留最近 600 条，文件不会无限长
 
-# 名字里出现这些词 = 要充值/满减才能用，不算「到手可用」
-RECHARGE_WORDS = ("充值", "满", "首充", "续费", "开通", "办理")
+# 名字里出现这些词 = 有门槛才能用（要充值 / 满额 / 指定场景抵扣），不算「到手可用」。
+# 「手气红包」是转盘抽到的话费券，实测**满额才能抵扣**（2026-11-21 用户确认），
+# 所以不能当无门槛券计入「本月已得话费」，只单独计数。
+THRESHOLD_WORDS = ("充值", "满", "首充", "续费", "开通", "办理", "门槛", "手气红包")
+RECHARGE_WORDS = THRESHOLD_WORDS      # 旧名，保留兼容已有调用
+REDPACKET_WORD = "手气红包"            # 话费型手气红包直接忽略；流量型照常计入
+
+# 「15元购10GB」「13元购30GB」这种是**要先掏钱买**的券包，不是白拿的流量。
+# 名字里带「数字+元+购/办」，就按付费处理：不进「已得流量」，只标成有门槛。
+PAY_WORDS = ("元购", "元办", "元享", "元升级", "元包", "元/月")
 
 
 def parse_size_mb(text) -> float:
@@ -236,15 +244,37 @@ def parse_size_mb(text) -> float:
     return 0.0
 
 
-def classify_award(name) -> dict:
-    """把奖品名分成 流量 / 话费券 / 折扣券 / 其他，并标出「要不要充值才能用」。
+def parse_fee_yuan(text) -> float:
+    """「1元话费券」→1.0，「0.5元话费券」→0.5，「2-3元话费券手气红包」→3.0。
 
-    话费券只该展示能直接兑换的：像「充值9.9折券」「满30减5」这种
-    要充值才生效，记下来也没意义，界面要能过滤掉。
+    区间面额取**上限**（用户看到的是「最高能抵多少」）；认不出就 0。
+    """
+    t = str(text or "")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:[-~至]\s*(\d+(?:\.\d+)?))?\s*元", t)
+    if not m:
+        return 0.0
+    v = m.group(2) or m.group(1)
+    try:
+        return round(float(v), 2)
+    except Exception:
+        return 0.0
+
+
+def classify_award(name) -> dict:
+    """把奖品名分成 流量 / 话费券 / 折扣券 / 其他，标出门槛、面额、是否直接忽略。
+
+    规则（用户 2026-11-21 定）：
+    - **话费类「手气红包」**：满额才能抵扣，直接**不算也不显示**（`ignored=True`）
+    - **流量类「手气红包」**：照常计入到手流量（流量是无门槛到账的），
+      所以流量类判门槛时不看「手气红包」这个词
+    - 其它带「充值 / 满 / 首充 …」的券：算有门槛，只计数不列明细
     """
     t = str(name or "").strip()
     mb = parse_size_mb(t)
-    need_recharge = any(w in t for w in RECHARGE_WORDS)
+    paid = any(w in t for w in PAY_WORDS)
+    if paid:
+        # 付费券包（15元购10GB…）：东西还没到手，不能计入「已得流量」
+        mb = 0.0
     if mb > 0 and ("流量" in t or "G" in t.upper() or "M" in t.upper() or "包" in t):
         kind = "flow"
     elif "流量" in t:
@@ -255,7 +285,16 @@ def classify_award(name) -> dict:
         kind = "coupon"      # 折扣券/兑换券；need_recharge 会标出哪些要充值
     else:
         kind = "other"
-    return {"kind": kind, "size_mb": mb, "need_recharge": need_recharge}
+    words = THRESHOLD_WORDS if kind != "flow" else tuple(
+        w for w in THRESHOLD_WORDS if w != REDPACKET_WORD)
+    if kind == "fee" and "券包" in t:
+        # 「888元话费券包」是一包满减券，不是能直接抵 888 元的话费
+        words = tuple(words) + ("券包",)
+    need_recharge = paid or any(w in t for w in words)
+    return {"kind": kind, "size_mb": mb, "need_recharge": need_recharge,
+            "yuan": 0.0 if paid else parse_fee_yuan(t),
+            # 话费型手气红包：不算「到手可用」，也不进台账明细（流量型照常算）
+            "ignored": kind == "fee" and REDPACKET_WORD in t}
 
 
 def record_award(account, source, name, url="", size_mb=None, kind=None):
@@ -271,7 +310,9 @@ def record_award(account, source, name, url="", size_mb=None, kind=None):
         "name": t,
         "kind": kind or cls["kind"],
         "size_mb": float(size_mb if size_mb is not None else cls["size_mb"]),
+        "yuan": cls["yuan"],          # 面额（元）：话费券用来算「本月已得话费」
         "need_recharge": cls["need_recharge"],
+        "ignored": cls["ignored"],    # 话费型手气红包：记账但不显示、不计入
         "url": str(url or ""),
     }
 
@@ -294,17 +335,30 @@ def record_award(account, source, name, url="", size_mb=None, kind=None):
 
 
 def load_awards():
-    """读流水（新的在前）。"""
+    """读流水（新的在前）。
+
+    读的时候按**当前**规则重判一遍：历史数据是按旧规则写下的
+    （比如「手气红包」早先被当成无门槛券），这里自动纠正，不必手工改台账。
+    """
     try:
         st = load_json(AWARDS_FILE, default=None) or {}
     except Exception:
         st = {}
     recs = st.get("records") if isinstance(st, dict) else st
-    return list(reversed(recs or []))
+    out = list(reversed(recs or []))
+    for r in out:
+        if not isinstance(r, dict):
+            continue
+        cls = classify_award(r.get("name"))
+        r["need_recharge"] = cls["need_recharge"]      # 以当前规则为准（流量红包要改回 False）
+        r["ignored"] = cls["ignored"]
+        if not r.get("yuan") and cls["yuan"]:
+            r["yuan"] = cls["yuan"]                    # 老流水没存面额，读的时候补上
+    return out
 
 
 def awards_summary(month_prefix=None, usable_only=True):
-    """按月汇总：流量合计（MB）、可直兑话费券、需充值的券（只计数不展示明细）。"""
+    """按月汇总：流量合计（MB）、可直兑话费券、有门槛的券（只计数不展示明细）。"""
     month_prefix = month_prefix or datetime.now().strftime("%Y-%m")
     flow = 0.0
     fee = 0
@@ -312,6 +366,8 @@ def awards_summary(month_prefix=None, usable_only=True):
     items = []
     for r in load_awards():
         if not str(r.get("at", "")).startswith(month_prefix):
+            continue
+        if r.get("ignored"):          # 话费型手气红包：不算、不显示
             continue
         kind = r.get("kind")
         if kind == "flow":
@@ -336,6 +392,8 @@ POLICY_FILE = BASE / "gui_data" / "policy.json"
 # 「设置一次、长期生效」的默认值。键名与控制台、run_all 共用，改这里就全变了。
 POLICY_DEFAULT = {
     "luck": True,                # 每天把「优惠专区·天天大转盘」的免费次数抽完
+    "xunbao": True,              # 每天把「环闽寻宝记」的骰子投完（当天不用就作废）
+    "xunbao_tasks": True,        # 顺手报「参与天天大转盘」换骰子（好友助力不报）
     "bass": {
         "feed": 0,               # 每天自动喂几轮（每轮 250 饲料，0 = 不喂）
         "feed_all": False,       # True = 喂到饲料不足 250 为止，轮数自动算，不用填 feed

@@ -378,6 +378,41 @@ def run_wed(dry_run: bool) -> list:
     return results
 
 
+def run_xunbao(dry_run: bool, tasks: bool = False) -> list:
+    """环闽寻宝记：投掉现有骰子、开宝箱，中奖写进到账台账。"""
+    confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
+    if not confs:
+        print("环闽寻宝：没有福建账号，跳过。")
+        return []
+    script = BASE / "cmcc_xunbao.py"
+    if not script.is_file():
+        print("环闽寻宝：缺少 cmcc_xunbao.py。")
+        return [("xunbao", "环闽寻宝", False, 0)]
+
+    print(f"\n环闽寻宝记 · {len(confs)} 个福建账号")
+    args = []
+    if tasks:
+        # 只报「参与天天大转盘」这类这一轮真做过的任务；好友助力不会被报
+        args.append("--tasks")
+    if dry_run:
+        args.append("--dry-run")
+    results = []
+    for index, conf in enumerate(confs, 1):
+        # 寻宝是顺手多拿一次，挂了不能把整轮签到判成失败
+        try:
+            name, ok, sec, text = run_script(
+                script, conf, args, 600, idx=index, total=len(confs),
+                config_args=["--key", conf.stem],
+            )
+        except Exception as e:
+            print(f"  [xunbao] {conf.stem} 异常：{e}")
+            results.append(("xunbao", conf.stem, False, 0.0))
+            continue
+        print(text)
+        results.append(("xunbao", name, ok, sec))
+    return results
+
+
 def run_luck(dry_run: bool) -> list:
     """用福建账号现有的次数抽奖，并逐个记录结果。"""
     confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
@@ -420,6 +455,9 @@ def main():
     ap.add_argument("--xxl", action="store_true", help="签完之后接着跑消消乐")
     ap.add_argument("--xxl-times", type=int, default=5, help="消消乐每个号玩几局，默认 5")
     ap.add_argument("--luck", action="store_true", help="优惠专区使用已有转盘抽奖次数")
+    ap.add_argument("--xunbao", action="store_true", help="环闽寻宝记：投掉现有骰子")
+    ap.add_argument("--xunbao-tasks", action="store_true",
+                    help="寻宝顺手上报「参与天天大转盘」任务换骰子")
     ap.add_argument("--daily-only", action="store_true",
                     help="只补签到 + 领 BASS 每日奖励三档，用于每小时轮询")
     ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
@@ -476,6 +514,9 @@ def main():
         # 天天大转盘的免费次数当天不用就清零，跟着每日奖励一起抽完。
         # 抽奖只消耗已有次数（run_luck 传 --no-tasks），不会替人做加次数任务。
         args.luck = args.luck or bool(pol.get("luck", True))
+        # 寻宝的骰子当天不用就作废，跟着每日奖励一起投掉
+        args.xunbao = args.xunbao or bool(pol.get("xunbao", True))
+        args.xunbao_tasks = args.xunbao_tasks or bool(pol.get("xunbao_tasks", True))
         if pol.get("fb_tasks"):
             extra_map["bass"].append("--fb-tasks")
 
@@ -548,6 +589,9 @@ def main():
 
     if args.luck:
         results.extend(run_luck(args.dry_run))
+
+    if args.xunbao:
+        results.extend(run_xunbao(args.dry_run, tasks=args.xunbao_tasks))
 
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))

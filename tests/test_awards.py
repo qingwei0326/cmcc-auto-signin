@@ -141,6 +141,28 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(v["by_account"]["1234"]["flow_mb"], 1024.0)
         self.assertIn(datetime.now().strftime("%Y-%m-%d"), v["by_day"]["1234"])
 
+    def test_view_splits_by_platform(self):
+        """一个号两张卡：福建寻宝中的流量不能同时出现在「全国签到」卡上。"""
+        C.record_award("13800001234", "环闽寻宝", "7GB流量券包")
+        C.record_award("13800001234", "天天大转盘", "1GB流量日包")
+        C.record_award("13800001234", "每周秒杀", "1元话费券")
+        v = D._awards_view()
+        p = v["by_plat"]["1234"]
+        self.assertEqual(p["BASS"]["flow_mb"], 8192.0)
+        self.assertEqual(p["BASS"]["fee_count"], 0)
+        self.assertEqual(p["qwhdhub"]["flow_mb"], 0.0)
+        self.assertEqual(p["qwhdhub"]["fee_count"], 1)
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.assertEqual(v["by_day_plat"]["1234"]["BASS"][today], 8192.0)
+        self.assertNotIn("qwhdhub", v["by_day_plat"]["1234"], "全国卡的 7 天图不该画福建的流量")
+
+    def test_platform_mapping(self):
+        self.assertEqual(D.award_platform("每日签到"), "qwhdhub")
+        self.assertEqual(D.award_platform("每周秒杀"), "qwhdhub")
+        self.assertEqual(D.award_platform("环闽寻宝·藏宝阁"), "BASS")
+        self.assertEqual(D.award_platform("消消乐"), "BASS")
+        self.assertEqual(D.award_platform(""), "BASS")
+
     def test_view_drops_non_flow_fee_rows(self):
         """打车券、AI豆券这类两栏都是「—」的行不进明细。
 

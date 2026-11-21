@@ -759,7 +759,11 @@ def do_action(body: dict):
         cmd = py("run_all.py", "--platform", plat)
         if body.get("dry"):
             cmd.append("--dry-run")
-        if body.get("xxl"):
+        luck = plat == "all" and bool(body.get("luck"))
+        xxl = not luck and bool(body.get("xxl"))
+        if luck:
+            cmd.append("--luck")
+        elif xxl:
             cmd.append("--xxl")
             if body.get("xxl_times"):
                 cmd += ["--xxl-times", str(body["xxl_times"])]
@@ -769,9 +773,10 @@ def do_action(body: dict):
                 cmd += ["--seckill-at", body["seckill_at"]]
         pname = {"all": "全部平台", "qwhd": "全国签到", "bass": "福建活动",
                  "none": "不跑签到"}.get(plat, plat)
-        label = "一键签到（%s%s%s%s）" % (pname, "，只读检查" if body.get("dry") else "",
-                                     "，含消消乐" if body.get("xxl") else "",
-                                     "，含秒杀" if body.get("seckill") else "")
+        title = "签到领福利" if luck else "一键签到"
+        label = "%s（%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
+                                  "，含消消乐" if xxl else "",
+                                  "，含秒杀" if body.get("seckill") else "")
         return _start(label, cmd)
 
     if act == "qwhd_run":
@@ -977,6 +982,8 @@ def do_action(body: dict):
             "feed_all": bool(b.get("feed_all")),
             "tasks": bool(b.get("tasks")), "fb_tasks": bool(b.get("fb_tasks")),
         }}
+        # 转盘免费次数当天清零，默认开；界面勾掉才不自动抽
+        patch["luck"] = bool(body.get("luck", True))
         xxl = body.get("xxl")
         if isinstance(xxl, dict):
             try:
@@ -1134,6 +1141,7 @@ def build_state():
         "flowbank": _load_json_safe(DATA / "flowbank_state.json"),
         "daily": _load_json_safe(DATA / "daily_state.json"),
         "luck": _load_json_safe(DATA / "luck_state.json"),
+        "awards": _awards_view(),
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
         "sched": _sched_state(),
@@ -1143,6 +1151,69 @@ def build_state():
         "env": {"ok": env_ok, "msg": env_msg},
         "policy": load_policy(),
     }
+
+
+def _awards_view(limit=40) -> dict:
+    """到账台账：只挑「到手可用」的，按天/按号汇总给前端。
+
+    用户的原话是「别让我看喂了几次，就告诉我今天到手多少流量」，
+    所以这里的口径是**实际到手的流量 + 能直接兑换的话费券**，
+    要充值才生效的券只计数、不进列表。
+    """
+    try:
+        import common as C
+    except Exception:
+        return {"recent": [], "today": {}, "month": {}, "by_account": {}}
+
+    today = TODAY()
+    month = today[:7]
+    recs = C.load_awards()          # 新的在前
+    recent, seen = [], {}
+    for r in recs:
+        # 同一秒同一奖品的重复登记（多账号/重复读接口）只留一条
+        sig = (r.get("at"), r.get("account"), r.get("name"))
+        if sig in seen:
+            continue
+        seen[sig] = 1
+        if r.get("need_recharge"):
+            continue                 # 要充值的券不上榜
+        recent.append(r)
+        if len(recent) >= limit:
+            break
+
+    def agg(prefix):
+        flow, fee, recharge = 0.0, 0, 0
+        for r in recs:
+            if not str(r.get("at", "")).startswith(prefix):
+                continue
+            if r.get("need_recharge"):
+                recharge += 1
+                continue
+            if r.get("kind") == "flow":
+                flow += float(r.get("size_mb") or 0)
+            elif r.get("kind") == "fee":
+                fee += 1
+        return {"flow_mb": round(flow, 1), "fee_count": fee, "recharge_count": recharge}
+
+    by = {}
+    by_day = {}
+    for r in recs:
+        if not str(r.get("at", "")).startswith(month) or r.get("need_recharge"):
+            continue
+        tail = str(r.get("account") or "")[-4:] or "?"
+        b = by.setdefault(tail, {"flow_mb": 0.0, "fee_count": 0, "last": ""})
+        if r.get("kind") == "flow":
+            b["flow_mb"] = round(b["flow_mb"] + float(r.get("size_mb") or 0), 1)
+            d = str(r.get("at", ""))[:10]
+            dd = by_day.setdefault(tail, {})
+            dd[d] = round(dd.get(d, 0) + float(r.get("size_mb") or 0), 1)
+        elif r.get("kind") == "fee":
+            b["fee_count"] += 1
+        if not b["last"]:
+            b["last"] = r.get("name") or ""
+
+    return {"recent": recent, "today": agg(today), "month": agg(month),
+            "by_account": by, "by_day": by_day}
 
 
 def _list_token_life() -> list:
@@ -1446,11 +1517,14 @@ def _load_frontend() -> str:
 
     冻结成 exe 后页面在 PyInstaller 的解包目录里（_MEIPASS），源码运行时在项目根目录。
     两处都找不到就直接报错退出，而不是启动一个空白控制台。
+
+    顺序上**先看 exe 旁边的 static/**：改完界面不用重新打包就能生效，
+    只有把 exe 单独拷到别处（旁边没有 static/）时才回退到打包进去的那份。
+    早先是 _MEIPASS 优先，结果「改了 index.html、exe 里还是老界面」。
     """
-    candidates = []
+    candidates = [BASE / "static" / "index.html"]
     if getattr(sys, "frozen", False):
         candidates.append(Path(getattr(sys, "_MEIPASS", str(BASE))) / "static" / "index.html")
-    candidates.append(BASE / "static" / "index.html")
     for path in candidates:
         if path.is_file():
             return path.read_text(encoding="utf-8")

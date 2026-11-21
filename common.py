@@ -211,10 +211,131 @@ def find_har_files(extra_dirs=None):
 
 # ---------------------------------------------------------------- 自动策略
 
+# ---------------------------------------------------------------- 到账流水
+#
+# 用户只关心「今天到手多少流量、几张能用的券」，不关心喂了几次饲料。
+# 所以每个脚本领到东西的那一刻就写一条流水（gui_data/awards.json），
+# 控制台只读这份流水，不再靠日志文案反推 —— 定时任务 / 命令行跑的也能记上。
+
+AWARDS_FILE = BASE / "gui_data" / "awards.json"
+AWARDS_KEEP = 600       # 只留最近 600 条，文件不会无限长
+
+# 名字里出现这些词 = 要充值/满减才能用，不算「到手可用」
+RECHARGE_WORDS = ("充值", "满", "首充", "续费", "开通", "办理")
+
+
+def parse_size_mb(text) -> float:
+    """「1GB日包」→1024，「500MB」→500。认不出就 0。"""
+    t = str(text or "")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:GB|G)(?![a-zA-Z])", t, re.I)
+    if m:
+        return round(float(m.group(1)) * 1024, 1)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:MB|M)(?![a-zA-Z])", t, re.I)
+    if m:
+        return round(float(m.group(1)), 1)
+    return 0.0
+
+
+def classify_award(name) -> dict:
+    """把奖品名分成 流量 / 话费券 / 折扣券 / 其他，并标出「要不要充值才能用」。
+
+    话费券只该展示能直接兑换的：像「充值9.9折券」「满30减5」这种
+    要充值才生效，记下来也没意义，界面要能过滤掉。
+    """
+    t = str(name or "").strip()
+    mb = parse_size_mb(t)
+    need_recharge = any(w in t for w in RECHARGE_WORDS)
+    if mb > 0 and ("流量" in t or "G" in t.upper() or "M" in t.upper() or "包" in t):
+        kind = "flow"
+    elif "流量" in t:
+        kind = "flow"
+    elif "话费" in t:
+        kind = "fee"
+    elif "券" in t or "折" in t:
+        kind = "coupon"      # 折扣券/兑换券；need_recharge 会标出哪些要充值
+    else:
+        kind = "other"
+    return {"kind": kind, "size_mb": mb, "need_recharge": need_recharge}
+
+
+def record_award(account, source, name, url="", size_mb=None, kind=None):
+    """记一条到账流水。脚本领到东西就调它，失败也不能影响主流程。"""
+    t = str(name or "").strip()
+    if not t or "谢谢" in t:
+        return None
+    cls = classify_award(t)
+    row = {
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "account": str(account or ""),
+        "source": str(source or ""),
+        "name": t,
+        "kind": kind or cls["kind"],
+        "size_mb": float(size_mb if size_mb is not None else cls["size_mb"]),
+        "need_recharge": cls["need_recharge"],
+        "url": str(url or ""),
+    }
+
+    def mutate(st):
+        rec = st.setdefault("records", [])
+        # 同一账号同一来源同一奖品，60 秒内重复登记说明是重复读接口，忽略
+        if rec:
+            last = rec[-1]
+            if (last.get("account") == row["account"] and last.get("source") == row["source"]
+                    and last.get("name") == row["name"] and last.get("at", "")[:16] == row["at"][:16]):
+                return
+        rec.append(row)
+        st["records"] = rec[-AWARDS_KEEP:]
+
+    try:
+        update_json(AWARDS_FILE, mutate, default={"records": []})
+        return row
+    except Exception:
+        return None
+
+
+def load_awards():
+    """读流水（新的在前）。"""
+    try:
+        st = load_json(AWARDS_FILE, default=None) or {}
+    except Exception:
+        st = {}
+    recs = st.get("records") if isinstance(st, dict) else st
+    return list(reversed(recs or []))
+
+
+def awards_summary(month_prefix=None, usable_only=True):
+    """按月汇总：流量合计（MB）、可直兑话费券、需充值的券（只计数不展示明细）。"""
+    month_prefix = month_prefix or datetime.now().strftime("%Y-%m")
+    flow = 0.0
+    fee = 0
+    recharge = 0
+    items = []
+    for r in load_awards():
+        if not str(r.get("at", "")).startswith(month_prefix):
+            continue
+        kind = r.get("kind")
+        if kind == "flow":
+            flow += float(r.get("size_mb") or 0)
+        elif kind == "fee":
+            if r.get("need_recharge"):
+                recharge += 1
+                if usable_only:
+                    continue
+            fee += 1
+        if usable_only and r.get("need_recharge"):
+            continue
+        items.append(r)
+    return {"flow_mb": round(flow, 1), "fee_count": fee,
+            "recharge_count": recharge, "items": items}
+
+
+# ---------------------------------------------------------------- 自动策略
+
 POLICY_FILE = BASE / "gui_data" / "policy.json"
 
 # 「设置一次、长期生效」的默认值。键名与控制台、run_all 共用，改这里就全变了。
 POLICY_DEFAULT = {
+    "luck": True,                # 每天把「优惠专区·天天大转盘」的免费次数抽完
     "bass": {
         "feed": 0,               # 每天自动喂几轮（每轮 250 饲料，0 = 不喂）
         "feed_all": False,       # True = 喂到饲料不足 250 为止，轮数自动算，不用填 feed

@@ -179,14 +179,17 @@ def brief_error(text: str) -> str:
 
 
 def run_script(script: Path, conf: Path, args: list, timeout: int,
-               name: str = "", idx: int = 0, total: int = 0) -> tuple:
+               name: str = "", idx: int = 0, total: int = 0, *,
+               config_args=None) -> tuple:
     """跑一个子脚本。返回 (名称, 是否成功, 耗时, 输出文本)。
 
     输出不在子线程里直接打印，而是回传给主线程按顺序打印，
     否则并发执行时各账号的日志会交错在一起。
     签到 / 消消乐 / 秒杀三条链路共用这一份实现。
     """
-    cmd = [sys.executable, str(script), "--config", str(conf), *args]
+    if config_args is None:
+        config_args = ["--config", str(conf)]
+    cmd = [sys.executable, str(script), *config_args, *args]
     name = name or label_of(conf, "phone")
     head = f"--- [{idx}/{total}] {name}  ({conf.name}) ---" if idx else ""
     buf = []
@@ -375,6 +378,38 @@ def run_wed(dry_run: bool) -> list:
     return results
 
 
+def run_luck(dry_run: bool) -> list:
+    """用福建账号现有的次数抽奖，并逐个记录结果。"""
+    confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
+    if not confs:
+        print("优惠专区抽奖：没有福建账号，跳过。")
+        return []
+    script = BASE / "cmcc_luck.py"
+    if not script.is_file():
+        print("优惠专区抽奖：缺少 cmcc_luck.py。")
+        return [("luck", "优惠专区", False, 0)]
+
+    print(f"\n优惠专区抽奖 · {len(confs)} 个福建账号")
+    args = ["--no-tasks"]
+    if dry_run:
+        args.append("--dry-run")
+    results = []
+    for index, conf in enumerate(confs, 1):
+        # 转盘是「顺手多拿一次」，它挂掉不能把整轮签到判成失败
+        try:
+            name, ok, sec, text = run_script(
+                script, conf, args, 600, idx=index, total=len(confs),
+                config_args=["--key", conf.stem],
+            )
+        except Exception as e:
+            print(f"  [luck] {conf.stem} 异常：{e}")
+            results.append(("luck", conf.stem, False, 0.0))
+            continue
+        print(text)
+        results.append(("luck", name, ok, sec))
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -384,6 +419,7 @@ def main():
                     help='传给 BASS 脚本的额外参数，写成 --extra="--roll"')
     ap.add_argument("--xxl", action="store_true", help="签完之后接着跑消消乐")
     ap.add_argument("--xxl-times", type=int, default=5, help="消消乐每个号玩几局，默认 5")
+    ap.add_argument("--luck", action="store_true", help="优惠专区使用已有转盘抽奖次数")
     ap.add_argument("--daily-only", action="store_true",
                     help="只补签到 + 领 BASS 每日奖励三档，用于每小时轮询")
     ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
@@ -437,6 +473,9 @@ def main():
             extra_map["bass"] += ["--prize", prize]
         if pol.get("tasks"):
             extra_map["bass"].append("--tasks")
+        # 天天大转盘的免费次数当天不用就清零，跟着每日奖励一起抽完。
+        # 抽奖只消耗已有次数（run_luck 传 --no-tasks），不会替人做加次数任务。
+        args.luck = args.luck or bool(pol.get("luck", True))
         if pol.get("fb_tasks"):
             extra_map["bass"].append("--fb-tasks")
 
@@ -506,6 +545,9 @@ def main():
     if feed_injected and not args.dry_run and any(
             k == "bass" and ok for k, _n, ok, _s in results):
         mark_fed()
+
+    if args.luck:
+        results.extend(run_luck(args.dry_run))
 
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))

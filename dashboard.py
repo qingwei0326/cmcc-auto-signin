@@ -32,8 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from common import (atomic_write_json, load_policy, parse_result,
-                    save_policy, update_json)
+from common import (atomic_write_json, child_cmd, is_token_dead, load_policy,
+                    parse_result, save_policy, script_path, update_json)
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）
 if getattr(sys, "frozen", False):
@@ -47,12 +47,6 @@ RUNS_FILE = DATA / "runs.json"
 # 估算口径：一次人工签到（开App/切号/点任务/领奖励）约 5 分钟，自动化跑一轮即节省该时间
 MANUAL_MIN_PER_RUN = 5
 PORT = int(os.environ.get("CMCC_DASH_PORT", "8765"))
-# 冻结后 sys.executable 是 exe 自身，任务脚本需回退到系统 Python
-if getattr(sys, "frozen", False):
-    import shutil as _shutil
-    PY = _shutil.which("python") or _shutil.which("python3") or "python"
-else:
-    PY = sys.executable
 IS_WIN = os.name == "nt"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WIN else 0
 
@@ -65,31 +59,29 @@ _PREFLIGHT = {"at": 0.0, "ok": True, "msg": ""}
 
 
 def preflight(force=False):
-    """检查任务脚本能否执行，返回 (ok, 人话说明)。结果缓存 5 分钟。"""
+    """检查任务脚本能否执行，返回 (ok, 人话说明)。结果缓存 5 分钟。
+
+    打包后的 exe 自己就能解释执行任务脚本（`exe --run-script xxx.py`），
+    所以这里**不再要求系统装 Python**，只确认脚本文件躺在项目目录里。
+    早先的做法是 `shutil.which("python")`，没装 Python 的机器上双击能开界面、
+    一点执行就报错，用户完全不知道该怎么办。
+    """
     if not getattr(sys, "frozen", False):
         return True, ""
     now = time.time()
     if not force and _PREFLIGHT["at"] and now - _PREFLIGHT["at"] < 300:
         return _PREFLIGHT["ok"], _PREFLIGHT["msg"]
-    import shutil
-    exe = shutil.which("python") or shutil.which("python3")
-    if not exe:
-        ok, msg = False, ("找不到系统 Python，签到任务无法执行。\n\n"
-                          "请安装 Python 3.9+（64 位），安装时勾选 "
-                          "Add Python to PATH，装完重开本程序。\n"
-                          "下载：https://www.python.org/downloads/")
+
+    need = ["cmcc_sign.py", "cmcc_fj.py", "run_all.py"]
+    missing = [n for n in need if not (BASE / n).is_file()]
+    if missing:
+        ok = False
+        msg = ("缺少任务脚本：" + "、".join(missing) + "\n\n"
+               "本程序要和 cmcc_sign.py、cmcc_fj.py 等脚本放在同一个目录里"
+               "（也就是项目根目录）。\n"
+               "请把 exe 移回项目文件夹后重开。")
     else:
         ok, msg = True, ""
-        try:
-            p = subprocess.run([exe, "-c", "import requests"], capture_output=True,
-                               timeout=60, creationflags=NO_WINDOW)
-            if p.returncode != 0:
-                ok = False
-                msg = (f"已找到 Python（{exe}），但缺少 requests 等依赖。\n\n"
-                       f"请在项目目录打开 cmd 执行：\n"
-                       f"  \"{exe}\" -m pip install -r requirements.txt")
-        except Exception as e:
-            ok, msg = False, f"无法验证 Python 环境（{exe}）：{e}"
     _PREFLIGHT.update(at=now, ok=ok, msg=msg)
     return ok, msg
 
@@ -543,7 +535,14 @@ RUNNER = TaskRunner()
 
 
 def py(*args):
-    return [PY, *[str(a) for a in args]]
+    """构造子脚本命令。
+
+    冻结成 exe 后由 exe 自己带 --run-script 解释执行，**不再依赖系统 Python**；
+    源码运行时仍走 python xxx.py。共用 common.child_cmd，两条路径不会走岔。
+    """
+    if not args:
+        return []
+    return child_cmd(args[0], *args[1:])
 
 
 # ======================================================================

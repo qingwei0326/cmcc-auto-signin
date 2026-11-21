@@ -717,16 +717,19 @@ function render(){
         const row=hmap[d]||{date:d,flow_mb:0,tasks:0,feeds:0};
         row.flow_mb=(row.flow_mb||0)+awD[d]; hmap[d]=row;});
       const hist=last7(hmap);
-      const hasData=hist.some(h=>(h.flow_mb||0)>0||(h.tasks||0)>0||(h.feeds||0)>0);
+      // 图上只画「流量 / 任务」。早先还把喂养次数算成柱高，
+      // 于是 11-19 明明没有到账记录，却冒出一根柱子、悬停又写「无记录」，
+      // 前后自相矛盾。用户早说过不用看喂养，这里就别让它参与。
+      const hasData=hist.some(h=>(h.flow_mb||0)>0||(h.tasks||0)>0);
       const maxF=Math.max(1,...hist.map(h=>h.flow_mb||0));
       const bars=hist.map(h=>{
-        const f=h.flow_mb||0, fd=h.feeds||0, tk=h.tasks||0;
-        const hgt=f>0?Math.max(10,(f/maxF)*100):(fd>0?45:0);
+        const f=h.flow_mb||0, tk=h.tasks||0;
+        const hgt=f>0?Math.max(10,(f/maxF)*100):(tk>0?45:0);
         const parts=[];
         if(f)parts.push(f+'MB');
         if(tk)parts.push(tk+'任务');
         const tip=`${h.date.slice(5)} · ${parts.length?parts.join(' · '):'无记录'}`;
-        const cls=(f>0||fd>0||tk>0)?'bar':'bar off';
+        const cls=(f>0||tk>0)?'bar':'bar off';
         return `<div class="${cls}" style="height:${hgt}%"><span class="tip">${tip}</span></div>`;
       }).join('');
       const dates=hist.map(h=>`<span>${h.date.slice(8)}</span>`).join('');

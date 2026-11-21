@@ -458,6 +458,81 @@ def load_config(path, required=(), template="config.example.json"):
     return cfg
 
 
+# ---------------------------------------------------------------- 子脚本启动
+#
+# 冻结成 exe 后不再要求用户装 Python：由 exe 自己带 --run-script 解释执行脚本。
+# 源码运行时还是 python xxx.py。两条路径都从这里出，免得各写一份又走岔。
+
+RUN_SCRIPT_FLAG = "--run-script"
+
+
+def script_path(name) -> Path:
+    """脚本位置：优先 exe/项目同目录，其次打包内的解包目录。"""
+    name = str(name)
+    cands = [BASE / name]
+    mp = getattr(sys, "_MEIPASS", "")
+    if mp:
+        cands.append(Path(mp) / name)
+    for c in cands:
+        if c.is_file():
+            return c
+    return cands[0]
+
+
+def child_cmd(name, *args) -> list:
+    """构造「跑某个子脚本」的命令行。"""
+    p = script_path(name)
+    tail = [str(a) for a in args]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, RUN_SCRIPT_FLAG, str(p), *tail]
+    return [sys.executable, str(p), *tail]
+
+
+# ---------------------------------------------------------------- 通知
+
+# 凭证失效的典型文案。run_all 用它判断「这一轮是不是只是票过期了」，
+# 好把各账号的失败合并成一条通知。
+TOKEN_DEAD = re.compile(
+    r"(401|token\s*(失效|过期)|票据.*(失效|过期)|登录态.*(失效|过期)"
+    r"|请重新抓包|会话缺失|未登录|not\s*login|未登录态)", re.I)
+
+NOTIFY_STATE_FILE = BASE / "gui_data" / "notify_state.json"
+
+
+def is_token_dead(text) -> bool:
+    """这段输出是不是「凭证过期」，而不是真的执行出错。"""
+    return bool(TOKEN_DEAD.search(str(text or "")))
+
+
+def notify_once(key, title, detail, bark_url="", serverchan_sendkey="", hours=20) -> bool:
+    """同一类事 hours 小时内只推一次。
+
+    每日奖励是每小时跑一轮，凭证过期时一小时失败一次；每轮都推的话
+    一天能收到十几条一模一样的「失败」，等于没通知。按 key 去重，
+    票过期一天提醒一次就够，重抓之后自然会好。
+    """
+    now = datetime.now()
+    last = str((load_json(NOTIFY_STATE_FILE, {}) or {}).get(key) or "")
+    if last:
+        try:
+            spent = (now - datetime.strptime(last, "%Y-%m-%d %H:%M:%S")).total_seconds()
+            if spent < hours * 3600:
+                return False
+        except Exception:
+            pass
+    if not notify(title, detail, bark_url, serverchan_sendkey):
+        return False
+
+    def mutate(st):
+        st[key] = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        update_json(NOTIFY_STATE_FILE, mutate, default={})
+    except Exception:
+        pass
+    return True
+
+
 def collect_notify_settings(*cfgs):
     """从若干配置里收集推送设置（Bark / Server酱），环境变量优先。"""
     bark = os.environ.get("CMCC_BARK_URL", "").strip()
@@ -473,7 +548,13 @@ def collect_notify_settings(*cfgs):
 # ---------------------------------------------------------------- 通知
 
 def notify(title, detail, bark_url="", serverchan_sendkey=""):
-    """推送到 Bark 和/或 Server酱。失败只告警，绝不影响主流程。"""
+    """推送到 Bark 和/或 Server酱。失败只告警，绝不影响主流程。
+
+    批量运行（run_all）会设 CMCC_NOTIFY_BATCH=1：此时子脚本遇到「凭证过期」
+    不各自推送，由 run_all 收齐账号后合并成一条，避免两三个号各发一条。
+    """
+    if os.environ.get("CMCC_NOTIFY_BATCH") and is_token_dead(f"{title}\n{detail}"):
+        return False
     bark_url = (bark_url or os.environ.get("CMCC_BARK_URL", "")).strip()
     key = (serverchan_sendkey or os.environ.get("CMCC_SERVERCHAN_SENDKEY", "")).strip()
     if not bark_url and not key:

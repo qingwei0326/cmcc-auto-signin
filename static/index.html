@@ -155,13 +155,14 @@ table.runtab{width:100%;max-width:880px;border-collapse:collapse;font-size:13px;
 .runtab tr:last-child td{border-bottom:none}
 .runtab td.num{text-align:right;font-variant-numeric:tabular-nums}
 /* 到账台账：内容列必须给足宽度。runtab 是 table-layout:fixed，
-   六列平分 880px 会把「1GB流量日包」压成一字一行。 */
+   多列平分会把「1GB流量日包」压成一字一行。
+   不设「兑换」列：兑换要短信验证码，只能本人手动点，放链接反而误导。 */
 #awTab{table-layout:auto;max-width:100%}
 #awTab th:nth-child(1){width:110px}
 #awTab th:nth-child(2){width:120px}
 #awTab th:nth-child(3){width:100px}
-#awTab th:nth-child(5){width:92px}
-#awTab th:nth-child(6){width:78px}
+#awTab th:nth-child(5){width:88px}
+#awTab th:nth-child(6){width:96px}
 #awTab td:nth-child(4){min-width:180px}
 #awTab .tag{background:var(--card2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px;color:var(--sub)}
 /* 流量银行任务周期表 */
@@ -267,7 +268,8 @@ select.inp{cursor:pointer}
           <div class="infobox" style="margin-top:10px">
             只记「到手可用」：流量包按 1GB=1024MB 折算；话费券里<b>要充值才生效</b>的（例如充值 9.9 折、满 30 减 5）
             不在这里列，只在上面的数字里单独计数。数据来源是脚本领到东西那一刻写的流水，
-            所以定时任务跑的也会出现在这里。</div>
+            所以定时任务跑的也会出现在这里。
+            <br><b>兑换要短信验证码，只能你本人在手厅点</b>，所以这里不提供跳转链接，只记账。</div>
         </div>
         <div id="cards"></div>
         <div class="panel">
@@ -618,25 +620,40 @@ function render(){
   const tokState=(a,s)=>((a.plat==='qwhdhub'&&liveTok[a.key])?liveTok[a.key]
     :(a.plat==='qwhdhub'?s.token_qwhd:s.token_bass)||(a.token_state==='filled'?'unchecked':'empty'));
   // KPI
-  let flow=0,tasks=0,okTok=0,flowM=0,tasksM=0;
-  const days={},dayT={};
-  accts.forEach(a=>{const s=S[a.key]||{};flow+=s.flow_mb_total||0;tasks+=s.tasks_done_total||0;
-    flowM+=s.flow_mb_month||0;tasksM+=s.tasks_month||0;
+  let okTok=0,flowM=0;
+  const days={};
+  accts.forEach(a=>{const s=S[a.key]||{};
+    flowM+=s.flow_mb_month||0;
     if(tokState(a,s)==='ok')okTok++;
-    (s.history||[]).forEach(h=>{days[h.date]=(days[h.date]||0)+(h.flow_mb||0);dayT[h.date]=(dayT[h.date]||0)+(h.tasks||0);});});
+    (s.history||[]).forEach(h=>{days[h.date]=(days[h.date]||0)+(h.flow_mb||0);});});
   const dks=Object.keys(days).sort().slice(-7);
   const spark=(map)=>{const vals=dks.map(d=>map[d]||0);
     if(vals.length<2||!vals.some(v=>v>0))return '';
     const mx=Math.max(...vals),n=vals.length;
     const pts=vals.map((v,i)=>`${(i*100/(n-1)).toFixed(1)},${(25-23*v/mx).toFixed(1)}`).join(' ');
     return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;};
-  const spF=spark(days),spT=spark(dayT);
+  const spF=spark(days);
   // 本月流量以「到账台账」为准（含转盘/领奖），history 只记脚本回合，会漏抽奖
   const awFlowM=((STATE.awards||{}).month||{}).flow_mb||0;
   const flowMShow=Math.max(flowM,awFlowM);
+  // 「本月已得话费」= 到账台账里本月拿到的**无门槛话费券**（张数 + 面额合计）
+  // 有门槛的不计入（手气红包 / 满减 / 充值券），只在台账里单独计数
+  const awMonth=((STATE.awards||{}).month||{});
+  const fy=n=>{const v=Math.round((n||0)*100)/100;return Number.isInteger(v)?String(v):v.toFixed(2);};
+  const feeM=awMonth.fee_count||0;
+  const feeYuan=awMonth.fee_yuan||0;
+  const feeAll=((STATE.awards||{}).fee_total)||0;
+  const feeYuanAll=((STATE.awards||{}).fee_yuan_total)||0;
+  // 迷你趋势按「话费券到账日」画，和任务完成数无关
+  const feeDay=(STATE.awards||{}).fee_day||{};
+  const fdk=Object.keys(feeDay).sort().slice(-7);
+  const spFee=(fdk.length<2||!fdk.some(d=>feeDay[d]>0))?'':
+    (()=>{const vals=fdk.map(d=>feeDay[d]||0);const mx=Math.max(...vals),n=vals.length;
+     const pts=vals.map((v,i)=>`${(i*100/(n-1)).toFixed(1)},${(25-23*v/mx).toFixed(1)}`).join(' ');
+     return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;})();
   $('sumbar').innerHTML=`
     <div class="kpi"><div class="k">本月到手流量</div><div class="v">${flowMShow>=1024?(flowMShow/1024).toFixed(2)+'<small>GB</small>':flowMShow.toFixed(0)+'<small>MB</small>'}</div><div class="c">签到 / 领奖 / 转盘合计</div>${spF}</div>
-    <div class="kpi"><div class="k">本月完成任务</div><div class="v">${tasksM}<small>个</small></div><div class="c">历史合计 ${tasks} 个</div>${spT}</div>
+    <div class="kpi"><div class="k">本月已得话费</div><div class="v">${fy(feeYuan)}<small>元</small></div><div class="c">${feeM} 张 · 只算无门槛券，手气红包等有门槛的不计入（历史 ${feeAll} 张 / ${fy(feeYuanAll)} 元）</div>${spFee}</div>
     <div class="kpi"><div class="k">凭证可用</div><div class="v">${okTok}<small>/ ${accts.length} 份</small></div><div class="c">一个号码两份（全国 + 福建）</div></div>
     <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">过期需重新抓包导入</div></div>`;
   // 运行记录统计条
@@ -658,21 +675,23 @@ function render(){
   // 到账台账（用户只关心「今天到手多少流量 / 几张能用的券」）
   const aw=STATE.awards||{}, awM=aw.month||{}, awT=aw.today||{}, awBy=aw.by_account||{}, awDay=aw.by_day||{};
   const awFmt=mb=>mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');
+  // 有门槛的券（手气红包 / 满减 / 充值券）不计入可用张数，但鼠标悬停能看到是哪几张
+  const thM=(aw.month_threshold||[]).map(x=>x.name).filter(Boolean);
   if($('awSum'))$('awSum').innerHTML=`
     <div class="cell"><div class="k">今日到手流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
     <div class="cell"><div class="k">本月到手流量</div><div class="v">${awFmt(awM.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">本月可用话费券</div><div class="v">${awM.fee_count||0}<small> 张</small></div></div>
-    <div class="cell"><div class="k">需充值才能用</div><div class="v">${awM.recharge_count||0}<small> 张</small></div></div>`;
+    <div class="cell"><div class="k">本月可用话费券</div><div class="v">${awM.fee_count||0}<small> 张 · ¥${fy(awM.fee_yuan)}</small></div></div>
+    <div class="cell"${thM.length?` title="不计入可用张数：${esc(thM.join('、'))}"`:''}><div class="k">有门槛才能用</div><div class="v">${awM.recharge_count||0}<small> 张 · ¥${fy(awM.recharge_yuan)}</small></div></div>`;
   const awRows=aw.recent||[];
   if($('awTab'))$('awTab').innerHTML= awRows.length
-    ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">折合流量</th><th>兑换</th></tr>'+
+    ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">面额</th><th class="num">折合流量</th></tr>'+
       awRows.map(r=>`<tr>
         <td style="color:var(--sub)">${esc((r.at||'').slice(5,16))}</td>
         <td>${esc(r.account?mask(r.account):'—')}</td>
         <td>${esc(r.source||'')}</td>
         <td style="min-width:170px">${esc(r.name||'')}${r.kind==='fee'?' <span class="tag">话费券</span>':''}</td>
-        <td class="num">${(r.size_mb||0)>0?awFmt(r.size_mb):'—'}</td>
-        <td>${r.url?`<a href="${esc(r.url)}" target="_blank" rel="noreferrer">去兑换</a>`:'—'}</td></tr>`).join('')
+        <td class="num">${(r.yuan||0)>0?'¥'+fy(r.yuan):'—'}</td>
+        <td class="num">${(r.size_mb||0)>0?awFmt(r.size_mb):'—'}</td></tr>`).join('')
     : '<tr><td colspan="6" style="color:var(--sub);padding:14px">还没有到账记录 —— 领到流量或券会自动出现在这里</td></tr>';
   // 账号卡
   $('cards').innerHTML=STATE.accounts.map(g=>{
@@ -711,7 +730,7 @@ function render(){
           <div class="stat"><div class="k">本月任务</div><div class="v">${s.tasks_month||0}<small class="sum">累计 ${s.tasks_done_total||0}</small></div></div>
           <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${s.last_reward||'—'}</div></div>`
           :`
-          <div class="stat"><div class="k">本月到账</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张可用券</small></div></div>
+          <div class="stat"><div class="k">本月到账</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张券 · ¥${fy((awBy[(a.phone||'').slice(-4)]||{}).fee_yuan||0)}</small></div></div>
           <div class="stat"><div class="k">饲料余额</div><div class="v y">${fmtNum(s.fodder)}</div></div>
           <div class="stat"><div class="k">流量可兑</div><div class="v">${s.fb_exchange||'—'}</div></div>
           <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${s.stage||'—'}</div></div>`}

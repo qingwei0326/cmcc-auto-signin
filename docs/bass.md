@@ -272,6 +272,13 @@ GET /bass-preferentialAreaServer/luck/qrySubscription     → 订阅状态
 ```
 GET  /bass-commonAreaServer/H5Api/eliminate/getDailyPlayLimit → playToken
 POST /bass-commonAreaServer/H5Api/eliminate/playEnd           → 上报通关
+GET  /bass-commonAreaServer/H5Api/eliminate/indexInfo         → gameLevel / gold / physicalPower / gameRecordList
+POST /bass-commonAreaServer/H5Api/eliminate/playStart         → 真实客户端开局会调（脚本未依赖）
+GET  /bass-commonAreaServer/H5Api/eliminate/getTaskInfo       → taskInfoList / gold
+POST /bass-commonAreaServer/H5Api/eliminate/doTask  {id}      → 金币任务（taskType=2 浏览类）
+GET  /bass-commonAreaServer/H5Api/eliminate/getStoreInfo      → propInfoList（id=12 是体力/爱心）
+POST /bass-commonAreaServer/H5Api/eliminate/exchangeProp {id} → 200 金币换 1 点体力
+POST /bass-commonAreaServer/H5Api/eliminate/useGold    {gold} → 游戏内金币道具/复活
 ```
 
 **实测要点**
@@ -284,6 +291,11 @@ POST /bass-commonAreaServer/H5Api/eliminate/playEnd           → 上报通关
   用完返回 `-100 您的体力不足，无法进行挑战快去购买体力后再发起挑战吧!`
 - 体力不足时 `indexInfo` 等接口也返回 `-100`，**探测关卡失败不代表 token 失效**
 - 每次上报前要重新取一次 `playToken`
+- **关卡必须每次现读 `indexInfo.gameLevel`**。早期写死 49/63，账号涨到 51/64 后仍在报旧关，结果次数照扣、关卡好几天不动；改成每次读真实关卡后实测 64→65、65→66→67→68 正常推进。
+- `isOld` 的真实算法是「本地关卡 != 上报关卡」，用当前关卡上报时固定 `False`
+- 服务端会把「谢谢参与」也塞进 `prizeName`，不能算中奖、不能进台账
+- 金币任务：`taskType=2` 是浏览/访问类（先 GET 任务页再 `doTask`），1=好友助力、3=分享需真人操作，不代做
+- 体力：`getStoreInfo` 里 `propType=12`（道具爱心）200 金币/点，每日最多 20 次；`exchangeProp` 实测 200 金币 → `physicalPower +1`
 
 ---
 

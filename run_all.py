@@ -300,7 +300,11 @@ def run_platform(key: str, confs: list, dry_run: bool, extra: list,
 
 
 def run_xxl(dry_run: bool, times: int) -> list:
-    """跑消消乐：每个 configs_fj 配置一局，关卡用 --detect-level 自动探测。"""
+    """跑消消乐：每个 configs_fj 配置一局。
+
+    关卡每次现读 indexInfo.gameLevel（写死关卡会让次数扣了、关卡不动）；
+    策略里打开 tasks 时，先做金币任务并把金币换成体力再玩。
+    """
     script = BASE / "cmcc_xiaoxiaole.py"
     d = BASE / "configs_fj"
     results = []
@@ -316,9 +320,16 @@ def run_xxl(dry_run: bool, times: int) -> list:
     print(f" 消消乐   {len(confs)} 个账号")
     print("=" * 66)
 
+    pol = (load_policy().get("xxl") or {})
+    gap = int(pol.get("gap") or 15)
+    star = int(pol.get("star") or 3)
+
     def one(conf):
-        args = ["--star", "3", "--times", str(times), "--gap", "15",
-                "--dry-run" if dry_run else "--detect-level"]
+        args = ["--star", str(star), "--times", str(times), "--gap", str(gap)]
+        if not dry_run and pol.get("tasks"):
+            args.append("--tasks")
+        if dry_run:
+            args.append("--dry-run")
         return run_script(script, conf, args, 900)
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(confs))) as ex:

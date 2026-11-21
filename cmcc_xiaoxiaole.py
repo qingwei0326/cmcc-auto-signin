@@ -113,6 +113,16 @@ def post(s: requests.Session, path: str, body: dict = None, retries: int = 1) ->
     return j
 
 
+def get_json(s: requests.Session, path: str, params: dict = None) -> dict:
+    """消消乐的 GET 接口统一带 appId/timestamp。"""
+    q = {"appId": "0", "timestamp": str(int(time.time() * 1000))}
+    q.update(params or {})
+    try:
+        return s.get(API + path, params=q, timeout=20).json()
+    except Exception as e:
+        return {"code": "-1", "msg": f"请求异常: {e}", "data": None}
+
+
 def show_limit(s: requests.Session) -> dict:
     """打印今日次数并返回整个响应（调用方要看 code 判定 token 是否失效）。"""
     j = post(s, "getDailyPlayLimit")
@@ -120,6 +130,75 @@ def show_limit(s: requests.Session) -> dict:
     print(f"  今日已玩 {d.get('todayPlayCount')} 次 / dayLimit={d.get('dayLimit')} "
           f"reached={d.get('reachedLimit')}  code={j.get('code')}")
     return j
+
+
+def current_level(s: requests.Session):
+    """读账号真实关卡（indexInfo.gameLevel）。
+
+    这个项目曾经写死 49/63，结果账号涨到 51/64 后还在反复上报旧关：
+    次数照扣、关卡不动。真实客户端上报的是当前关，所以每次都现读。
+    返回 (level, indexInfo响应)，读不到时 level 为 None。
+    """
+    j = get_json(s, "indexInfo")
+    if str(j.get("code")) != "0000":
+        return None, j
+    lv = (j.get("data") or {}).get("gameLevel")
+    return (int(lv) if lv else None), j
+
+
+def do_coin_tasks(s: requests.Session) -> dict:
+    """做金币任务，再把金币换成体力（爱心 id=12，200 金币/点）。
+
+    taskType=1（好友助力）和 3（分享）需要真人社交动作，不代做；
+    taskType=2 是浏览/访问类，先 GET 任务页再 doTask。
+    """
+    info = get_json(s, "getTaskInfo")
+    if str(info.get("code")) != "0000":
+        print(f"  金币任务读取失败: code={info.get('code')} msg={info.get('msg')!r}")
+        return info
+    tasks = (info.get("data") or {}).get("taskInfoList") or []
+    done = 0
+    for t in tasks:
+        if t.get("hasComplete"):
+            continue
+        tid = t.get("id")
+        ttype = int(t.get("taskType") or 0)
+        name = t.get("taskName") or f"任务{tid}"
+        if ttype != 2:
+            print(f"  - 跳过「{name}」（需好友/分享等真人操作）")
+            continue
+        url = t.get("taskUrlHf") or t.get("taskUrlYjt") or t.get("taskUrlWx")
+        if url:
+            try:
+                s.get(url, timeout=20, allow_redirects=True)
+            except Exception:
+                pass
+        r = post(s, "doTask", {"id": tid})
+        ok = str(r.get("code")) == "0000"
+        print(f"  {'✓' if ok else '✗'} {name}  +{t.get('gainGold') or 0} 金币"
+              + ("" if ok else f"  code={r.get('code')} msg={r.get('msg')!r}"))
+        done += int(ok)
+
+    # 换体力：先刷新金币，再按商店里 id=12（道具爱心）的实际价格买
+    info2 = get_json(s, "getTaskInfo")
+    gold = int((info2.get("data") or {}).get("gold") or 0)
+    store = get_json(s, "getStoreInfo")
+    props = (store.get("data") or {}).get("propInfoList") or []
+    prop = next((p for p in props if int(p.get("propType") or 0) == 12), None)
+    if not prop:
+        print(f"  商店里没有体力道具，金币 {gold} 保留。")
+        return info
+    cost = int(prop.get("costGold") or 200)
+    bought = 0
+    while gold >= cost and bought < 20:  # 商店标注每日最多 20 次
+        r = post(s, "exchangeProp", {"id": prop.get("id")})
+        if str(r.get("code")) != "0000":
+            print(f"  兑换体力失败: code={r.get('code')} msg={r.get('msg')!r}")
+            break
+        gold -= cost
+        bought += 1
+    print(f"  金币任务完成 {done} 项，兑换体力 {bought} 点（{cost} 金币/点），剩余金币 {gold}。")
+    return info
 
 
 def prize_name(data) -> str:
@@ -132,10 +211,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="福建移动消消乐（半自动，慢速少量）")
     ap.add_argument("--config", default="configs_fj/fj2.json", help="账号配置 json")
     ap.add_argument("--dry-run", action="store_true", help="只读看次数，不玩游戏")
+    ap.add_argument("--tasks", action="store_true",
+                    help="先做金币任务，再把金币自动换成体力（200 金币/点）")
     ap.add_argument("--detect-level", action="store_true",
-                    help="从 indexInfo.gameRecordList 自动读取账号当前最高关卡（推荐先跑这个）")
+                    help="兼容旧用法；现在每次都会自动读 indexInfo 的真实关卡")
     ap.add_argument("--level", type=int, default=None,
-                    help="当前关卡号（必须接近账号真实进度，默认 63=抓包样本）")
+                    help="只在读不到真实关卡时使用的兜底关卡号（不要日常填）")
     ap.add_argument("--star", type=int, default=3, choices=[0, 1, 2, 3],
                     help="星级 score，0~3，默认 3（满星）")
     ap.add_argument("--times", type=int, default=5, help="本次玩几局，默认 5")
@@ -160,30 +241,28 @@ def main() -> int:
     print(f"账号配置: {args.config}")
     print("=" * 56)
 
+    if args.tasks:
+        print("\n金币任务 / 体力兑换：")
+        do_coin_tasks(s)
+
     lim0 = show_limit(s)
-    if args.dry_run and not args.detect_level:
+
+    # 每次都现读真实关卡。写死关卡会导致「次数扣了、关卡不动」——
+    # 项目早期 49/63 用了一阵，账号涨到 51/64 后就是这么废掉几天次数的。
+    detected, home = current_level(s)
+    if detected is not None:
+        print(f"  当前真实关卡: {detected}（indexInfo.gameLevel）")
+    elif str(home.get("code")) != "0000":
+        print(f"  读取真实关卡失败: code={home.get('code')} msg={home.get('msg')!r}")
+
+    if args.dry_run:
         print("\n--dry-run：仅查看，未玩游戏。")
         return 0 if str(lim0.get("code")) == "0000" else 1
 
-    # 自动探测当前关卡：indexInfo.gameRecordList 里最高 gameLevel 即账号进度
-    detected = None
-    if args.detect_level:
-        time.sleep(2)
-        idx = post(s, "indexInfo")
-        gr = (idx.get("data") or {}).get("gameRecordList") or []
-        if gr:
-            detected = max(int(g.get("gameLevel", 0)) for g in gr)
-            print(f"  自动探测当前关卡: {detected}（共 {len(gr)} 条通关记录）")
-        else:
-            code = str(idx.get("code"))
-            print(f"  探测关卡失败: code={code} msg={idx.get('msg')!r}")
-            if code == "-100":
-                print("  提示：-100 多为体力耗尽或今日次数用完（也可能短时限流），先试 1 局确认")
-        if args.dry_run:
-            print("\n--dry-run：仅查看，未玩游戏。")
-            return 0 if str(lim0.get("code")) == "0000" else 1
-
-    level = detected if detected is not None else (args.level if args.level is not None else 63)
+    level = detected if detected is not None else args.level
+    if level is None:
+        print("  读不到真实关卡，也没有 --level 兜底 —— 本轮不猜关卡，避免白扣次数。")
+        return 1
     print(f"\n参数: level={level}  star={args.star}  times={args.times}  gap={args.gap}s")
     print("提示: 中奖由服务端抽奖池决定，脚本不保证中奖；首抽大奖通常已用掉。\n")
 
@@ -193,6 +272,11 @@ def main() -> int:
     hard_fail = False   # 真失败（token/网关/参数），退出码 1
     soft_stop = False   # 预期内收尾（体力或次数用尽），退出码 0
     for i in range(args.times):
+        # 每局都现读关卡：上一局通关会 +1，写死关卡正是之前卡住的原因
+        lv_now, _ = current_level(s)
+        if lv_now is not None:
+            level = lv_now
+            print(f"  本局关卡: {level}")
         # 每局重新取一次性 token
         lim = post(s, "getDailyPlayLimit")
         ld = lim.get("data") or {}
@@ -224,16 +308,30 @@ def main() -> int:
         r = post(s, "playEnd", body)
         code = str(r.get("code", ""))
         pn = prize_name(r.get("data"))
+        # 服务端会把「谢谢参与」当 prizeName 回传，不能算中奖、更不能进台账
+        won = bool(pn) and "谢谢参与" not in pn
         played += 1
         if code == "0000":
             fail_streak = 0
-            if pn:
+            if won:
                 got += 1
                 print(f"[{i + 1}] ✓ 完成  level={level} star={args.star}  →  中奖：{pn}")
                 # 中了就进「到账台账」，和转盘/领奖同一个口径
                 record_award(cfg.get("phone") or "", "消消乐", pn)
             else:
                 print(f"[{i + 1}] ✓ 完成  level={level} star={args.star}  →  未中奖（谢谢参与）")
+            # 关卡必须真的往前走，否则说明又在打旧关，继续跑只是白扣次数
+            time.sleep(1)
+            new_level, _ = current_level(s)
+            if new_level is not None:
+                if new_level > level:
+                    print(f"    关卡推进 {level} → {new_level}")
+                    level = new_level
+                else:
+                    print(f"    关卡没动（仍是 {new_level}）——这次上报被判成旧关，"
+                          f"先停，不再消耗今天的次数。")
+                    soft_stop = True
+                    break
         else:
             fail_streak += 1
             msg = str(r.get("msg") or "")
@@ -272,6 +370,8 @@ def main() -> int:
 
     if hard_fail:
         return 1
+    if args.times == 0:          # --tasks 单独跑：只做任务/兑换，不算游戏失败
+        return 0
     if played == 0 and not soft_stop:
         print("一局都没提交成功，且不属于体力/次数用尽 —— 记为失败。")
         return 1

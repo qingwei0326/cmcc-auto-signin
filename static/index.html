@@ -563,11 +563,11 @@ select.inp{cursor:pointer}
             <label class="chk" title="券来世界（App 首页访问活动）：每天一次 500 饲料。脚本会先把券来世界页面真的打开一次，再上报完成"><input type="checkbox" id="pCouponWorld">券来世界访问（+500 饲料）</label>
           </div>
           <div class="frow"><label>消消乐</label>
-            <label style="min-width:auto">关卡号</label><input class="inp" id="sLevel" type="number" value="49" style="min-width:80px">
+            <label class="chk" title="先做浏览类金币任务，再把金币按 200/点换成体力，避免没体力卡关"><input type="checkbox" id="sTasks">自动做金币任务并换体力</label>
             <label style="min-width:auto">星级</label><input class="inp" id="sStar" type="number" min="0" max="3" value="3" style="min-width:60px">
             <label style="min-width:auto">局数</label><input class="inp" id="sTimes" type="number" min="1" max="20" value="5" style="min-width:60px">
             <label style="min-width:auto">间隔秒</label><input class="inp" id="sGap" type="number" min="5" max="120" value="12" style="min-width:70px">
-            <span style="font-size:12px;color:var(--sub)">关卡号要接近账号真实进度</span></div>
+            <span style="font-size:12px;color:var(--sub)">关卡每次自动读取真实值，不用再填——写死关卡会白扣次数</span></div>
           <div class="frow"><label>秒杀抢券</label>
             <label style="min-width:auto">开抢时刻</label><input class="inp" id="sAt" value="11:59:50" style="min-width:100px">
             <span style="font-size:12px;color:var(--sub)">留空则按服务端场次自动选；填的时刻是「今天」的</span></div>
@@ -1153,7 +1153,7 @@ function renderPolicy(){
     if($('pXunbao'))$('pXunbao').checked=(p.xunbao!==false);
     if($('pCouponWorld'))$('pCouponWorld').checked=(p.coupon_world!==false);
     const x=p.xxl||{};
-    if($('sLevel'))$('sLevel').value=(x.level!=null?x.level:49);
+    if($('sTasks'))$('sTasks').checked=(x.tasks!==false);
     if($('sStar'))$('sStar').value=(x.star!=null?x.star:3);
     if($('sTimes'))$('sTimes').value=(x.times!=null?x.times:5);
     if($('sGap'))$('sGap').value=(x.gap!=null?x.gap:12);
@@ -1163,8 +1163,9 @@ function renderPolicy(){
   // 消消乐 / 秒杀页不再单独存一份参数，只展示设置页里保存的值
   const xx=p.xxl||{}, skk=p.seckill||{};
   if($('xxlParams'))$('xxlParams').textContent=
-    `关卡 ${xx.level!=null?xx.level:49} · 星级 ${xx.star!=null?xx.star:3}`
-    +` · ${xx.times!=null?xx.times:5} 局 · 间隔 ${xx.gap!=null?xx.gap:12} 秒`;
+    `关卡自动读取 · 星级 ${xx.star!=null?xx.star:3}`
+    +` · ${xx.times!=null?xx.times:5} 局 · 间隔 ${xx.gap!=null?xx.gap:12} 秒`
+    +(xx.tasks===false?'':' · 金币任务换体力');
   if($('skAtShow'))$('skAtShow').textContent=
     skk.at?skk.at+'（今天的时刻）':'留空则按服务端场次自动选';
   const f=Number(b.feed)||0;
@@ -1192,8 +1193,9 @@ async function savePolicy(){
           feed_hour:Number(V('pFeedHour'))||0,
           on_stage_full:V('pFull'),prize:V('pPrize'),
           tasks:$('pTasks').checked,fb_tasks:$('pFb').checked},
-    xxl:{level:Number(V('sLevel'))||49,star:Number(V('sStar'))||3,
-         times:Number(V('sTimes'))||5,gap:Number(V('sGap'))||12},
+    xxl:{level:49,star:Number(V('sStar'))||3,
+         times:Number(V('sTimes'))||5,gap:Number(V('sGap'))||12,
+         tasks:($('sTasks')?$('sTasks').checked:true)},
     seckill:{at:($('sAt')?V('sAt'):'')}};
   const r=await act(body);
   if(r&&r.ok&&r.policy){STATE.policy=r.policy;PREFS_ONCE=true;renderPolicy();}
@@ -1449,15 +1451,14 @@ function runXxl(){if(!confirm('消消乐属于伪造游戏通关成绩，中奖�
 function xxlQuery(){
   capStart('xxl');
   act({action:'xxl_run',file:V('xxlFile'),dry:1}).then(r=>{if(!r||!r.ok)capDrop();});}
-// 探到的关卡号直接回填输入框：原来只进日志，用户还得自己翻出来手填
+// 只读查一次真实关卡：关卡已改为运行时自动读取，不需要再回填/手填
 function detectLevel(){
   capStart('xxl',lines=>{
-    const m=lines.join('\n').match(/自动探测当前关卡:\s*(\d+)/);
-    if(m&&$('sLevel')){$('sLevel').value=m[1];toast('已把探测到的关卡号 '+m[1]+' 填进设置页，去「设置」保存后长期生效');}
-    else if(m){toast('探测到关卡号 '+m[1]+'（设置页没有输入框，请手动填）');}
-    else toast('没探到关卡号（可能体力不足或凭证失效），看下方输出',true);
+    const m=lines.join('\n').match(/当前真实关卡:\s*(\d+)/);
+    if(m)toast('当前真实关卡 '+m[1]+'（运行时自动使用，不用手填）');
+    else toast('没读到关卡号（可能凭证失效），看下方输出',true);
   });
-  act({action:'xxl_run',file:V('xxlFile'),detect:1}).then(r=>{if(!r||!r.ok)capDrop();});}
+  act({action:'xxl_run',file:V('xxlFile'),dry:1}).then(r=>{if(!r||!r.ok)capDrop();});}
 function runSeckill(){
   const skk=(((STATE&&STATE.policy)||{}).seckill)||{}, at=(skk.at||'').trim(),
         n=new Date(), mins=n.getHours()*60+n.getMinutes();

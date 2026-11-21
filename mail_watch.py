@@ -53,6 +53,8 @@ PROVIDERS = {
            "hint": "QQ 邮箱要在「设置 → 账户 → POP3/IMAP」开启 IMAP 并生成授权码，填授权码不是 QQ 密码。"},
     "163": {"host": "imap.163.com", "port": 993,
             "hint": "163 邮箱要在「设置 → POP3/SMTP/IMAP」开启 IMAP 并拿授权码。"},
+    "139": {"host": "imap.139.com", "port": 993,
+            "hint": "139 邮箱要在网页版「设置 → 账号与安全 → 邮箱协议设置」开启 IMAP 并获取授权码；授权码有效期 90 天，过期要重取。"},
 }
 
 DEFAULTS = {

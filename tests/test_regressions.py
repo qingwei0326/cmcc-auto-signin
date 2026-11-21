@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,7 @@ import threading
 import time
 import types
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -377,10 +378,31 @@ class TestHarImport(unittest.TestCase):
 # 跨进程状态写入
 # ======================================================================
 
+@contextmanager
+def safe_temp_dir():
+    """带重试清理的临时目录。
+
+    Windows 上子进程刚退出时，它打开过的文件句柄可能还没释放，
+    `TemporaryDirectory` 立刻 rmtree 会撞 `WinError 32 (PermissionError)`，
+    表现为「同一份代码跑十次偶尔挂一次」的 flaky 测试。
+    删不掉就重试几秒；仍旧不行就交给系统临时目录自己清，不判测试失败。
+    """
+    path = Path(tempfile.mkdtemp(prefix="cmcc_test_"))
+    try:
+        yield path
+    finally:
+        for _ in range(80):
+            try:
+                shutil.rmtree(path)
+                return
+            except OSError:
+                time.sleep(0.05)
+
+
 class TestCrossProcessState(unittest.TestCase):
     def test_update_json_does_not_lose_updates(self):
         """4 个进程同时改同一份 json，各自的 key 都要留下（原子写防不了丢更新）。"""
-        with tempfile.TemporaryDirectory() as tmp:
+        with safe_temp_dir() as tmp:
             p = Path(tmp) / "state.json"
             code = (
                 "import sys,time;sys.path.insert(0,r'%s');import common;"

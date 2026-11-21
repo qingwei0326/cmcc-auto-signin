@@ -33,6 +33,8 @@ QWH_MARK = "appTokenLogin"
 BASS_HOSTS = ("wap.fj.10086.cn", "app.fmcc.com.cn")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 PHONE_RE = re.compile(r"1[3-9]\d{9}")
+# 脱敏号码，如 173****4167
+MASKED_RE = re.compile(r"1[3-9]\d\*\*\*\*\d{4}")
 
 
 def _headers(req):
@@ -42,6 +44,34 @@ def _headers(req):
         if name:
             out[name] = str(h.get("value") or "")
     return out
+
+
+def _match_existing_phone(placeholder):
+    """173XXXX4167 → 在 configs/ 里找前3位和后4位都对得上的完整号码。"""
+    t = str(placeholder or "")
+    if "XXXX" not in t:
+        return ""
+    pre, tail = t.split("XXXX", 1)
+    for f in sorted((BASE / "configs").glob("*.json")):
+        ph = str(_read_json(f).get("phone") or "")
+        if PHONE_RE.fullmatch(ph) and ph.startswith(pre) and ph.endswith(tail):
+            return ph
+    return ""
+
+
+def _unmask_to_phone(masked):
+    """173****4167 → 173XXXX4167（中间四位用 X 占位）。
+
+    服务端只给脱敏号码，没法还原完整手机号；这里保留尾号用于匹配已有配置，
+    完整号码靠 app_token 实测登录后由接口回显。
+    """
+    t = str(masked or "")
+    if not t:
+        return ""
+    digits = re.sub(r"\D", "", t)
+    if len(digits) < 7:
+        return ""
+    return digits[:3] + "XXXX" + digits[-4:]
 
 
 def _phone_from_user_check(uc):
@@ -77,6 +107,11 @@ def parse_har_text(text):
     qwhd = {}
     bass = None
     mobiles = set()
+    # x-token 兜底：APP 已登录时不再发 appTokenLogin，但每个 wx.10086.cn 请求
+    # 都带 x-token 头，里面就是同一张 App 票据（JSESSIONID=..; UID=..; ticketID=..）
+    xtoken_fallback = {}
+    # 脱敏号码线索：/qwhdhub/api/mark/user/info 的 nickName 形如 173****4167
+    masked_hint = ""
 
     for e in entries:
         req = e.get("request") or {}
@@ -108,6 +143,22 @@ def parse_har_text(text):
                 if phone:
                     mobiles.add(phone)
 
+        # ---- qwhd 响应里的脱敏号码（归属判定用） ----
+        if "qwhdhub" in url:
+            rtxt = str(((e.get("response") or {}).get("content") or {}).get("text") or "")
+            if rtxt:
+                m = MASKED_RE.search(rtxt)
+                if m and not masked_hint:
+                    masked_hint = m.group(0)
+
+        # ---- x-token 兜底 ----
+        xt = hdr.get("x-token") or ""
+        if "JSESSIONID" in xt.upper() and "wx.10086.cn" in url:
+            if xtoken_fallback.get("token") is None or ts >= xtoken_fallback["ts"]:
+                xtoken_fallback = {"token": xt, "url": url, "ts": ts}
+
+        # ---- 响应里的 ticketID 时刻 = 票据签发时间 ----
+
         # ---- BASS ----
         auth = hdr.get("authorization", "")
         if auth.lower().startswith("bearer ") and any(h in url for h in BASS_HOSTS):
@@ -116,7 +167,19 @@ def parse_har_text(text):
                 if bass is None or ts >= bass["ts"]:
                     bass = {"token": tok, "url": url, "ts": ts}
 
-    return {"qwhd": qwhd, "bass": bass, "mobiles": sorted(mobiles)}
+    # appTokenLogin 没抓到时，用 x-token 兜底。归属靠脱敏号码，
+    # 脱敏号码也读不到就先归到一个占位号，让调用方用接口反查。
+    if not qwhd and xtoken_fallback.get("token"):
+        phone = _unmask_to_phone(masked_hint)
+        qwhd[phone or "?"] = {"token": xtoken_fallback["token"],
+                              "body": {}, "ts": xtoken_fallback["ts"],
+                              "masked": masked_hint,
+                              "from_xtoken": True}
+        if phone:
+            mobiles.add(phone)
+
+    return {"qwhd": qwhd, "bass": bass, "mobiles": sorted(mobiles),
+            "masked": masked_hint}
 
 
 def _read_json(path):
@@ -202,6 +265,9 @@ def apply(text, key=None):
 
     # ---- qwhdhub 写 configs/<尾号>.json ----
     for phone, a in sorted(p["qwhd"].items()):
+        # x-token 兜底时只拿到脱敏号码（173XXXX4167），按前3+后4匹配已有配置
+        if "XXXX" in phone:
+            phone = _match_existing_phone(phone) or phone
         out = BASE / "configs" / f"{phone[-4:]}.json"
         cfg = _read_json(out)
         body = a.get("body") or {}

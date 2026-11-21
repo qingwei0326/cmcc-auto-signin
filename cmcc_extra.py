@@ -176,9 +176,15 @@ def run_lottery(s: requests.Session, referer: str, cfg: dict, dry_run: bool,
     won_names = []
     for _ in range(n):
         r = api_call(s, referer, "GET", f"/qwhdhub/diyLottery/lotterySafely/{comp}")
-        won = (r.get("data") or [{}])[0] if r.get("code") == "SUCCESS" else None
+        code = str(r.get("code") or "")
+        won = (r.get("data") or [{}])[0] if code == "SUCCESS" else None
+        if code == "NO_WON" or (not won and "未中奖" in str(r.get("msg") or "")):
+            # 没中奖是正常结果，照样扣了币，不能就此中断——
+            # 否则剩下的次数白留着，等于少抽。
+            prizes.append("未中奖")
+            continue
         if not won:
-            prizes.append(f"失败({r.get('code')} {r.get('msg')})")
+            prizes.append(f"失败({code} {r.get('msg')})")
             break
         pn = str(won.get("prizeName") or "?")
         prizes.append(pn)

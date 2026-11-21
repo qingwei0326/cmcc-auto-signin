@@ -1440,6 +1440,22 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             finally:
                 HI.BASE = real
 
+    def test_every_activity_with_opportunity_has_lottery(self):
+        """凡是有抽奖机会的活动都必须配 lottery，否则机会白攒。
+
+        掼蛋挑战赛（game666）三条任务给 1+1+2 次机会，之前只做任务、
+        没配 lottery，实测 3239 攒到 4 次未抽 —— 等于做了任务没领奖。
+        """
+        import cmcc_extra as EX
+        act = EX.ACTS["game666"]
+        self.assertIn("lottery", act, "掼蛋活动漏了抽奖配置")
+        lot = act["lottery"]
+        self.assertEqual(lot["component"], act["task_component"])
+        self.assertEqual(lot["wallet_key"], "remain")
+        self.assertEqual(lot["cost"], 1)
+        # 掼蛋是随时可抽，不该被 weekday/start_hour 卡住
+        self.assertNotIn("weekday", lot)
+
     def test_lottery_continues_after_no_win(self):
         """NO_WON 是正常「没中奖」，照样扣了币，不能中断剩余次数。
 

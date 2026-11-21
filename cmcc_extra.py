@@ -78,10 +78,15 @@ ACTS = {
                     "label": "次数"},
     },
     "game666": {
-        "name": "玩游戏抽话费（周任务）",
+        "name": "全民掼蛋挑战赛",
         "entry": f"{BASE}/qwhdhub/diy-client/1126090514?A_C_CODE=aEvxYYAV3C&channelId=P00000119581",
         "sign": None,  # 该页无每日打卡，只有每周一刷新的任务
         "task_component": "7M6vIq0-TFMj5T-ZGjks",
+        # 三条任务分别是「去掼蛋」1 次 +「去追剧圈」1 次 +「邀请好友」2 次抽奖机会，
+        # remain 就是可用次数。之前只做任务、没配抽奖，机会一直攒着白浪费
+        # （实测 3239 攒到 4 次未抽）。奖池是话费/充电宝，不抽等于没拿。
+        "lottery": {"component": "7M6vIq0-TFMj5T-ZGjks", "wallet_key": "remain",
+                    "cost": 1, "count_key": None, "label": "掼蛋次数"},
     },
 }
 

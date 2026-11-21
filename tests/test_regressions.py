@@ -1522,24 +1522,21 @@ class TestUsabilityFixes(unittest.TestCase):
         self.assertIn("where python", text)
         self.assertIn("dashboard.py", text)
 
-    def test_preflight_reports_missing_python(self):
+    def test_preflight_reports_missing_scripts(self):
+        """exe 自带 Python 运行时，缺的只是同目录里的任务脚本。"""
         with mock.patch.object(sys, "frozen", True, create=True), \
                 mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": True, "msg": ""}), \
-                mock.patch("shutil.which", lambda n: None):
+                mock.patch.object(Path, "is_file", lambda self: False):
             ok, msg = dashboard.preflight(force=True)
         self.assertFalse(ok)
-        self.assertIn("Python", msg)
-        self.assertIn("PATH", msg)
+        self.assertIn("脚本", msg)
+        self.assertIn("项目根目录", msg)
 
-    def test_preflight_reports_missing_requests(self):
+    def test_preflight_ok_when_scripts_present(self):
         with mock.patch.object(sys, "frozen", True, create=True), \
-                mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": True, "msg": ""}), \
-                mock.patch("shutil.which", lambda n: r"C:\py\python.exe"), \
-                mock.patch.object(dashboard.subprocess, "run", lambda *a, **k: mock.Mock(returncode=1)):
-            ok, msg = dashboard.preflight(force=True)
-        self.assertFalse(ok)
-        self.assertIn("requests", msg)
-        self.assertIn("pip install", msg)
+                mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": False, "msg": "x"}), \
+                mock.patch.object(Path, "is_file", lambda self: True):
+            self.assertEqual(dashboard.preflight(force=True), (True, ""))
 
     def test_preflight_skipped_when_running_from_source(self):
         """源码运行时解释器与 requests 必然可用，不该白起子进程。"""

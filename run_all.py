@@ -16,6 +16,7 @@ run_all.py —— 多账号批量运行器（两个平台）
 
 import argparse
 import datetime
+import os
 import json
 import random
 import subprocess
@@ -24,10 +25,31 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import (atomic_write_json, collect_notify_settings, load_json,
-                    load_policy, notify)   # 导入即固定 UTF-8 输出
+from common import (atomic_write_json, child_cmd, collect_notify_settings,
+                    is_token_dead, load_json, load_policy, notify,
+                    notify_once)   # 导入即固定 UTF-8 输出
 
 BASE = Path(__file__).parent
+
+# 这一轮里「凭证过期」的账号。它们不是真的执行失败，只是票过期了，
+# 汇总成一条通知就行；每小时一轮的每日奖励任务不该一小时骂一次。
+TOKEN_DEAD_ACCOUNTS = []
+
+
+def note_token_dead(name: str):
+    if name and name not in TOKEN_DEAD_ACCOUNTS:
+        TOKEN_DEAD_ACCOUNTS.append(name)
+
+
+def token_dead_notice(accounts) -> tuple:
+    """凭证过期的通知文案。一条说清「哪些号 + 怎么做」，不逐号发。"""
+    who = "、".join(accounts)
+    return ("移动签到：凭证过期",
+            "以下账号的登录凭证已过期，签到/抽奖/寻宝都会跳过：\n  " + who +
+            "\n\n处理：手机抓包 → App 里打开「签到领流量」和「优惠专区」各停留几秒"
+            " → 导出 HAR → 控制台「凭证与账号」导入。\n"
+            "（凭证寿命实测约 1 小时，抓完请尽快导入）")
+
 
 # 每日自动喂养的「今天已喂过」标记，防止计划任务补跑时重复消耗饲料
 FEED_STATE = BASE / "gui_data" / "feed_state.json"
@@ -189,7 +211,7 @@ def run_script(script: Path, conf: Path, args: list, timeout: int,
     """
     if config_args is None:
         config_args = ["--config", str(conf)]
-    cmd = [sys.executable, str(script), *config_args, *args]
+    cmd = child_cmd(script, *config_args, *args)
     name = name or label_of(conf, "phone")
     head = f"--- [{idx}/{total}] {name}  ({conf.name}) ---" if idx else ""
     buf = []
@@ -201,6 +223,10 @@ def run_script(script: Path, conf: Path, args: list, timeout: int,
         out = (res.stdout or "").strip()
         err = (res.stderr or "").strip()
         ok = res.returncode == 0
+        # 只要输出里明说「凭证过期」就记下来，不看退出码：
+        # 有的脚本打印完照样返回 0，只按退出码判会漏。
+        if is_token_dead(out) or is_token_dead(err):
+            note_token_dead(name)
         if head:
             buf.append(head)
         if out:
@@ -481,6 +507,9 @@ def main():
                     help="只跑拓展活动三个，不跑其它平台")
     args = ap.parse_args()
 
+    # 让子脚本别自己推「凭证过期」——本轮结束由这里合并成一条
+    os.environ["CMCC_NOTIFY_BATCH"] = "1"
+
     # 额外参数按平台分发：--extra 是给 BASS 的，qwhd 的由模式开关自己决定。
     # 早先两个平台共用一个 extra 字符串、却只透传给 bass，导致 --keepalive
     # 的 --login-only 被丢掉，保活任务变成了每 90 分钟真签到一次。
@@ -614,16 +643,23 @@ def main():
     good = sum(1 for _, _, ok, _ in results if ok)
     print(f"\n  {good}/{len(results)} 成功")
 
-    # 失败才推送，避免每天正常签到都打扰
-    if not args.no_notify and good != len(results):
+    # 失败才推送，避免每天正常签到都打扰；同类事当天只推一条
+    if not args.no_notify and (good != len(results) or TOKEN_DEAD_ACCOUNTS):
         cfgs = []
         for key in keys:
             for f in sorted(PLATFORMS[key]["dir"].glob("*.json")):
                 cfgs.append(load_json(f, {}))
         bark, sc_key = collect_notify_settings(*cfgs)
-        bad = [f"{k}:{n}" for k, n, ok, _ in results if not ok]
-        notify("中国移动签到失败",
-               f"{good}/{len(results)} 成功\n失败账号：{', '.join(bad)}", bark, sc_key)
+
+        if TOKEN_DEAD_ACCOUNTS:
+            # 票过期不是「脚本坏了」，用户只需要知道「该重抓哪几个号」，一条就够
+            title, detail = token_dead_notice(TOKEN_DEAD_ACCOUNTS)
+            notify_once("token_dead", title, detail, bark, sc_key, hours=12)
+        bad = [f"{k}:{n}" for k, n, ok, _ in results if not ok and n not in TOKEN_DEAD_ACCOUNTS]
+        if bad:
+            notify_once("run_failed", "中国移动签到失败",
+                        f"{good}/{len(results)} 成功\n失败账号：{', '.join(bad)}",
+                        bark, sc_key, hours=20)
 
     return 0 if good == len(results) else 1
 

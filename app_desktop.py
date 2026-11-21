@@ -41,6 +41,29 @@ def _fail(msg):
         pass
 
 
+RUN_SCRIPT_FLAG = "--run-script"
+
+
+def dispatch_run_script() -> bool:
+    """把自己当解释器用：`签到领福利.exe --run-script cmcc_sign.py --config x`。
+
+    打包后的 exe 里带着 Python 运行时，任务脚本由它自己跑，
+    这样用户机器上**不需要装 Python**。命中就执行脚本并返回 True。
+    """
+    if len(sys.argv) < 3 or sys.argv[1] != RUN_SCRIPT_FLAG:
+        return False
+    import runpy
+
+    target = Path(sys.argv[2])
+    if not target.is_file():
+        print(f"找不到脚本：{target}", file=sys.stderr)
+        raise SystemExit(1)
+    # 脚本自己会读 sys.argv（argparse），所以要把前面的 exe/--run-script 摘掉
+    sys.argv = [str(target)] + sys.argv[3:]
+    runpy.run_path(str(target), run_name="__main__")
+    return True
+
+
 def main():
     _log("启动")
     try:
@@ -108,6 +131,10 @@ def main():
 
 if __name__ == "__main__":
     try:
+        if dispatch_run_script():
+            raise SystemExit(0)
         main()
+    except SystemExit:
+        raise
     except Exception:
         _fail("未捕获异常：\n" + traceback.format_exc())

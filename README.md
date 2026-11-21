@@ -122,6 +122,12 @@ dist\签到控制台.exe → 复制到项目根目录
 
 窗口起不来时程序会自动回退浏览器模式，启动过程记录在 `gui_data/startup.log`。
 
+**目标机器不需要装 Python**：exe 自己带解释器，任务脚本由它以
+`签到领福利.exe --run-script cmcc_sign.py --config ...` 的方式执行。
+早先的做法是找系统 `python.exe`，换台没装 Python 的机器就变成「能开界面、
+一点执行就报错」。现在 preflight 只检查脚本文件是否和 exe 在同一目录。
+源码运行时仍是 `python cmcc_sign.py ...`，两条路径都走 `common.child_cmd`。
+
 ---
 
 ## 定时任务
@@ -550,10 +556,24 @@ python probe_token_life.py --report
 
 ### 失败推送
 
+通知只推**一条**。理由很实在：每日奖励是每小时跑一轮，凭证一过期，
+两三个号各失败一次、每轮各推一条，一天能收到十几条一模一样的「失败」。
+
+现在的规则：
+
+- **凭证过期**（401 / 登录态失效 / 会话缺失）→ 合并成一条，写清是哪几个号、
+  以及「抓包 → 导入」怎么做；同一天最多一条（12 小时内不重复）。
+- 其它失败 → 一条汇总（成功数 + 失败账号），20 小时内不重复。
+- 子脚本自己发的失败通知，在批量运行时会被抑制（`CMCC_NOTIFY_BATCH=1`），
+  避免和汇总通知重复。
+- 去重状态记在 `gui_data/notify_state.json`。
+
+
+
 在 `configs/*.json` 或 `configs_fj/*.json` 里填 `bark_url`（Bark 推送地址）或
-`serverchan_sendkey`（Server酱 SendKey），任一账号失败时就会推一条通知。
-也可以用环境变量 `CMCC_BARK_URL` / `CMCC_SERVERCHAN_SENDKEY` 统一配置。
-全部成功时不推送，避免打扰。
+`serverchan_sendkey`（Server酱 SendKey），也可以用环境变量
+`CMCC_BARK_URL` / `CMCC_SERVERCHAN_SENDKEY` 统一配置。
+全部成功时不推送；失败时按上面的规则推一条。
 
 ---
 

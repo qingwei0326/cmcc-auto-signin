@@ -27,6 +27,7 @@
 | 福袋 | 每累计喂食 300 次触发 | 随机 |
 | 优惠抽奖 | 转盘，刷任务换次数 | 流量券 / 话费券 |
 | 一起消消乐 | 每次读取真实关卡再上报；自动做金币任务换体力 | 每天约 5 点体力 + 金币兑换 |
+| 咪咕掼蛋 | 协议已逆向（登录卡在咪咕 SDK 的 `cat` 令牌），可还原牌谱 / 给 AI 出牌建议 | 待接入 |
 
 > 日常只需要双击 `签到控制台.exe`，其余内容都是排查和进阶用。
 
@@ -384,6 +385,27 @@ App 首页那个图标点进去就是它）。每天一次，完成给 **500 饲
 
 脚本遇「体力」关键词立即停止；若一局通关后关卡没推进，也会提前停，避免继续白扣次数。
 
+#### 咪咕掼蛋（协议逆向，暂未接入自动打牌）
+
+中国移动 App 里的「全民掼蛋挑战赛」是咪咕的 H5 小游戏（`gd.migufun.com`），
+对局走 WSS + 明文 JSON，协议已基本吃透：
+
+- **牌值**：`34 + 32×花色组 + (点数-2)`，花色组 `0=♥ 1=♦ 2=♣ 3=♠`，王是 16/17
+- **牌型编号**：0 不出、1 单张、2 对子、3 三张、4 三带二、5 顺子、6 连对、7 钢板、
+  8~九张炸逐级递增、10 同花顺、20 四大天王 —— **编号本身就是牌力序**
+- **出牌上报**：`req:75 → [1,19,2,4,3,10,4,1,5,牌型,6,牌值,7,手牌下标,18,[1,5]]`
+- **红桃级牌**是逢人配（`Series = 32 + 级牌`），可以当任意牌
+
+```bash
+python cmcc_guandan.py --har <HAR> --playbook    # 还原整副牌谱
+python cmcc_guandan.py --har <HAR> --advise      # 我每一手 vs 引擎建议
+```
+
+**卡点**：登录要的 `cat` 令牌由咪咕 SDK 在 App 内签发（3 天有效），
+没有任何 HTTP 接口能拿到，所以目前只能「读」不能「打」。
+牌型规则已用真实对局验证：27 张手牌、对手出 444+222 时，
+引擎给的跟牌与真人完全一致。协议细节见 `docs/guandan.md`。
+
 ### 优惠专区抽奖
 
 三个接口全是 GET，只需 `appId` + `timestamp`：
@@ -508,6 +530,8 @@ python pull_token_phone.py --save     # Termux
 ├── cmcc_luck.py            优惠专区转盘抽奖
 ├── cmcc_seckill.py         签到有礼每周秒杀（12:00 抢话费券）
 ├── cmcc_wed.py             周三充值日（拼图任务、抽奖、集齐领券）
+├── cmcc_guandan.py         咪咕掼蛋：抓包还原牌谱、协议组帧、级牌推断
+├── guandan_rules.py        掼蛋牌型识别/比大小/拆牌/出牌决策
 ├── har_import.py           从 HAR 提取 qwhdhub + BASS 凭证并写配置
 ├── dashboard.py            图形控制台后端（HTTP API + 任务调度）
 ├── static/index.html       控制台前端页面（打包时由 --add-data 带上）
@@ -518,7 +542,7 @@ python pull_token_phone.py --save     # Termux
 ├── config.example.json     qwhdhub 配置模板
 ├── config_fj.example.json  BASS 配置模板
 ├── tests/                  单元与回归测试（全部用假响应，不发真实请求）
-├── docs/                   接口文档（qwhdhub / 秒杀 / 周三充值日 / BASS）
+├── docs/                   接口文档（qwhdhub / 秒杀 / 周三充值日 / BASS / 掼蛋协议）
 ├── configs/                真实 qwhdhub 配置（不入库）
 ├── configs_fj/             真实 BASS 配置（不入库）
 ├── gui_data/               运行状态与统计（不入库）
@@ -711,7 +735,7 @@ python probe_token_life.py --report
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests -v      # 305 个用例，约 14 秒
+python -m unittest discover -s tests -v      # 330 个用例，约 14 秒
 python tests/browser_smoke.py                # 可选：真实浏览器冒烟（需 playwright）
 ```
 

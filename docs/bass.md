@@ -294,7 +294,10 @@ POST /bass-commonAreaServer/H5Api/eliminate/useGold    {gold} → 游戏内金�
 - **关卡必须每次现读 `indexInfo.gameLevel`**。早期写死 49/63，账号涨到 51/64 后仍在报旧关，结果次数照扣、关卡好几天不动；改成每次读真实关卡后实测 64→65、65→66→67→68 正常推进。
 - `isOld` 的真实算法是「本地关卡 != 上报关卡」，用当前关卡上报时固定 `False`
 - 服务端会把「谢谢参与」也塞进 `prizeName`，不能算中奖、不能进台账
-- 金币任务：`taskType=2` 是浏览/访问类（先 GET 任务页再 `doTask`），1=好友助力、3=分享需真人操作，不代做
+- 金币任务：`taskType=2` 浏览/访问类（先 GET 任务页再 `doTask`）、`3` 分享活动（`doTask` 实测直接成功）都能自动做；
+  `1` 好友助力直接 `doTask` 会回 `-100 任务类型有误`；但 `GET eliminate/share/2` 生成助力码后，
+  另一个已登录号 `GET eliminate/help/{码}` 实测有效（被助力方 +200 金币）。
+  同一对号每月只能互点一次，第二次起回「您本月已接受过TA的邀请」，脚本视为正常跳过。
 - 体力：`getStoreInfo` 里 `propType=12`（道具爱心）200 金币/点，每日最多 20 次；`exchangeProp` 实测 200 金币 → `physicalPower +1`
 
 ---

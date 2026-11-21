@@ -146,11 +146,53 @@ def current_level(s: requests.Session):
     return (int(lv) if lv else None), j
 
 
+def mutual_assist() -> None:
+    """用 configs_fj 下的多个号互相点「请好友助力」。
+
+    实测：share/{taskId} 生成助力码 → 另一个号 help/{码} → 被助力方 +200 金币。
+    服务端限制同一对号每月只能互点一次；再点会回「您本月已接受过TA的邀请」，
+    这属于正常情况，不算失败。
+    """
+    confs = sorted((BASE / "configs_fj").glob("*.json"))
+    if len(confs) < 2:
+        return
+    sessions = []
+    for f in confs:
+        try:
+            cfg = json.loads(f.read_text(encoding="utf-8"))
+            token = cfg.get("bearer_token") or ""
+            if token:
+                sessions.append((f.stem, make_session(token)))
+        except Exception:
+            continue
+    if len(sessions) < 2:
+        return
+    print("\n多号互助力：")
+    for owner, osess in sessions:
+        sh = get_json(osess, "share/2")
+        code = sh.get("data")
+        if not code:
+            print(f"  - {owner} 生成助力码失败: code={sh.get('code')} msg={sh.get('msg')!r}")
+            continue
+        for helper, hsess in sessions:
+            if helper == owner:
+                continue
+            r = get_json(hsess, "help/" + str(code))
+            msg = str(r.get("msg") or "")
+            if str(r.get("code")) == "0000":
+                print(f"  ✓ {helper} 帮 {owner}（{owner} +200 金币）")
+            elif "本月已接受过" in msg:
+                print(f"  - {helper} 与 {owner} 本月已互点过")
+            else:
+                print(f"  ✗ {helper} 帮 {owner}: code={r.get('code')} msg={msg!r}")
+
+
 def do_coin_tasks(s: requests.Session) -> dict:
     """做金币任务，再把金币换成体力（爱心 id=12，200 金币/点）。
 
-    taskType=1（好友助力）和 3（分享）需要真人社交动作，不代做；
-    taskType=2 是浏览/访问类，先 GET 任务页再 doTask。
+    taskType=1（好友助力）必须真人点链接，服务端会拒绝直接上报，不代做；
+    taskType=2 是浏览/访问类，先 GET 任务页再 doTask；
+    taskType=3（分享活动）实测 doTask 直接成功，可自动做。
     """
     info = get_json(s, "getTaskInfo")
     if str(info.get("code")) != "0000":
@@ -164,15 +206,20 @@ def do_coin_tasks(s: requests.Session) -> dict:
         tid = t.get("id")
         ttype = int(t.get("taskType") or 0)
         name = t.get("taskName") or f"任务{tid}"
-        if ttype != 2:
-            print(f"  - 跳过「{name}」（需好友/分享等真人操作）")
+        if ttype == 1:
+            print(f"  - 跳过「{name}」（必须好友真的点助力链接）")
             continue
-        url = t.get("taskUrlHf") or t.get("taskUrlYjt") or t.get("taskUrlWx")
-        if url:
-            try:
-                s.get(url, timeout=20, allow_redirects=True)
-            except Exception:
-                pass
+        if ttype not in (2, 3):
+            print(f"  - 跳过「{name}」（未知任务类型 {ttype}）")
+            continue
+        # 浏览类先真的打开一次任务页；分享类实测 doTask 直接算完成
+        if ttype == 2:
+            url = t.get("taskUrlHf") or t.get("taskUrlYjt") or t.get("taskUrlWx")
+            if url:
+                try:
+                    s.get(url, timeout=20, allow_redirects=True)
+                except Exception:
+                    pass
         r = post(s, "doTask", {"id": tid})
         ok = str(r.get("code")) == "0000"
         print(f"  {'✓' if ok else '✗'} {name}  +{t.get('gainGold') or 0} 金币"
@@ -213,6 +260,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="只读看次数，不玩游戏")
     ap.add_argument("--tasks", action="store_true",
                     help="先做金币任务，再把金币自动换成体力（200 金币/点）")
+    ap.add_argument("--skip-mutual", action="store_true",
+                    help="做任务时跳过多号互助力（默认会互点，每月每对号一次）")
     ap.add_argument("--detect-level", action="store_true",
                     help="兼容旧用法；现在每次都会自动读 indexInfo 的真实关卡")
     ap.add_argument("--level", type=int, default=None,
@@ -243,6 +292,8 @@ def main() -> int:
 
     if args.tasks:
         print("\n金币任务 / 体力兑换：")
+        if not args.skip_mutual:
+            mutual_assist()
         do_coin_tasks(s)
 
     lim0 = show_limit(s)

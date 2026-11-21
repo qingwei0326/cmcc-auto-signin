@@ -191,7 +191,8 @@ def run_lottery(s: requests.Session, referer: str, cfg: dict, dry_run: bool,
         won_names.append(pn)
         try:
             # 「谢谢参与」由 record_award 内部过滤，不入台账
-            record_award(account or "", cfg.get("label") or "拓展活动", pn)
+            record_award(account or "", cfg.get("label") or "拓展活动", pn,
+                         allow_dup=True)
         except Exception as e:
             log.debug("台账写入失败: %s", e)
         time.sleep(random.uniform(1.2, 2.8))

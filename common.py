@@ -298,8 +298,13 @@ def classify_award(name) -> dict:
             "ignored": kind == "fee" and (REDPACKET_WORD in t or "加赠" in t)}
 
 
-def record_award(account, source, name, url="", size_mb=None, kind=None):
-    """记一条到账流水。脚本领到东西就调它，失败也不能影响主流程。"""
+def record_award(account, source, name, url="", size_mb=None, kind=None,
+                 allow_dup=False):
+    """记一条到账流水。脚本领到东西就调它，失败也不能影响主流程。
+
+    allow_dup：同一次运行里**确实可能连中多张相同奖品**（比如抽奖 3 张一样的券），
+    此时要跳过「同分钟去重」，否则 3 张只会记 1 张，战报少算。
+    """
     t = str(name or "").strip()
     if not t or "谢谢" in t:
         return None
@@ -319,8 +324,9 @@ def record_award(account, source, name, url="", size_mb=None, kind=None):
 
     def mutate(st):
         rec = st.setdefault("records", [])
-        # 同一账号同一来源同一奖品，60 秒内重复登记说明是重复读接口，忽略
-        if rec:
+        # 同一账号同一来源同一奖品，60 秒内重复登记说明是重复读接口，忽略。
+        # 但抽奖这类「一次真的中多张相同」的场景传 allow_dup=True 跳过。
+        if rec and not allow_dup:
             last = rec[-1]
             if (last.get("account") == row["account"] and last.get("source") == row["source"]
                     and last.get("name") == row["name"] and last.get("at", "")[:16] == row["at"][:16]):

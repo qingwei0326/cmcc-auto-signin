@@ -17,6 +17,9 @@ dashboard.py —— 中国移动自动签到 · 图形控制台（Web 版）
 放置：与 run_all.py 同目录，双击 run_gui.bat 或 python dashboard.py
 """
 
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import queue
@@ -1058,8 +1061,8 @@ def do_action(body: dict):
         pwd = str(m.get("password") or "").strip()
         cfg = {
             "enabled": bool(m.get("enabled", old.get("enabled", False))),
-            "provider": str(m.get("provider") or "gmail").strip().lower(),
-            "host": str(m.get("host") or "imap.gmail.com").strip(),
+            "provider": str(m.get("provider") or "qq").strip().lower(),
+            "host": str(m.get("host") or "imap.qq.com").strip(),
             "port": int(m.get("port") or 993),
             "user": str(m.get("user") or "").strip(),
             "password": pwd or str(old.get("password") or ""),
@@ -1072,13 +1075,20 @@ def do_action(body: dict):
         return {"ok": True, "msg": "邮箱收件设置已保存"}
 
     if act == "mail_test":
-        from common import child_cmd
-        cmd = child_cmd("mail_watch.py", "--test")
-        r = subprocess.run(cmd, cwd=str(BASE), capture_output=True, text=True,
-                           timeout=60, creationflags=NO_WINDOW)
-        text = (r.stdout or "") + (r.stderr or "")
-        return ({"ok": r.returncode == 0, "msg": text.strip()[-400:]}
-                if r.returncode == 0 else {"ok": False, "err": text.strip()[-400:]})
+        # 不能在冻结版里再拉一个 exe 子进程：onefile 解压一次就要几十秒，
+        # 60 秒超时会误报「测试失败」。直接在当前进程加载模块测连通。
+        try:
+            spec = importlib.util.spec_from_file_location("mail_watch", BASE / "mail_watch.py")
+            mw = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mw)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = mw.test_connection(mw.conf())
+            text = buf.getvalue().strip()[-600:]
+            return ({"ok": rc == 0, "msg": text} if rc == 0
+                    else {"ok": False, "err": text})
+        except Exception as e:
+            return {"ok": False, "err": f"测试失败：{e}"}
 
     if act == "notify_test":
         # 发一条测试推送，验证通道是否通

@@ -29,6 +29,7 @@ import datetime
 import email
 import imaplib
 import re
+import ssl
 import sys
 import time
 from email import policy
@@ -119,7 +120,20 @@ def mark_seen(uid: str):
 def connect(cfg):
     host = str(cfg.get("host") or "imap.gmail.com").strip()
     port = int(cfg.get("port") or 993)
-    imap = imaplib.IMAP4_SSL(host, port, timeout=30)
+    try:
+        imap = imaplib.IMAP4_SSL(host, port, timeout=30)
+    except ssl.SSLError:
+        # 139 邮箱的 IMAP 用老式加密套件，OpenSSL 3 默认 SECLEVEL=2 会直接
+        # 拒绝握手（SSLV3_ALERT_HANDSHAKE_FAILURE）。降到 SECLEVEL=0 重试，
+        # 只对第一次握手失败的服务器生效，QQ/163 正常路径不受影响。
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
+        except ssl.SSLError:
+            pass
+        imap = imaplib.IMAP4_SSL(host, port, timeout=30, ssl_context=ctx)
     imap.login(str(cfg.get("user") or "").strip(), str(cfg.get("password") or ""))
     imap.select("INBOX")
     return imap

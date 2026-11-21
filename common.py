@@ -223,7 +223,7 @@ AWARDS_KEEP = 600       # 只留最近 600 条，文件不会无限长
 # 名字里出现这些词 = 有门槛才能用（要充值 / 满额 / 指定场景抵扣），不算「到手可用」。
 # 「手气红包」是转盘抽到的话费券，实测**满额才能抵扣**（2026-11-21 用户确认），
 # 所以不能当无门槛券计入「本月已得话费」，只单独计数。
-THRESHOLD_WORDS = ("充值", "满", "首充", "续费", "开通", "办理", "门槛", "手气红包")
+THRESHOLD_WORDS = ("充值", "满", "首充", "续费", "开通", "办理", "门槛", "手气红包", "加赠")
 RECHARGE_WORDS = THRESHOLD_WORDS      # 旧名，保留兼容已有调用
 REDPACKET_WORD = "手气红包"            # 话费型手气红包直接忽略；流量型照常计入
 
@@ -294,7 +294,8 @@ def classify_award(name) -> dict:
     return {"kind": kind, "size_mb": mb, "need_recharge": need_recharge,
             "yuan": 0.0 if paid else parse_fee_yuan(t),
             # 话费型手气红包：不算「到手可用」，也不进台账明细（流量型照常算）
-            "ignored": kind == "fee" and REDPACKET_WORD in t}
+            # 「加赠券」是充值时额外送的，不是到手可用的话费，和话费手气红包一样不显示
+            "ignored": kind == "fee" and (REDPACKET_WORD in t or "加赠" in t)}
 
 
 def record_award(account, source, name, url="", size_mb=None, kind=None):

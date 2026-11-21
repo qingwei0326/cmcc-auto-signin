@@ -1051,6 +1051,35 @@ def do_action(body: dict):
         })
         return {"ok": True, "msg": "已保存全局设置"}
 
+    if act == "mail_save":
+        # Gmail 收 HAR：授权码单独存 gui_data/mail_settings.json，不进 git
+        m = body.get("mail") or {}
+        old = _load_json_safe(DATA / "mail_settings.json") or {}
+        pwd = str(m.get("password") or "").strip()
+        cfg = {
+            "enabled": bool(m.get("enabled", old.get("enabled", False))),
+            "provider": str(m.get("provider") or "gmail").strip().lower(),
+            "host": str(m.get("host") or "imap.gmail.com").strip(),
+            "port": int(m.get("port") or 993),
+            "user": str(m.get("user") or "").strip(),
+            "password": pwd or str(old.get("password") or ""),
+            "sender": str(m.get("sender") or "").strip(),
+            "subject_keyword": str(m.get("subject_keyword") or "HAR").strip(),
+        }
+        if cfg["enabled"] and (not cfg["user"] or not cfg["password"]):
+            return {"ok": False, "err": "启用收件前要填邮箱地址和应用专用密码"}
+        atomic_write_json(DATA / "mail_settings.json", cfg, indent=1)
+        return {"ok": True, "msg": "邮箱收件设置已保存"}
+
+    if act == "mail_test":
+        from common import child_cmd
+        cmd = child_cmd("mail_watch.py", "--test")
+        r = subprocess.run(cmd, cwd=str(BASE), capture_output=True, text=True,
+                           timeout=60, creationflags=NO_WINDOW)
+        text = (r.stdout or "") + (r.stderr or "")
+        return ({"ok": r.returncode == 0, "msg": text.strip()[-400:]}
+                if r.returncode == 0 else {"ok": False, "err": text.strip()[-400:]})
+
     if act == "notify_test":
         # 发一条测试推送，验证通道是否通
         from common import notify as _notify
@@ -1264,6 +1293,8 @@ def build_state():
         "env": {"ok": env_ok, "msg": env_msg},
         "policy": load_policy(),
         "settings": load_global_settings(),
+        "mail": {**(_load_json_safe(DATA / "mail_settings.json") or {}),
+                 "password": "******" if (_load_json_safe(DATA / "mail_settings.json") or {}).get("password") else ""},
     }
 
 

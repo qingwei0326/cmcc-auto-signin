@@ -57,6 +57,14 @@ class TestClassify(unittest.TestCase):
         self.assertTrue(c["ignored"], "话费券手气红包应被标记为直接忽略")
         self.assertEqual(c["kind"], "fee")
 
+    def test_fee_bonus_coupon_is_ignored(self):
+        """「话费加赠券」是充值时额外送的，不算到手话费（用户 2026-11-21 明确要求）。"""
+        for name in ("5元话费加赠券", "10元话费加赠券"):
+            with self.subTest(name=name):
+                c = C.classify_award(name)
+                self.assertTrue(c["ignored"], "加赠券应被直接忽略")
+                self.assertTrue(c["need_recharge"], "加赠券属于充值门槛券")
+
     def test_flow_redpacket_still_counts(self):
         """流量型手气红包是无门槛到账的，不能跟着话费红包一起丢掉。"""
         for name in ("1GB流量手气红包", "1GB流量日包手气红包"):

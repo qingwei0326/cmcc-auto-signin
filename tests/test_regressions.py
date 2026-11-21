@@ -1044,7 +1044,15 @@ class TestWedPuzzle(unittest.TestCase):
             calls.append((script.name, list(args)))
             return conf.stem, True, 1.0, "ok"
 
+        # configs/ 带凭证、不进仓库，CI 上是空的；给一个临时目录放一份假配置
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        (base / "configs").mkdir()
+        (base / "configs" / "1234.json").write_text('{"phone": "13800001234"}', encoding="utf-8")
+        (base / "cmcc_wed.py").write_text("", encoding="utf-8")
         with mock.patch.object(run_all, "run_script", side_effect=fake_run_script), \
+                mock.patch.object(run_all, "BASE", base), \
                 mock.patch.object(sys, "argv", ["run_all.py", "--wed-only", "--dry-run"]):
             run_all.main()
         self.assertTrue(calls, "wed-only 应至少跑一个账号")
@@ -1356,6 +1364,7 @@ class TestHiddenTaskLauncher(unittest.TestCase):
         self.assertEqual(seen["cmd"][:2], ["cmd.exe", "/c"])
         self.assertEqual(seen["flags"], run_hidden.CREATE_NO_WINDOW)
 
+    @unittest.skipUnless(os.name == "nt", "计划任务只在 Windows 上注册，Linux 上没有 pythonw.exe")
     def test_dashboard_sched_uses_hidden_launcher(self):
         """控制台注册任务时必须走 pythonw + run_hidden.py，而不是直接跑 bat。"""
         captured = []
@@ -1894,7 +1903,12 @@ class TestFeedAll(unittest.TestCase):
                 cmds.append(cmd)
                 return True
 
-        a = next(x for x in dashboard.scan_accounts() if x["plat"] == "BASS")
+        # configs_fj/ 带凭证、不进仓库，CI 上没有真实账号，这里给一个假的
+        a = {"key": "fj1", "plat": "BASS", "file": "configs_fj/fj1.json", "phone": "13800001234",
+                 "token_state": "filled", "has_bark": False, "has_sendkey": False, "has_pushplus": False}
+        real_scan = dashboard.scan_accounts
+        dashboard.scan_accounts = lambda: [a]
+        self.addCleanup(setattr, dashboard, "scan_accounts", real_scan)
         real = dashboard.RUNNER
         dashboard.RUNNER = FakeRunner()
         try:

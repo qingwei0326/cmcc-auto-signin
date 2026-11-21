@@ -32,8 +32,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from common import (atomic_write_json, load_policy, parse_result,
-                    save_policy, update_json)
+from common import (atomic_write_json, child_cmd, is_token_dead, load_global_settings,
+                    load_policy, parse_result, pushplus_token_ok, save_global_settings,
+                    save_policy, script_path, update_json)
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）
 if getattr(sys, "frozen", False):
@@ -47,12 +48,6 @@ RUNS_FILE = DATA / "runs.json"
 # 估算口径：一次人工签到（开App/切号/点任务/领奖励）约 5 分钟，自动化跑一轮即节省该时间
 MANUAL_MIN_PER_RUN = 5
 PORT = int(os.environ.get("CMCC_DASH_PORT", "8765"))
-# 冻结后 sys.executable 是 exe 自身，任务脚本需回退到系统 Python
-if getattr(sys, "frozen", False):
-    import shutil as _shutil
-    PY = _shutil.which("python") or _shutil.which("python3") or "python"
-else:
-    PY = sys.executable
 IS_WIN = os.name == "nt"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WIN else 0
 
@@ -65,31 +60,29 @@ _PREFLIGHT = {"at": 0.0, "ok": True, "msg": ""}
 
 
 def preflight(force=False):
-    """检查任务脚本能否执行，返回 (ok, 人话说明)。结果缓存 5 分钟。"""
+    """检查任务脚本能否执行，返回 (ok, 人话说明)。结果缓存 5 分钟。
+
+    打包后的 exe 自己就能解释执行任务脚本（`exe --run-script xxx.py`），
+    所以这里**不再要求系统装 Python**，只确认脚本文件躺在项目目录里。
+    早先的做法是 `shutil.which("python")`，没装 Python 的机器上双击能开界面、
+    一点执行就报错，用户完全不知道该怎么办。
+    """
     if not getattr(sys, "frozen", False):
         return True, ""
     now = time.time()
     if not force and _PREFLIGHT["at"] and now - _PREFLIGHT["at"] < 300:
         return _PREFLIGHT["ok"], _PREFLIGHT["msg"]
-    import shutil
-    exe = shutil.which("python") or shutil.which("python3")
-    if not exe:
-        ok, msg = False, ("找不到系统 Python，签到任务无法执行。\n\n"
-                          "请安装 Python 3.9+（64 位），安装时勾选 "
-                          "Add Python to PATH，装完重开本程序。\n"
-                          "下载：https://www.python.org/downloads/")
+
+    need = ["cmcc_sign.py", "cmcc_fj.py", "run_all.py"]
+    missing = [n for n in need if not (BASE / n).is_file()]
+    if missing:
+        ok = False
+        msg = ("缺少任务脚本：" + "、".join(missing) + "\n\n"
+               "本程序要和 cmcc_sign.py、cmcc_fj.py 等脚本放在同一个目录里"
+               "（也就是项目根目录）。\n"
+               "请把 exe 移回项目文件夹后重开。")
     else:
         ok, msg = True, ""
-        try:
-            p = subprocess.run([exe, "-c", "import requests"], capture_output=True,
-                               timeout=60, creationflags=NO_WINDOW)
-            if p.returncode != 0:
-                ok = False
-                msg = (f"已找到 Python（{exe}），但缺少 requests 等依赖。\n\n"
-                       f"请在项目目录打开 cmd 执行：\n"
-                       f"  \"{exe}\" -m pip install -r requirements.txt")
-        except Exception as e:
-            ok, msg = False, f"无法验证 Python 环境（{exe}）：{e}"
     _PREFLIGHT.update(at=now, ok=ok, msg=msg)
     return ok, msg
 
@@ -258,7 +251,8 @@ def scan_accounts():
             out.append({"key": f.stem, "plat": plat, "file": str(f.relative_to(BASE)),
                         "phone": str(cfg.get("phone") or ""), "token_state": state,
                         "has_bark": bool(str(cfg.get("bark_url") or "").strip()),
-                        "has_sendkey": bool(str(cfg.get("serverchan_sendkey") or "").strip())})
+                        "has_sendkey": bool(str(cfg.get("serverchan_sendkey") or "").strip()),
+                        "has_pushplus": bool(str(cfg.get("pushplus_token") or "").strip())})
     return out
 
 
@@ -314,6 +308,19 @@ def parse_qwhd_output(key: str, text: str):
         _apply_qwhd_result(key, r)
         return
     _parse_qwhd_legacy(key, text)
+
+
+def parse_seckill_output(key: str, text: str):
+    """秒杀结果解析：只取奖品名，填进「最近奖品」。
+
+    真正的收益统计走 common.record_award（脚本自己写 awards.json），
+    这里只负责让账号卡片上的「最近奖品」也显示秒杀券。
+    """
+    r = parse_result(text)
+    if not r or r.get("plat") != "seckill":
+        return
+    if r.get("last_reward"):
+        update_stats(key, last_reward=r["last_reward"])
 
 
 def _parse_qwhd_legacy(key: str, text: str):
@@ -418,8 +425,10 @@ def _parse_bass_legacy(key: str, text: str):
 # ======================================================================
 
 class TaskRunner:
-    def __init__(self):
-        self.logs = deque(maxlen=4000)
+    LOG_KEEP = 4000
+
+    def __init__(self, persist_path=None):
+        self.logs = deque(maxlen=self.LOG_KEEP)
         self.seq = 0
         self.running = False
         self.label = ""
@@ -427,10 +436,46 @@ class TaskRunner:
         self._parser = None   # (fn, key) 完成后解析输出
         self._buf = []
         self._cancel = threading.Event()
+        # 日志落盘：控制台重启后「日志」页还能看到上次跑的输出，
+        # 不然今天跑了十几次，打开日志页却是一整块空白。
+        self._persist = Path(persist_path) if persist_path else None
+        self._plock = threading.Lock()
+        self._load_persisted()
+
+    def _load_persisted(self):
+        if not self._persist:
+            return
+        try:
+            lines = self._persist.read_text(encoding="utf-8").splitlines()[-self.LOG_KEEP:]
+        except Exception:
+            return
+        rows = []
+        for raw in lines:
+            try:
+                r = json.loads(raw)
+                rows.append({"t": str(r["t"]), "line": str(r["line"])})
+            except Exception:
+                continue
+        for r in rows:
+            self.seq += 1
+            self.logs.append({"seq": self.seq, **r})
+        # 启动时顺手截短，文件不会无限长
+        try:
+            self._persist.write_text(
+                "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        except Exception:
+            pass
 
     def push(self, line: str):
         self.seq += 1
-        self.logs.append({"seq": self.seq, "t": datetime.now().strftime("%H:%M:%S"), "line": line.rstrip("\n")})
+        row = {"seq": self.seq, "t": datetime.now().strftime("%m-%d %H:%M:%S"), "line": line.rstrip("\n")}
+        self.logs.append(row)
+        if self._persist:
+            try:
+                with self._plock, self._persist.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"t": row["t"], "line": row["line"]}, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
 
     def start(self, label, cmd, parser=None, shell=False):
         return self.start_sequence(label, [(cmd, parser)], shell=shell)
@@ -526,11 +571,18 @@ class TaskRunner:
         return True
 
 
-RUNNER = TaskRunner()
+RUNNER = TaskRunner(DATA / "console.log")
 
 
 def py(*args):
-    return [PY, *[str(a) for a in args]]
+    """构造子脚本命令。
+
+    冻结成 exe 后由 exe 自己带 --run-script 解释执行，**不再依赖系统 Python**；
+    源码运行时仍走 python xxx.py。共用 common.child_cmd，两条路径不会走岔。
+    """
+    if not args:
+        return []
+    return child_cmd(args[0], *args[1:])
 
 
 # ======================================================================
@@ -759,7 +811,11 @@ def do_action(body: dict):
         cmd = py("run_all.py", "--platform", plat)
         if body.get("dry"):
             cmd.append("--dry-run")
-        if body.get("xxl"):
+        luck = plat == "all" and bool(body.get("luck"))
+        xxl = not luck and bool(body.get("xxl"))
+        if luck:
+            cmd.append("--luck")
+        elif xxl:
             cmd.append("--xxl")
             if body.get("xxl_times"):
                 cmd += ["--xxl-times", str(body["xxl_times"])]
@@ -769,9 +825,10 @@ def do_action(body: dict):
                 cmd += ["--seckill-at", body["seckill_at"]]
         pname = {"all": "全部平台", "qwhd": "全国签到", "bass": "福建活动",
                  "none": "不跑签到"}.get(plat, plat)
-        label = "一键签到（%s%s%s%s）" % (pname, "，只读检查" if body.get("dry") else "",
-                                     "，含消消乐" if body.get("xxl") else "",
-                                     "，含秒杀" if body.get("seckill") else "")
+        title = "签到领福利" if luck else "一键签到"
+        label = "%s（%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
+                                  "，含消消乐" if xxl else "",
+                                  "，含秒杀" if body.get("seckill") else "")
         return _start(label, cmd)
 
     if act == "qwhd_run":
@@ -825,6 +882,18 @@ def do_action(body: dict):
             cmd += ["--max", str(body["max"])]
         return _start("优惠专区抽奖", cmd)
 
+    if act == "xunbao_run":
+        cmd = py("cmcc_xunbao.py")
+        if body.get("key"):
+            cmd += ["--key", str(body["key"])]
+        if body.get("dry"):
+            cmd.append("--dry-run")
+        if body.get("tasks"):
+            cmd.append("--tasks")
+        if body.get("max"):
+            cmd += ["--max", str(body["max"])]
+        return _start("环闽寻宝记", cmd)
+
     if act == "seckill_run":
         f = safe_conf_path(body.get("file"))
         if f is None or not f.is_file():
@@ -839,7 +908,8 @@ def do_action(body: dict):
             cmd.append("--once")
         elif at:
             cmd += ["--at", at]
-        return _start(f"秒杀抢券 · {f.stem}", cmd)
+        return _start(f"秒杀抢券 · {f.stem}", cmd,
+                      parser=(parse_seckill_output, f.stem))
 
     if act == "games_run":
         f = safe_conf_path(body.get("file"))
@@ -864,8 +934,13 @@ def do_action(body: dict):
         elif body.get("detect"):
             cmd.append("--detect-level")
         else:
-            cmd += ["--level", body.get("level", 49), "--star", body.get("star", 3),
-                    "--times", body.get("times", 5), "--gap", body.get("gap", 12)]
+            # 前端现在从「设置 → 自动策略」读参数，传过来的是数字，
+            # subprocess 只接受字符串，这里统一转一道，否则会报
+            # 「expected str, bytes or os.PathLike object, not int」
+            cmd += ["--level", str(body.get("level", 49)),
+                    "--star", str(body.get("star", 3)),
+                    "--times", str(body.get("times", 5)),
+                    "--gap", str(body.get("gap", 12))]
         return _start("消消乐", cmd)
 
     # ---- token 管理 ----
@@ -939,7 +1014,7 @@ def do_action(body: dict):
             return {"ok": False, "err": "手机号应为 11 位数字（1 开头）"}
         if phone:
             cfg["phone"] = phone
-        for field in ("bark_url", "serverchan_sendkey"):
+        for field in ("bark_url", "serverchan_sendkey", "pushplus_token"):
             if field not in body:
                 continue
             v = str(body.get(field) or "").strip()
@@ -947,11 +1022,45 @@ def do_action(body: dict):
                 return {"ok": False, "err": "Bark 地址应以 http:// 或 https:// 开头"}
             if v and field == "serverchan_sendkey" and not re.fullmatch(r"[0-9A-Za-z]+", v):
                 return {"ok": False, "err": "SendKey 只能含字母和数字"}
+            if v and field == "pushplus_token" and not pushplus_token_ok(v):
+                return {"ok": False, "err": "PushPlus Token 格式不对（应为 32 位十六进制）"}
             cfg[field] = v
         if "note" in body:
             cfg["note"] = str(body.get("note") or "")[:200]
         atomic_write_json(f, cfg, indent=2)
         return {"ok": True, "msg": f"已保存 {f.name}"}
+
+    if act == "settings_save":
+        # 「设置一次、长期生效」：推送方式等全局项，存到 gui_data/settings.json
+        b = body.get("push") or {}
+        bark = str(b.get("bark_url") or "").strip()
+        sc = str(b.get("serverchan_sendkey") or "").strip()
+        pp = str(b.get("pushplus_token") or "").strip()
+        if bark and not bark.lower().startswith(("http://", "https://")):
+            return {"ok": False, "err": "Bark 地址应以 http:// 或 https:// 开头"}
+        if sc and not re.fullmatch(r"[0-9A-Za-z]+", sc):
+            return {"ok": False, "err": "SendKey 只能含字母和数字"}
+        if pp and not pushplus_token_ok(pp):
+            return {"ok": False, "err": "PushPlus Token 格式不对（应为 32 位十六进制）"}
+        save_global_settings({
+            "bark_url": bark,
+            "serverchan_sendkey": sc,
+            "pushplus_token": pp,
+        })
+        return {"ok": True, "msg": "已保存全局设置"}
+
+    if act == "notify_test":
+        # 发一条测试推送，验证通道是否通
+        from common import notify as _notify
+        ch = load_global_settings()
+        sent = _notify("中国移动签到 · 测试推送",
+                       "这是一条测试消息。收到即说明推送通道正常。",
+                       str(ch.get("bark_url") or ""),
+                       str(ch.get("serverchan_sendkey") or ""),
+                       str(ch.get("pushplus_token") or ""))
+        if sent:
+            return {"ok": True, "msg": "已发送测试推送，看看手机有没有收到"}
+        return {"ok": False, "err": "没发出去：先在上面填一个推送方式并保存"}
 
     # ---- 定时任务 ----
     if act == "policy_save":
@@ -977,6 +1086,12 @@ def do_action(body: dict):
             "feed_all": bool(b.get("feed_all")),
             "tasks": bool(b.get("tasks")), "fb_tasks": bool(b.get("fb_tasks")),
         }}
+        # 转盘免费次数当天清零，默认开；界面勾掉才不自动抽
+        patch["luck"] = bool(body.get("luck", True))
+        # 寻宝骰子同样当天作废；任务上报只涉及「参与天天大转盘」这类真做过的
+        patch["xunbao"] = bool(body.get("xunbao", True))
+        patch["coupon_world"] = bool(body.get("coupon_world", True))
+        patch["xunbao_tasks"] = bool(body.get("xunbao_tasks", True))
         xxl = body.get("xxl")
         if isinstance(xxl, dict):
             try:
@@ -1134,6 +1249,8 @@ def build_state():
         "flowbank": _load_json_safe(DATA / "flowbank_state.json"),
         "daily": _load_json_safe(DATA / "daily_state.json"),
         "luck": _load_json_safe(DATA / "luck_state.json"),
+        "xunbao": _load_json_safe(DATA / "xunbao_state.json"),
+        "awards": _awards_view(),
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
         "sched": _sched_state(),
@@ -1142,7 +1259,126 @@ def build_state():
         "sched_cn": SCHED_CN,
         "env": {"ok": env_ok, "msg": env_msg},
         "policy": load_policy(),
+        "settings": load_global_settings(),
     }
+
+
+# 到账流水的「来源」属于哪张卡。全国签到那边只有签到奖品和签到有礼的每周秒杀，
+# 其余（养成、转盘、消消乐、寻宝）都走福建 bass 鉴权。认不出的新来源归福建，
+# 因为新加的活动脚本基本都是福建那套。
+QWHD_SOURCES = ("每日签到", "每周秒杀")
+
+
+def award_platform(source) -> str:
+    src = str(source or "")
+    return "qwhdhub" if any(src.startswith(x) for x in QWHD_SOURCES) else "BASS"
+
+
+def _awards_view(limit=40) -> dict:
+    """到账台账：只挑「到手可用」的，按天/按号汇总给前端。
+
+    用户的原话是「别让我看喂了几次，就告诉我今天到手多少流量」，
+    所以这里的口径是**实际到手的流量 + 无门槛可直接兑换的话费券**。
+    有门槛的券（充值/满减/手气红包）只计数、不进列表、不计入张数。
+    """
+    try:
+        import common as C
+    except Exception:
+        return {"recent": [], "today": {}, "month": {}, "by_account": {}}
+
+    today = TODAY()
+    month = today[:7]
+    recs = C.load_awards()          # 新的在前
+    recent, seen = [], {}
+    for r in recs:
+        if r.get("ignored"):
+            continue                 # 话费型手气红包：用户要求直接不显示
+        # 同一秒同一奖品的重复登记（多账号/重复读接口）只留一条
+        sig = (r.get("at"), r.get("account"), r.get("name"))
+        if sig in seen:
+            continue
+        seen[sig] = 1
+        if r.get("need_recharge"):
+            continue                 # 要充值 / 要花钱买的券不上榜
+        if r.get("kind") not in ("flow", "fee"):
+            # 打车券、AI豆兑换券这类既不折流量也不抵话费，列出来两栏全是「—」，
+            # 用户要的是「今天到手多少流量、几张话费券」，所以不进明细。
+            continue
+        recent.append(r)
+        if len(recent) >= limit:
+            break
+
+    def agg(prefix):
+        flow, fee, recharge, yuan, th_yuan = 0.0, 0, 0, 0.0, 0.0
+        for r in recs:
+            if not str(r.get("at", "")).startswith(prefix):
+                continue
+            if r.get("ignored"):
+                continue             # 话费型手气红包：不计入任何数字
+            amt = float(r.get("yuan") or 0)
+            if r.get("need_recharge"):
+                recharge += 1
+                th_yuan += amt
+                continue
+            if r.get("kind") == "flow":
+                flow += float(r.get("size_mb") or 0)
+            elif r.get("kind") == "fee":
+                fee += 1
+                yuan += amt
+        return {"flow_mb": round(flow, 1), "fee_count": fee, "fee_yuan": round(yuan, 2),
+                "recharge_count": recharge, "recharge_yuan": round(th_yuan, 2)}
+
+    by = {}
+    by_day = {}
+    # 同一号码有「全国签到」「福建活动」两张卡，按来源拆开记，
+    # 不然两张卡显示同一个数字，看着像拿了两份。
+    by_plat = {}          # 尾号 → {qwhdhub|BASS: {flow_mb, fee_count, fee_yuan}}
+    by_day_plat = {}      # 尾号 → {qwhdhub|BASS: {日期: MB}}
+    fee_day = {}          # 日期 → 当天拿到的无门槛话费券张数（给「本月已得话费」画迷你趋势）
+    for r in recs:
+        if (not str(r.get("at", "")).startswith(month)
+                or r.get("need_recharge") or r.get("ignored")):
+            continue
+        tail = str(r.get("account") or "")[-4:] or "?"
+        plat = award_platform(r.get("source"))
+        b = by.setdefault(tail, {"flow_mb": 0.0, "fee_count": 0, "fee_yuan": 0.0, "last": ""})
+        bp = by_plat.setdefault(tail, {}).setdefault(
+            plat, {"flow_mb": 0.0, "fee_count": 0, "fee_yuan": 0.0})
+        if r.get("kind") == "flow":
+            mb = float(r.get("size_mb") or 0)
+            b["flow_mb"] = round(b["flow_mb"] + mb, 1)
+            bp["flow_mb"] = round(bp["flow_mb"] + mb, 1)
+            d = str(r.get("at", ""))[:10]
+            dd = by_day.setdefault(tail, {})
+            dd[d] = round(dd.get(d, 0) + mb, 1)
+            dp = by_day_plat.setdefault(tail, {}).setdefault(plat, {})
+            dp[d] = round(dp.get(d, 0) + mb, 1)
+        elif r.get("kind") == "fee":
+            yuan = float(r.get("yuan") or 0)
+            b["fee_count"] += 1
+            b["fee_yuan"] = round(b["fee_yuan"] + yuan, 2)
+            bp["fee_count"] += 1
+            bp["fee_yuan"] = round(bp["fee_yuan"] + yuan, 2)
+            d = str(r.get("at", ""))[:10]
+            fee_day[d] = fee_day.get(d, 0) + 1
+        if not b["last"]:
+            b["last"] = r.get("name") or ""
+
+    usable_fee = [r for r in recs
+                  if r.get("kind") == "fee" and not r.get("need_recharge")]
+    return {"recent": recent, "today": agg(today), "month": agg(month),
+            "by_account": by, "by_day": by_day, "fee_day": fee_day,
+            "by_plat": by_plat, "by_day_plat": by_day_plat,
+            # 历史累计：话费券张数 + 合计面额（只算无门槛可直接兑换的）
+            "fee_total": len(usable_fee),
+            "fee_yuan_total": round(sum(float(r.get("yuan") or 0) for r in usable_fee), 2),
+            # 本月有门槛的券明细（只有名字）：列表里不出现，但要让用户知道「哪张券不算」
+            # 话费型手气红包（ignored）连这里也不出现——用户要求直接不显示
+            "month_threshold": [{"name": r.get("name") or "", "at": r.get("at") or "",
+                                 "yuan": float(r.get("yuan") or 0)}
+                                for r in recs
+                                if str(r.get("at", "")).startswith(month)
+                                and r.get("need_recharge") and not r.get("ignored")]}
 
 
 def _list_token_life() -> list:
@@ -1446,11 +1682,14 @@ def _load_frontend() -> str:
 
     冻结成 exe 后页面在 PyInstaller 的解包目录里（_MEIPASS），源码运行时在项目根目录。
     两处都找不到就直接报错退出，而不是启动一个空白控制台。
+
+    顺序上**先看 exe 旁边的 static/**：改完界面不用重新打包就能生效，
+    只有把 exe 单独拷到别处（旁边没有 static/）时才回退到打包进去的那份。
+    早先是 _MEIPASS 优先，结果「改了 index.html、exe 里还是老界面」。
     """
-    candidates = []
+    candidates = [BASE / "static" / "index.html"]
     if getattr(sys, "frozen", False):
         candidates.append(Path(getattr(sys, "_MEIPASS", str(BASE))) / "static" / "index.html")
-    candidates.append(BASE / "static" / "index.html")
     for path in candidates:
         if path.is_file():
             return path.read_text(encoding="utf-8")

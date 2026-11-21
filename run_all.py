@@ -16,6 +16,7 @@ run_all.py —— 多账号批量运行器（两个平台）
 
 import argparse
 import datetime
+import os
 import json
 import random
 import subprocess
@@ -24,10 +25,31 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import (atomic_write_json, collect_notify_settings, load_json,
-                    load_policy, notify)   # 导入即固定 UTF-8 输出
+from common import (atomic_write_json, child_cmd, collect_notify_settings,
+                    is_token_dead, load_json, load_policy, notify,
+                    notify_once)   # 导入即固定 UTF-8 输出
 
 BASE = Path(__file__).parent
+
+# 这一轮里「凭证过期」的账号。它们不是真的执行失败，只是票过期了，
+# 汇总成一条通知就行；每小时一轮的每日奖励任务不该一小时骂一次。
+TOKEN_DEAD_ACCOUNTS = []
+
+
+def note_token_dead(name: str):
+    if name and name not in TOKEN_DEAD_ACCOUNTS:
+        TOKEN_DEAD_ACCOUNTS.append(name)
+
+
+def token_dead_notice(accounts) -> tuple:
+    """凭证过期的通知文案。一条说清「哪些号 + 怎么做」，不逐号发。"""
+    who = "、".join(accounts)
+    return ("移动签到：凭证过期",
+            "以下账号的登录凭证已过期，签到/抽奖/寻宝都会跳过：\n  " + who +
+            "\n\n处理：手机抓包 → App 里打开「签到领流量」和「优惠专区」各停留几秒"
+            " → 导出 HAR → 控制台「凭证与账号」导入。\n"
+            "（凭证寿命实测约 1 小时，抓完请尽快导入）")
+
 
 # 每日自动喂养的「今天已喂过」标记，防止计划任务补跑时重复消耗饲料
 FEED_STATE = BASE / "gui_data" / "feed_state.json"
@@ -179,14 +201,17 @@ def brief_error(text: str) -> str:
 
 
 def run_script(script: Path, conf: Path, args: list, timeout: int,
-               name: str = "", idx: int = 0, total: int = 0) -> tuple:
+               name: str = "", idx: int = 0, total: int = 0, *,
+               config_args=None) -> tuple:
     """跑一个子脚本。返回 (名称, 是否成功, 耗时, 输出文本)。
 
     输出不在子线程里直接打印，而是回传给主线程按顺序打印，
     否则并发执行时各账号的日志会交错在一起。
     签到 / 消消乐 / 秒杀三条链路共用这一份实现。
     """
-    cmd = [sys.executable, str(script), "--config", str(conf), *args]
+    if config_args is None:
+        config_args = ["--config", str(conf)]
+    cmd = child_cmd(script, *config_args, *args)
     name = name or label_of(conf, "phone")
     head = f"--- [{idx}/{total}] {name}  ({conf.name}) ---" if idx else ""
     buf = []
@@ -198,6 +223,10 @@ def run_script(script: Path, conf: Path, args: list, timeout: int,
         out = (res.stdout or "").strip()
         err = (res.stderr or "").strip()
         ok = res.returncode == 0
+        # 只要输出里明说「凭证过期」就记下来，不看退出码：
+        # 有的脚本打印完照样返回 0，只按退出码判会漏。
+        if is_token_dead(out) or is_token_dead(err):
+            note_token_dead(name)
         if head:
             buf.append(head)
         if out:
@@ -375,6 +404,73 @@ def run_wed(dry_run: bool) -> list:
     return results
 
 
+def run_xunbao(dry_run: bool, tasks: bool = False) -> list:
+    """环闽寻宝记：投掉现有骰子、开宝箱，中奖写进到账台账。"""
+    confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
+    if not confs:
+        print("环闽寻宝：没有福建账号，跳过。")
+        return []
+    script = BASE / "cmcc_xunbao.py"
+    if not script.is_file():
+        print("环闽寻宝：缺少 cmcc_xunbao.py。")
+        return [("xunbao", "环闽寻宝", False, 0)]
+
+    print(f"\n环闽寻宝记 · {len(confs)} 个福建账号")
+    args = []
+    if tasks:
+        # 只报「参与天天大转盘」这类这一轮真做过的任务；好友助力不会被报
+        args.append("--tasks")
+    if dry_run:
+        args.append("--dry-run")
+    results = []
+    for index, conf in enumerate(confs, 1):
+        # 寻宝是顺手多拿一次，挂了不能把整轮签到判成失败
+        try:
+            name, ok, sec, text = run_script(
+                script, conf, args, 600, idx=index, total=len(confs),
+                config_args=["--key", conf.stem],
+            )
+        except Exception as e:
+            print(f"  [xunbao] {conf.stem} 异常：{e}")
+            results.append(("xunbao", conf.stem, False, 0.0))
+            continue
+        print(text)
+        results.append(("xunbao", name, ok, sec))
+    return results
+
+
+def run_luck(dry_run: bool) -> list:
+    """用福建账号现有的次数抽奖，并逐个记录结果。"""
+    confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
+    if not confs:
+        print("优惠专区抽奖：没有福建账号，跳过。")
+        return []
+    script = BASE / "cmcc_luck.py"
+    if not script.is_file():
+        print("优惠专区抽奖：缺少 cmcc_luck.py。")
+        return [("luck", "优惠专区", False, 0)]
+
+    print(f"\n优惠专区抽奖 · {len(confs)} 个福建账号")
+    args = ["--no-tasks"]
+    if dry_run:
+        args.append("--dry-run")
+    results = []
+    for index, conf in enumerate(confs, 1):
+        # 转盘是「顺手多拿一次」，它挂掉不能把整轮签到判成失败
+        try:
+            name, ok, sec, text = run_script(
+                script, conf, args, 600, idx=index, total=len(confs),
+                config_args=["--key", conf.stem],
+            )
+        except Exception as e:
+            print(f"  [luck] {conf.stem} 异常：{e}")
+            results.append(("luck", conf.stem, False, 0.0))
+            continue
+        print(text)
+        results.append(("luck", name, ok, sec))
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -384,6 +480,10 @@ def main():
                     help='传给 BASS 脚本的额外参数，写成 --extra="--roll"')
     ap.add_argument("--xxl", action="store_true", help="签完之后接着跑消消乐")
     ap.add_argument("--xxl-times", type=int, default=5, help="消消乐每个号玩几局，默认 5")
+    ap.add_argument("--luck", action="store_true", help="优惠专区使用已有转盘抽奖次数")
+    ap.add_argument("--xunbao", action="store_true", help="环闽寻宝记：投掉现有骰子")
+    ap.add_argument("--xunbao-tasks", action="store_true",
+                    help="寻宝顺手上报「参与天天大转盘」任务换骰子")
     ap.add_argument("--daily-only", action="store_true",
                     help="只补签到 + 领 BASS 每日奖励三档，用于每小时轮询")
     ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
@@ -406,6 +506,9 @@ def main():
     ap.add_argument("--games-only", action="store_true",
                     help="只跑拓展活动三个，不跑其它平台")
     args = ap.parse_args()
+
+    # 让子脚本别自己推「凭证过期」——本轮结束由这里合并成一条
+    os.environ["CMCC_NOTIFY_BATCH"] = "1"
 
     # 额外参数按平台分发：--extra 是给 BASS 的，qwhd 的由模式开关自己决定。
     # 早先两个平台共用一个 extra 字符串、却只透传给 bass，导致 --keepalive
@@ -437,6 +540,15 @@ def main():
             extra_map["bass"] += ["--prize", prize]
         if pol.get("tasks"):
             extra_map["bass"].append("--tasks")
+        # 天天大转盘的免费次数当天不用就清零，跟着每日奖励一起抽完。
+        # 抽奖只消耗已有次数（run_luck 传 --no-tasks），不会替人做加次数任务。
+        args.luck = args.luck or bool(pol.get("luck", True))
+        # 券来世界（App 首页访问活动）：每天一次 500 饲料，先打开页面再上报
+        if pol.get("coupon_world", True):
+            extra_map["bass"].append("--coupon-world")
+        # 寻宝的骰子当天不用就作废，跟着每日奖励一起投掉
+        args.xunbao = args.xunbao or bool(pol.get("xunbao", True))
+        args.xunbao_tasks = args.xunbao_tasks or bool(pol.get("xunbao_tasks", True))
         if pol.get("fb_tasks"):
             extra_map["bass"].append("--fb-tasks")
 
@@ -507,6 +619,12 @@ def main():
             k == "bass" and ok for k, _n, ok, _s in results):
         mark_fed()
 
+    if args.luck:
+        results.extend(run_luck(args.dry_run))
+
+    if args.xunbao:
+        results.extend(run_xunbao(args.dry_run, tasks=args.xunbao_tasks))
+
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))
 
@@ -528,16 +646,26 @@ def main():
     good = sum(1 for _, _, ok, _ in results if ok)
     print(f"\n  {good}/{len(results)} 成功")
 
-    # 失败才推送，避免每天正常签到都打扰
-    if not args.no_notify and good != len(results):
+    # 失败才推送，避免每天正常签到都打扰；同类事当天只推一条
+    if not args.no_notify and (good != len(results) or TOKEN_DEAD_ACCOUNTS):
         cfgs = []
         for key in keys:
             for f in sorted(PLATFORMS[key]["dir"].glob("*.json")):
                 cfgs.append(load_json(f, {}))
-        bark, sc_key = collect_notify_settings(*cfgs)
-        bad = [f"{k}:{n}" for k, n, ok, _ in results if not ok]
-        notify("中国移动签到失败",
-               f"{good}/{len(results)} 成功\n失败账号：{', '.join(bad)}", bark, sc_key)
+        ch = collect_notify_settings(*cfgs)
+
+        if TOKEN_DEAD_ACCOUNTS:
+            # 票过期不是「脚本坏了」，用户只需要知道「该重抓哪几个号」，一条就够
+            title, detail = token_dead_notice(TOKEN_DEAD_ACCOUNTS)
+            notify_once("token_dead", title, detail, ch["bark_url"],
+                        ch["serverchan_sendkey"], hours=12,
+                        pushplus_token=ch["pushplus_token"])
+        bad = [f"{k}:{n}" for k, n, ok, _ in results if not ok and n not in TOKEN_DEAD_ACCOUNTS]
+        if bad:
+            notify_once("run_failed", "中国移动签到失败",
+                        f"{good}/{len(results)} 成功\n失败账号：{', '.join(bad)}",
+                        ch["bark_url"], ch["serverchan_sendkey"], hours=20,
+                        pushplus_token=ch["pushplus_token"])
 
     return 0 if good == len(results) else 1
 

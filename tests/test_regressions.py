@@ -89,9 +89,19 @@ class TestRunAllRouting(unittest.TestCase):
     def test_daily_only_passes_flag_to_bass(self):
         cmds = self._run(["--daily-only"])
         self.assertTrue(cmds)
-        for c in cmds:
-            self.assertIn("cmcc_fj.py", c[1])
+        bass = [c for c in cmds if "cmcc_fj.py" in c[1]]
+        self.assertTrue(bass)          # 每日奖励那一轮必须真跑 BASS
+        for c in bass:
             self.assertIn("--daily-only", c)
+        # 转盘免费次数跟着这一轮一起抽（cmcc_luck.py 只花已有次数）
+        self.assertTrue(any("cmcc_luck.py" in c[1] for c in cmds))
+
+    def test_luck_uses_existing_draws_and_respects_dry_run(self):
+        cmds = self._run(["--platform", "all", "--luck", "--dry-run"])
+        self.assertEqual([Path(c[1]).name for c in cmds],
+                         ["cmcc_sign.py", "cmcc_fj.py", "cmcc_luck.py"])
+        conf = Path(cmds[1][3])
+        self.assertEqual(cmds[-1][2:], ["--key", conf.stem, "--no-tasks", "--dry-run"])
 
     def test_extra_only_goes_to_bass(self):
         """--extra 是给 BASS 的，不能塞给 qwhd（argparse 会直接报错）。
@@ -164,8 +174,14 @@ class TestXxlExitCode(unittest.TestCase):
             cfg.write_text(json.dumps({"bearer_token": "x" * 36}), encoding="utf-8")
             argv = ["cmcc_xiaoxiaole.py", "--config", str(cfg),
                     "--times", str(times), "--gap", "0"]
+            # record_award 必须挡住：这条用例会造一个「500MB月包券」，
+            # 不拦的话每跑一次测试就往真实台账（gui_data/awards.json）里
+            # 塞一条假到账，今天「已得流量」会凭空虚高 500MB。
+            self.awards = []
             with mock.patch.object(XXL, "post", fake_post), \
                  mock.patch.object(XXL, "time", fake_time), \
+                 mock.patch.object(XXL, "record_award",
+                                   lambda *a, **k: self.awards.append(a)), \
                  mock.patch.object(sys, "argv", argv), \
                  redirect_stdout(io.StringIO()):
                 return XXL.main()
@@ -174,6 +190,14 @@ class TestXxlExitCode(unittest.TestCase):
         limit = {"code": "0000", "data": {"playToken": "t", "reachedLimit": False}}
         ends = [{"code": "0000", "data": {"prizeName": "500MB月包券"}}]
         self.assertEqual(self._run(limit, ends), 0)
+
+    def test_win_is_recorded_to_ledger(self):
+        """中奖要进到账台账，否则「今天到手多少」少算消消乐那一份。"""
+        limit = {"code": "0000", "data": {"playToken": "t", "reachedLimit": False}}
+        ends = [{"code": "0000", "data": {"prizeName": "500MB月包券"}}]
+        self._run(limit, ends)
+        self.assertTrue(self.awards)
+        self.assertEqual(self.awards[0][2], "500MB月包券")
 
     def test_daily_limit_reached_is_zero(self):
         """次数用尽是预期内收尾，不该天天触发失败推送。"""
@@ -1029,6 +1053,89 @@ class TestWedPuzzle(unittest.TestCase):
             self.assertIn("--dry-run", args)
 
 
+class TestSeckillLeaveStockNotSoldOut(unittest.TestCase):
+    """leaveStock 归零 ≠ 售罄（2026-11-21 12:36 实测）。
+
+    当时 4167 的 leaveStock 已经是 0.0，redeem 依然返回 SUCCESS 并真拿到券。
+    所以任何「库存为 0 就放弃」的分支都会白丢一张券，必须没有。
+    """
+
+    def _zone(self, leave_stock, status=None):
+        return {"id": 6, "startTime": "1795233600000", "endTime": "1795237200000",
+                "prize": {"id": "2021015394", "name": "1元话费券",
+                          "leaveStock": leave_stock, "status": status}}
+
+    def _window(self):
+        """返回 (start_srv_ms, deadline_srv_ms)：以「当前时刻」为基准。
+
+        不能写死 12:00/13:00 的绝对时间戳——那些时刻一过，
+        fire_redeem 会直接判定「场次窗口已结束」而提前返回，
+        用例就会变成跟运行时刻挂钩的假失败。
+        """
+        now_ms = int(time.time() * 1000)
+        return now_ms - 60_000, now_ms + 3_600_000
+
+    def test_fire_redeem_does_not_stop_when_leave_stock_is_zero(self):
+        """循环内的库存核对不得因 leaveStock=0 而停手。"""
+        import cmcc_seckill as SK
+        zone = self._zone(0.0)
+        start_ms, deadline_ms = self._window()
+        calls = {"n": 0}
+
+        def fake_post(s, referer, url, payload=None):
+            calls["n"] += 1
+            return {"code": "SUCCESS", "status": None,
+                    "data": {"prizeName": "1元话费券"}}
+
+        with mock.patch.object(SK, "api_post", side_effect=fake_post), \
+                mock.patch.object(SK, "query_stock", return_value=0.0), \
+                mock.patch.object(SK.time, "sleep", lambda d: None):
+            resp, reason = SK.fire_redeem(
+                None, "R", zone, interval=0.0, max_attempts=3,
+                deadline_srv_ms=deadline_ms, offset_ms=0.0,
+                start_srv_ms=start_ms)
+        self.assertEqual(reason, "SUCCESS",
+                         "leaveStock=0 时仍应继续打 redeem 并拿到 SUCCESS")
+        self.assertIsNotNone(resp)
+
+    def test_fire_redeem_reports_not_sold_out(self):
+        """打满次数后的失败原因不得写成「库存已抢完」这种误导性文案。"""
+        import cmcc_seckill as SK
+        zone = self._zone(0.0)
+        start_ms, deadline_ms = self._window()
+
+        def fake_post(s, referer, url, payload=None):
+            return {"code": "FAILED", "status": "TRAFFIC_LIMITED", "msg": "参与人数太多"}
+
+        with mock.patch.object(SK, "api_post", side_effect=fake_post), \
+                mock.patch.object(SK, "query_stock", return_value=0.0), \
+                mock.patch.object(SK.time, "sleep", lambda d: None):
+            resp, reason = SK.fire_redeem(
+                None, "R", zone, interval=0.0, max_attempts=2,
+                deadline_srv_ms=deadline_ms, offset_ms=0.0,
+                start_srv_ms=start_ms)
+        self.assertNotIn("抢完", reason, "失败原因不能断言库存已被抢完")
+
+    def test_prize_is_recorded_as_directly_redeemable_award(self):
+        """秒杀中的 1 元话费券要进收获台账，且按「无门槛可直接兑换」归类。"""
+        import cmcc_seckill as SK
+        import common as C
+        cfg = cmcc_sign.Config.__new__(cmcc_sign.Config)
+        cfg.phone = "13800001234"
+        zone = self._zone(0.0)
+        resp = {"code": "SUCCESS", "data": {"prizeName": "1元话费券"}}
+        with tempfile.TemporaryDirectory() as d:
+            awards = Path(d) / "awards.json"
+            with mock.patch.object(C, "AWARDS_FILE", awards):
+                name = SK.record_seckill_prize(resp, cfg, zone)
+                recs = C.load_awards()
+        self.assertEqual(name, "1元话费券")
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["kind"], "fee")
+        self.assertFalse(recs[0]["need_recharge"], "1 元话费券无门槛，应可直接兑换")
+        self.assertEqual(recs[0]["source"], "每周秒杀")
+
+
 class TestSeckillSessionRetry(unittest.TestCase):
     """秒杀：启动时没会话不再直接退出，而是重试到开抢前。"""
 
@@ -1040,7 +1147,9 @@ class TestSeckillSessionRetry(unittest.TestCase):
 
     def test_session_deadline_covers_grace_after_fire(self):
         import cmcc_seckill as SK
-        base = SK.parse_fire_at("11:59:50", datetime(2026, 11, 20, 0, 0, 0))
+        # 注意：session_deadline_for 内部用「今天」的 11:59:50，
+        # 所以基准也必须取今天，否则换个日期这条用例就假失败。
+        base = SK.parse_fire_at("11:59:50")
         self.assertAlmostEqual(SK.session_deadline_for("11:59:50", now=base - 100),
                                base + SK.SESSION_GRACE_AFTER_FIRE, delta=1)
         self.assertAlmostEqual(SK.session_deadline_for("", now=1000.0),
@@ -1413,24 +1522,21 @@ class TestUsabilityFixes(unittest.TestCase):
         self.assertIn("where python", text)
         self.assertIn("dashboard.py", text)
 
-    def test_preflight_reports_missing_python(self):
+    def test_preflight_reports_missing_scripts(self):
+        """exe 自带 Python 运行时，缺的只是同目录里的任务脚本。"""
         with mock.patch.object(sys, "frozen", True, create=True), \
                 mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": True, "msg": ""}), \
-                mock.patch("shutil.which", lambda n: None):
+                mock.patch.object(Path, "is_file", lambda self: False):
             ok, msg = dashboard.preflight(force=True)
         self.assertFalse(ok)
-        self.assertIn("Python", msg)
-        self.assertIn("PATH", msg)
+        self.assertIn("脚本", msg)
+        self.assertIn("项目根目录", msg)
 
-    def test_preflight_reports_missing_requests(self):
+    def test_preflight_ok_when_scripts_present(self):
         with mock.patch.object(sys, "frozen", True, create=True), \
-                mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": True, "msg": ""}), \
-                mock.patch("shutil.which", lambda n: r"C:\py\python.exe"), \
-                mock.patch.object(dashboard.subprocess, "run", lambda *a, **k: mock.Mock(returncode=1)):
-            ok, msg = dashboard.preflight(force=True)
-        self.assertFalse(ok)
-        self.assertIn("requests", msg)
-        self.assertIn("pip install", msg)
+                mock.patch.object(dashboard, "_PREFLIGHT", {"at": 0.0, "ok": False, "msg": "x"}), \
+                mock.patch.object(Path, "is_file", lambda self: True):
+            self.assertEqual(dashboard.preflight(force=True), (True, ""))
 
     def test_preflight_skipped_when_running_from_source(self):
         """源码运行时解释器与 requests 必然可用，不该白起子进程。"""
@@ -1493,6 +1599,30 @@ class TestUsabilityFixes(unittest.TestCase):
         self.assertEqual(seen["cmd"][:3], ["taskkill", "/PID", "999"])
         self.assertIn("/T", seen["cmd"])
         self.assertTrue(r._cancel.is_set())
+
+    def test_console_log_survives_restart(self):
+        """跑了十几次后重开控制台，「日志」页不该是一块空白。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "console.log"
+            r1 = dashboard.TaskRunner(path)
+            r1.push("▶ 签到")
+            r1.push("✓ 今日已签\n")
+            r2 = dashboard.TaskRunner(path)
+            self.assertEqual([l["line"] for l in r2.logs], ["▶ 签到", "✓ 今日已签"])
+            self.assertEqual(r2.seq, 2, "seq 要接着往上数，前端靠它增量拉取")
+
+    def test_console_log_trimmed_on_start(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "console.log"
+            path.write_text("".join(json.dumps({"t": "x", "line": str(i)}) + "\n"
+                                    for i in range(dashboard.TaskRunner.LOG_KEEP + 50))
+                            + "坏行\n", encoding="utf-8")
+            r = dashboard.TaskRunner(path)
+            self.assertEqual(len(r.logs), dashboard.TaskRunner.LOG_KEEP - 1)
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()),
+                             dashboard.TaskRunner.LOG_KEEP - 1)
 
     def test_cancelled_sequence_skips_remaining_steps(self):
         """「刷新状态」是顺序多步：杀掉当前一步后不能接着跑下一个账号。"""
@@ -1787,23 +1917,57 @@ class TestFeedReward(unittest.TestCase):
             return FJ.feed_reward_state(None, {})
 
     def test_completed_is_claimable(self):
-        fr = self._state({"taskStatus": "COMPLETED", "fodder": 950, "recordId": 1,
-                          "expireTime": "2999-01-01 00:00:00"})
+        fr, checked = self._state({"taskStatus": "COMPLETED", "fodder": 950, "recordId": 1,
+                                  "expireTime": "2999-01-01 00:00:00"})
+        self.assertTrue(checked)
         self.assertEqual(fr["fodder"], 950)
         self.assertEqual(fr["record_id"], "1")
 
     def test_received_is_none(self):
-        self.assertIsNone(self._state({"taskStatus": "RECEIVED", "fodder": 950}))
+        self.assertEqual(self._state({"taskStatus": "RECEIVED", "fodder": 950}), (None, True))
 
     def test_expired_is_none(self):
-        self.assertIsNone(self._state({"taskStatus": "COMPLETED",
-                                       "expireTime": "2020-01-01 00:00:00"}))
+        self.assertEqual(self._state({"taskStatus": "COMPLETED",
+                                      "expireTime": "2020-01-01 00:00:00"}), (None, True))
 
-    def test_query_error_is_none(self):
+    def test_no_reward_and_network_failure_are_distinct(self):
         import cmcc_fj as FJ
-        with mock.patch.object(FJ, "call",
-                               lambda *a, **k: {"ok": False, "code": "1503", "data": None}):
-            self.assertIsNone(FJ.feed_reward_state(None, {}))
+        with mock.patch.object(FJ, "call", side_effect=[
+            {"ok": False, "code": "1503", "data": None},
+            {"ok": False, "code": -1, "data": None},
+        ]):
+            self.assertEqual(FJ.feed_reward_state(None, {}), (None, True))
+            self.assertEqual(FJ.feed_reward_state(None, {}), (None, False))
+
+    def test_claim_dry_run_and_timeout_keep_pending_until_success(self):
+        import cmcc_fj as FJ
+        pending = {"ok": True, "code": "0000", "data": {
+            "taskStatus": "COMPLETED", "fodder": 750, "expireTime": "2999-01-01 00:00:00"}}
+        failure = {"ok": False, "code": -1, "msg": "超时", "data": None}
+        success = {"ok": True, "code": "0000", "data": None}
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            path = Path(tmp) / "daily_state.json"
+            with mock.patch.object(FJ, "DAILY_STATE", path), \
+                 mock.patch.object(FJ, "call", side_effect=[
+                    pending, pending, failure, pending, success,
+                 ]) as call:
+                res = {}
+                FJ.handle_feed_reward(None, {}, "test", res, dry_run=True)
+                self.assertEqual(res["feed_reward"]["fodder"], 750)
+                call.assert_called_once_with(None, {}, "next_receive")
+
+                res = {}
+                FJ.handle_feed_reward(None, {}, "test", res, dry_run=False)
+                self.assertEqual(res["feed_reward"]["fodder"], 750)
+                self.assertNotIn("feed_reward_received", res)
+                self.assertEqual(call.call_count, 3)
+                call.assert_called_with(None, {}, "feed_reward_claim", retries=0)
+
+                res = {}
+                FJ.handle_feed_reward(None, {}, "test", res, dry_run=False)
+                self.assertEqual(res["feed_reward_received"], 750)
+                self.assertIsNone(res["feed_reward"])
+                self.assertIsNone(common.load_json(path)["test"]["feed_reward"])
 
     def test_checked_observation_clears_stale_reminder(self):
         import cmcc_fj as FJ

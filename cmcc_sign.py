@@ -50,7 +50,8 @@ from urllib.parse import urlsplit
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import atomic_write_json, emit_result, load_json, setup_utf8
+from common import (atomic_write_json, emit_result, load_global_settings, load_json,
+                    record_award, setup_utf8)
 
 # ---------------------------------------------------------------- 常量
 
@@ -133,8 +134,15 @@ class Config:
         self.app_version_code = file_cfg.get("app_version_code", "12.5.2")
         self.activity_id = env.get("CMCC_ACTIVITY_ID", file_cfg.get("activity_id", "1021122301"))
         self.channel_id = env.get("CMCC_CHANNEL_ID", file_cfg.get("channel_id", "P00000109876"))
-        self.serverchan_sendkey = env.get("CMCC_SERVERCHAN_SENDKEY", file_cfg.get("serverchan_sendkey", ""))
-        self.bark_url = env.get("CMCC_BARK_URL", file_cfg.get("bark_url", ""))
+        # 推送通道：账号里没配就取设置页的全局配置（设置一次，所有账号通用）
+        gs = load_global_settings()
+        self.serverchan_sendkey = (env.get("CMCC_SERVERCHAN_SENDKEY", file_cfg.get("serverchan_sendkey", ""))
+                                   or gs.get("serverchan_sendkey", "")).strip()
+        self.bark_url = (env.get("CMCC_BARK_URL", file_cfg.get("bark_url", ""))
+                         or gs.get("bark_url", "")).strip()
+        self.pushplus_token = (env.get("CMCC_PUSHPLUS_TOKEN")
+                               or file_cfg.get("pushplus_token", "")
+                               or gs.get("pushplus_token", "")).strip()
 
     @property
     def act_url(self) -> str:
@@ -470,6 +478,15 @@ def notify(cfg: Config, title: str, detail: str):
                 log.warning("bark_url 校验失败，已跳过通知: %s", e)
             else:
                 s.get(cfg.bark_url, params={"title": title, "body": detail}, timeout=15)
+        if cfg.pushplus_token:
+            # PushPlus 走 POST JSON，token 放请求体，不进 URL
+            if not re.fullmatch(r"[0-9A-Za-z_-]{16,80}", cfg.pushplus_token):
+                log.warning("pushplus_token 格式不对，已跳过通知")
+            else:
+                s.post("https://www.pushplus.plus/send",
+                       json={"token": cfg.pushplus_token, "title": title,
+                             "content": detail, "template": "html"},
+                       timeout=15)
     except Exception as e:  # 通知失败不影响主流程
         log.warning("通知发送失败: %s", e)
 
@@ -545,6 +562,7 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
                 res["last_reward"] = prize
                 if prize:
                     lines.append(f"获得奖品: {prize}")
+                    record_award(getattr(cfg, "phone", "") or "", "每日签到", prize)
                 elif status == "PRIZE_NO_CONFIG":
                     lines.append("今日无单日奖品（奖励按累计签到门槛发放）")
         else:

@@ -13,6 +13,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+import _guard  # noqa: F401,E402  隔离真实全局配置（见 tests/_guard.py）
 import common as C
 import dashboard as D
 
@@ -95,8 +99,13 @@ class TestPushPlus(unittest.TestCase):
         self.p = mock.patch.object(C, "GLOBAL_SETTINGS_FILE", self.path)
         self.p.start()
         _FakeSession.calls = []
+        # 这个类专门验证「真的发出去长什么样」，用的是假会话不会真出网，
+        # 所以要关掉测试守卫里的 dry 模式。
+        self._dry = os.environ.pop("CMCC_NOTIFY_DRY", None)
 
     def tearDown(self):
+        if self._dry is not None:
+            os.environ["CMCC_NOTIFY_DRY"] = self._dry
         self.p.stop()
         self.tmp.cleanup()
 

@@ -617,6 +617,7 @@ def notify(title, detail, bark_url="", serverchan_sendkey="", pushplus_token="")
         return False
 
     sent = False
+    dry = os.environ.get("CMCC_NOTIFY_DRY")   # 测试期间：只走流程，不真发
     s = requests.Session()
     s.trust_env = False
     try:
@@ -624,6 +625,8 @@ def notify(title, detail, bark_url="", serverchan_sendkey="", pushplus_token="")
             # sendkey 会拼进 URL path，严格校验防止注入
             if not re.fullmatch(r"[0-9A-Za-z]+", key):
                 print(f"  [通知] serverchan_sendkey 含非法字符，已跳过")
+            elif dry:
+                sent = True
             else:
                 s.post(f"https://sctapi.ftqq.com/{key}.send",
                        data={"title": title, "desp": detail}, timeout=15)
@@ -631,6 +634,8 @@ def notify(title, detail, bark_url="", serverchan_sendkey="", pushplus_token="")
         if pp:
             if not pushplus_token_ok(pp):
                 print("  [通知] pushplus_token 格式不对，已跳过")
+            elif dry:
+                sent = True
             else:
                 s.post(PUSHPLUS_URL,
                        json={"token": pp, "title": title, "content": detail,
@@ -640,6 +645,8 @@ def notify(title, detail, bark_url="", serverchan_sendkey="", pushplus_token="")
         if bark_url:
             if not bark_url.lower().startswith(("http://", "https://")):
                 print("  [通知] bark_url 协议不合法，已跳过")
+            elif dry:
+                sent = True
             else:
                 s.get(bark_url, params={"title": title, "body": detail}, timeout=15)
                 sent = True

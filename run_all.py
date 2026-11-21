@@ -140,8 +140,17 @@ class RotatingLog:
             except OSError:
                 mtime_day = today
             if mtime_day != today:
+                # 跨天：把旧文件改名为「它自己那天的日期」，今天的输出另起新文件。
+                # 早先这里只是改了 target 的名字、并没有真的改名，于是今天的全部
+                # 输出都被写进「daily_reward.2026-11-20.log」这种昨天日期的文件里
+                # （而 daily_reward.log 停在昨天不动），按日期翻日志会看错。
                 self._archive_old(today)
-                target = self.path.with_name(f"{self.path.stem}.{mtime_day.isoformat()}.log")
+                archived = self.path.with_name(f"{self.path.stem}.{mtime_day.isoformat()}.log")
+                try:
+                    target.replace(archived)
+                except OSError:
+                    pass
+                target = self.path
         try:
             with open(target, "a", encoding="utf-8") as fh:
                 fh.write(text)

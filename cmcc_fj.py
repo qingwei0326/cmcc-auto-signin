@@ -60,6 +60,60 @@ EP = {
 }
 
 
+# 「券来世界」= 养成游戏的 H5 入口（App 首页那个图标打开的就是它）。
+# 养成任务 id=24「APP首页访问活动」要求的就是「从 App 首页打开它」，
+# 打开后上报 doTask/24 就能拿 500 饲料（DAILY×1）。
+COUPON_WORLD_URL = "https://wap.fj.10086.cn/bass-feedPrizeH5/?ch=jituan_02"
+COUPON_WORLD_KEY = "feedPrizeH5"          # 任务链接里认这个片段
+
+
+def task_url(task: dict) -> str:
+    """取任务要访问的页面地址：优先 app 直链，其次 h5 跳转型。"""
+    urls = task.get("taskUrls") or []
+    for u in urls:
+        if u.get("type") == "app" and u.get("url"):
+            return str(u["url"])
+    for u in urls:
+        if u.get("url"):
+            return str(u["url"])
+    return ""
+
+
+def is_coupon_world(task: dict) -> bool:
+    return COUPON_WORLD_KEY in task_url(task) or "券来世界" in str(task.get("taskName") or "")
+
+
+def find_coupon_world_task(s, cfg):
+    """任务列表里找「券来世界」那个待完成任务。
+
+    为什么要先查：每小时的轮询有「今天都做完了就 1 秒退出」的短路，
+    券来世界要是还没做，短路会把它一起跳过去。查一次（1 个请求）再决定。
+    返回 (任务 or None, 任务列表原始结果)。
+    """
+    tl = call(s, cfg, "task_list")
+    if not (tl.get("ok") and isinstance(tl.get("data"), list)):
+        return None, tl
+    for t in tl["data"]:
+        if str(t.get("taskStatus")) == "UN_DO" and is_coupon_world(t):
+            return t, tl
+    return None, tl
+
+
+def visit_page(s, url: str, timeout=15) -> bool:
+    """真的把页面打开一次。
+
+    服务端其实不校验有没有访问过（doTask 直接就成功），但既然要做这个任务，
+    就按它的本来意思先把页面拉起来：券来世界是 SPA，只取到 index.html 即可。
+    """
+    if not url:
+        return False
+    try:
+        r = s.get(url, timeout=timeout, headers={"Referer": HOST + "/"})
+        return r.status_code < 400
+    except Exception:
+        return False
+
+
 def load_config(path: Path):
     """读 BASS 配置；bearer 必须是抓包取来的那串，不能是模板占位符。"""
     cfg = _load_config(path, required=("bearer_token",), template="config_fj.example.json")
@@ -517,6 +571,8 @@ def main():
                     help="喂到饲料不足 250 为止：轮数按当前饲料自动算，不用手填。与 --feed 互斥")
     ap.add_argument("--tasks", action="store_true",
                     help="完成 UN_DO 的 VISIT 类任务（等价于空报浏览，默认关闭）")
+    ap.add_argument("--coupon-world", action="store_true",
+                    help="券来世界（App 首页访问活动）每天一次 500 饲料：先打开页面再上报")
     ap.add_argument("--fb-tasks", action="store_true",
                     help="完成流量银行的浏览任务（空报浏览，默认关闭）")
     ap.add_argument("--fb-all", action="store_true",
@@ -560,8 +616,15 @@ def main():
            "fodder": None, "stage": "", "fb_exchange": "", "today_signed": False,
            "flow_mb": 0.0, "tasks": 0, "feeds": 0, "last_reward": ""}
 
+    # 券来世界要先看一眼：它没做完时不能走下面的短路，否则每小时的轮询会跳过它
+    cw_task = None
+    if args.coupon_world and not args.dry_run:
+        cw_task, _ = find_coupon_world_task(s, cfg)
+        if cw_task:
+            print("  -  券来世界访问任务待完成（500 饲料）")
+
     # 轮询短路：今天该领的都领完了，就不必再调接口
-    if args.daily_only and not args.dry_run and daily_nothing_to_do(key):
+    if args.daily_only and not args.dry_run and not cw_task and daily_nothing_to_do(key):
         print("  今日签到和奖励已处理，本轮无事可做（1 秒退出）。")
         res["today_signed"] = True
         res["idle"] = True
@@ -704,6 +767,26 @@ def main():
             print(f"  -  {r.get('msg') or '还未到可领取时间'}（两档之间需间隔 60 分钟）")
     else:
         print("  -  当前没有待领档位（今日三档已领完，或未开启）")
+
+    # ---------- 券来世界（App 首页访问活动）----------
+    # 每天一次、500 饲料。做法照它本来的意思来：先把券来世界页面打开一次，
+    # 再上报 doTask，让日志能对上「访问过」这件事。
+    if args.coupon_world and not args.dry_run:
+        pause()
+        if not cw_task:
+            print("  -  券来世界访问任务今天已完成")
+        else:
+            tid = cw_task.get("id")
+            url = task_url(cw_task)
+            if url:
+                okv = visit_page(s, url)
+                print(f"  -  已打开券来世界（{url}）" if okv
+                      else f"  -  券来世界页面打开失败（仍按完成上报）：{url}")
+            pause(1.0, 0.8)
+            r = call_post(s, cfg, f"/bass-cultivateGameServer/task/doTask/{tid}")
+            if show(f"doTask/{tid} {cw_task.get('taskName')}", r):
+                res["tasks"] += 1
+            _note_token(res, r)
 
     if args.daily_only:
         # 补签成功后要回写一次，否则面板上仍显示"未签"

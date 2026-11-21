@@ -367,6 +367,7 @@ select.inp{cursor:pointer}
           <div class="frow"><label style="color:var(--warn)">伪造类</label>
             <label class="chk"><input type="checkbox" id="pTasks">养成浏览任务（空报）</label>
             <label class="chk"><input type="checkbox" id="pFb">流量银行任务（空报）</label>
+            <label class="chk" title="券来世界（App 首页访问活动）：每天一次 500 饲料。脚本会先把券来世界页面真的打开一次，再上报完成"><input type="checkbox" id="pCouponWorld">券来世界访问（+500 饲料）</label>
           </div>
           <div class="frow"><button class="btn pri" onclick="savePolicy()">保存策略</button>
             <span style="font-size:12px;color:var(--sub)" id="pMeta">加载中…</span></div>
@@ -666,7 +667,7 @@ function render(){
      return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;})();
   $('sumbar').innerHTML=`
     <div class="kpi"><div class="k">本月已得流量</div><div class="v">${flowMShow>=1024?(flowMShow/1024).toFixed(2)+'<small>GB</small>':flowMShow.toFixed(0)+'<small>MB</small>'}</div><div class="c">签到 / 领奖 / 转盘合计</div>${spF}</div>
-    <div class="kpi"><div class="k">本月已得话费</div><div class="v">${fy(feeYuan)}<small>元</small></div><div class="c">${feeM} 张 · 无门槛券（话费手气红包不计入）· 历史 ${feeAll} 张 / ${fy(feeYuanAll)} 元</div>${spFee}</div>
+    <div class="kpi"><div class="k">本月已得话费</div><div class="v">${fy(feeYuan)}<small>元</small></div><div class="c">共 ${feeM} 张无门槛券（话费手气红包不计入）· 历史 ${feeAll} 张 / ¥${fy(feeYuanAll)}</div>${spFee}</div>
     <div class="kpi"><div class="k">凭证可用</div><div class="v">${okTok}<small>/ ${accts.length} 份</small></div><div class="c">一个号码两份（全国 + 福建）</div></div>
     <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">过期需重新抓包导入</div></div>`;
   // 运行记录统计条
@@ -690,9 +691,9 @@ function render(){
   const awFmt=mb=>mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');
   if($('awSum'))$('awSum').innerHTML=`
     <div class="cell"><div class="k">今日已得流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">今日已得话费</div><div class="v">${awT.fee_count||0}<small> 张 · ¥${fy(awT.fee_yuan)}</small></div></div>
+    <div class="cell"><div class="k">今日已得话费</div><div class="v">¥${fy(awT.fee_yuan)}<small> · ${awT.fee_count||0} 张</small></div></div>
     <div class="cell"><div class="k">本月已得流量</div><div class="v">${awFmt(awM.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">本月已得话费</div><div class="v">${awM.fee_count||0}<small> 张 · ¥${fy(awM.fee_yuan)}</small></div></div>`;
+    <div class="cell"><div class="k">本月已得话费</div><div class="v">¥${fy(awM.fee_yuan)}<small> · ${awM.fee_count||0} 张</small></div></div>`;
   const awRows=aw.recent||[];
   if($('awTab'))$('awTab').innerHTML= awRows.length
     ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">面额</th><th class="num">折合流量</th></tr>'+
@@ -744,7 +745,7 @@ function render(){
           <div class="stat"><div class="k">本月任务</div><div class="v">${s.tasks_month||0}<small class="sum">累计 ${s.tasks_done_total||0}</small></div></div>
           <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${s.last_reward||'—'}</div></div>`
           :`
-          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张券 · ¥${fy((awBy[(a.phone||'').slice(-4)]||{}).fee_yuan||0)}</small></div></div>
+          <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt((awBy[(a.phone||'').slice(-4)]||{}).flow_mb||0)}<small class="sum">¥${fy((awBy[(a.phone||'').slice(-4)]||{}).fee_yuan||0)} · ${(awBy[(a.phone||'').slice(-4)]||{}).fee_count||0} 张券</small></div></div>
           <div class="stat"><div class="k">饲料余额</div><div class="v y">${fmtNum(s.fodder)}</div></div>
           <div class="stat"><div class="k">流量可兑</div><div class="v">${s.fb_exchange||'—'}</div></div>
           <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${s.stage||'—'}</div></div>`}
@@ -1097,6 +1098,7 @@ function renderPolicy(){
     $('pFb').checked=!!b.fb_tasks;
     if($('pLuck'))$('pLuck').checked=(p.luck!==false);
     if($('pXunbao'))$('pXunbao').checked=(p.xunbao!==false);
+    if($('pCouponWorld'))$('pCouponWorld').checked=(p.coupon_world!==false);
     const x=p.xxl||{};
     if($('xLevel'))$('xLevel').value=(x.level!=null?x.level:49);
     if($('xStar'))$('xStar').value=(x.star!=null?x.star:3);
@@ -1124,6 +1126,7 @@ async function savePolicy(){
   const body={action:'policy_save',
     luck:($('pLuck')?$('pLuck').checked:true),
     xunbao:($('pXunbao')?$('pXunbao').checked:true),
+    coupon_world:($('pCouponWorld')?$('pCouponWorld').checked:true),
     bass:{feed:$('pFeedAll').checked?0:(Number(V('pFeed'))||0),
           feed_all:$('pFeedAll').checked,
           feed_hour:Number(V('pFeedHour'))||0,

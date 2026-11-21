@@ -1011,6 +1011,7 @@ def do_action(body: dict):
         patch["luck"] = bool(body.get("luck", True))
         # 寻宝骰子同样当天作废；任务上报只涉及「参与天天大转盘」这类真做过的
         patch["xunbao"] = bool(body.get("xunbao", True))
+        patch["coupon_world"] = bool(body.get("coupon_world", True))
         patch["xunbao_tasks"] = bool(body.get("xunbao_tasks", True))
         xxl = body.get("xxl")
         if isinstance(xxl, dict):

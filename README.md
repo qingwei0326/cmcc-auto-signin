@@ -289,6 +289,19 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 
 福建活动常规运行和每小时领奖任务也会领取已开放的「昨日投喂奖励」。这笔奖励独立于每日三档，过期时间以 App 为准。
 
+### 券来世界（`--coupon-world`）
+
+养成任务里的 **id=24「APP首页访问活动」**，落地页就是券来世界
+`https://wap.fj.10086.cn/bass-feedPrizeH5/?ch=jituan_02`（养成游戏的 H5 入口，
+App 首页那个图标点进去就是它）。每天一次，完成给 **500 饲料**。
+
+脚本的做法按任务本来的意思来：先 `GET` 券来世界页面一次，再
+`POST /bass-cultivateGameServer/task/doTask/24`。服务端其实不校验有没有真的
+访问过，但这样日志能对上「访问过」这件事，也不算纯空报。
+
+要注意每小时的轮询有「今天都做完了就 1 秒退出」的短路，所以脚本在短路之前
+会先查一次任务列表：券来世界还没做就不能短路，否则它会被一起跳过。
+
 ### 福袋
 
 `GET /luckyBag/nearTrigger` → `{nextTriggerCount:300, currentFeedCount, needMoreFeeds}`。
@@ -311,6 +324,7 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 | `tasks` / `fb_tasks` | 空报浏览类，默认 `false` |
 | `luck` | `true` = 每天顺带把「优惠专区 · 天天大转盘」的免费次数抽完（只花已有次数，不替人做加次数任务），默认 `true` |
 | `xunbao` / `xunbao_tasks` | `true` = 每天顺带把「环闽寻宝记」的骰子投完、到终点开宝箱；`xunbao_tasks` 控制是否顺手报「参与天天大转盘」换骰子（好友助力永不代报），默认都 `true` |
+| `coupon_world` | `true` = 每天做一次「券来世界」访问任务（App 首页访问活动，500 饲料）。脚本会**先把券来世界页面真的打开一次**再上报，默认 `true` |
 
 命令行等价写法：`python run_all.py --daily-only` 会自动读取该策略并注入
 `--feed N`（或 `--feed-all`）`--auto-claim --prize flow` 等参数；

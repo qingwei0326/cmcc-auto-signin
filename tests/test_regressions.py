@@ -1600,6 +1600,30 @@ class TestUsabilityFixes(unittest.TestCase):
         self.assertIn("/T", seen["cmd"])
         self.assertTrue(r._cancel.is_set())
 
+    def test_console_log_survives_restart(self):
+        """跑了十几次后重开控制台，「日志」页不该是一块空白。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "console.log"
+            r1 = dashboard.TaskRunner(path)
+            r1.push("▶ 签到")
+            r1.push("✓ 今日已签\n")
+            r2 = dashboard.TaskRunner(path)
+            self.assertEqual([l["line"] for l in r2.logs], ["▶ 签到", "✓ 今日已签"])
+            self.assertEqual(r2.seq, 2, "seq 要接着往上数，前端靠它增量拉取")
+
+    def test_console_log_trimmed_on_start(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "console.log"
+            path.write_text("".join(json.dumps({"t": "x", "line": str(i)}) + "\n"
+                                    for i in range(dashboard.TaskRunner.LOG_KEEP + 50))
+                            + "坏行\n", encoding="utf-8")
+            r = dashboard.TaskRunner(path)
+            self.assertEqual(len(r.logs), dashboard.TaskRunner.LOG_KEEP - 1)
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()),
+                             dashboard.TaskRunner.LOG_KEEP - 1)
+
     def test_cancelled_sequence_skips_remaining_steps(self):
         """「刷新状态」是顺序多步：杀掉当前一步后不能接着跑下一个账号。"""
         r = dashboard.TaskRunner()

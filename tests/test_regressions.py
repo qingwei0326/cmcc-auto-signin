@@ -1295,7 +1295,7 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             # 周三 10:00 → 未到窗口
             with mock.patch.object(EX, "datetime") as fake_dt:
                 fake_dt.now.return_value = datetime(2026, 11, 18, 10, 0, 0)
-                out = EX.run_lottery(None, "ref", cfg, dry_run=False)
+                out, _won = EX.run_lottery(None, "ref", cfg, dry_run=False)
         self.assertIn("未到窗口", out)
         self.assertFalse([c for c in calls if "lotterySafely" in c],
                          "窗口外不得消耗抽奖次数")
@@ -1318,9 +1318,39 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
                 mock.patch.object(EX.time, "sleep"), \
                 mock.patch.object(EX, "datetime") as fake_dt:
             fake_dt.now.return_value = datetime(2026, 11, 21, 13, 0, 0)  # 周六 13:00
-            out = EX.run_lottery(None, "ref", cfg, dry_run=False)
+            out, _won = EX.run_lottery(None, "ref", cfg, dry_run=False)
         self.assertIn("已抽", out)
         self.assertEqual(len([c for c in calls if "lotterySafely" in c]), 3)
+
+    def test_lottery_prize_is_recorded_in_awards(self):
+        """周六活动抽中的奖品必须进到账台账。
+
+        之前 run_lottery 只把奖品名拼进日志字符串，从不调 record_award，
+        导致游戏中心抽到的流量券完全不入账。守住这个 bug。
+        """
+        import cmcc_extra as EX
+
+        def fake_api_call(s, referer, method, path, body=None):
+            if path.startswith("/qwhdhub/diyLottery/period/remain/"):
+                return {"code": "SUCCESS", "data": {"remainGameVal": 30, "remain": 5}}
+            return {"code": "SUCCESS", "data": [{"prizeName": "100MB流量日包券"}]}
+
+        cfg = {"component": "c", "wallet_key": "remainGameVal", "cost": 10,
+               "count_key": "remain", "weekday": 6, "start_hour": 12,
+               "label": "游戏币"}
+        with mock.patch.object(EX, "api_call", side_effect=fake_api_call), \
+                mock.patch.object(EX.time, "sleep"), \
+                mock.patch.object(EX, "datetime") as fake_dt, \
+                mock.patch.object(EX, "record_award") as rec:
+            fake_dt.now.return_value = datetime(2026, 11, 21, 13, 0, 0)
+            _out, won = EX.run_lottery(None, "ref", cfg, dry_run=False,
+                                       account="13900005678")
+            self.assertEqual(len(won), 3)
+            self.assertEqual(rec.call_count, 3)
+            args = rec.call_args[0]
+            self.assertEqual(args[0], "13900005678")
+            self.assertEqual(args[1], "游戏币")
+            self.assertEqual(args[2], "100MB流量日包券")
 
     def test_dashboard_has_games_page_and_action(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")

@@ -46,6 +46,7 @@ from cmcc_sign import (
     assert_safe_url,
     exchange_session,
 )
+from common import record_award
 
 log = logging.getLogger("cmcc_sign")
 
@@ -144,7 +145,8 @@ def run_diy_tasks(s: requests.Session, referer: str, component: str, dry_run: bo
     return f"代币任务 {len(todo)} 个待办，完成 {done} 个"
 
 
-def run_lottery(s: requests.Session, referer: str, cfg: dict, dry_run: bool) -> str:
+def run_lottery(s: requests.Session, referer: str, cfg: dict, dry_run: bool,
+                account: str = "") -> tuple:
     """抽奖消耗：只读预检余额 → 到窗口才真扣。
 
     幂等由服务端余额保证（余额为 0 时无事可做），重复运行不会多扣资产。
@@ -153,7 +155,7 @@ def run_lottery(s: requests.Session, referer: str, cfg: dict, dry_run: bool) -> 
     comp = cfg["component"]
     rem = api_call(s, referer, "POST", f"/qwhdhub/diyLottery/period/remain/{comp}", {})
     if rem.get("code") != "SUCCESS":
-        return f"抽奖[{cfg['label']}] 余额查询失败: {rem.get('code')} {rem.get('msg')}"
+        return f"抽奖[{cfg['label']}] 余额查询失败: {rem.get('code')} {rem.get('msg')}", []
     d = rem.get("data") or {}
     wallet = d.get(cfg["wallet_key"]) or 0
     limit = d.get(cfg["count_key"]) if cfg.get("count_key") else None
@@ -162,24 +164,32 @@ def run_lottery(s: requests.Session, referer: str, cfg: dict, dry_run: bool) -> 
         n = min(n, int(limit))
     head = f"抽奖[{cfg['label']}] 余额 {wallet}（{cfg['cost']}/次）→ 可抽 {n} 次"
     if dry_run or n <= 0:
-        return head
+        return head, []
 
     now = datetime.now()
     if (cfg.get("weekday") and now.isoweekday() != cfg["weekday"]) or \
        (cfg.get("start_hour") and now.hour < cfg["start_hour"]):
         window = f"周{cfg['weekday']}" + (f" {cfg['start_hour']}:00 起" if cfg.get("start_hour") else "")
-        return f"{head}；未到窗口（{window}），本次不消耗"
+        return f"{head}；未到窗口（{window}），本次不消耗", []
 
     prizes = []
+    won_names = []
     for _ in range(n):
         r = api_call(s, referer, "GET", f"/qwhdhub/diyLottery/lotterySafely/{comp}")
         won = (r.get("data") or [{}])[0] if r.get("code") == "SUCCESS" else None
         if not won:
             prizes.append(f"失败({r.get('code')} {r.get('msg')})")
             break
-        prizes.append(str(won.get("prizeName") or "?"))
+        pn = str(won.get("prizeName") or "?")
+        prizes.append(pn)
+        won_names.append(pn)
+        try:
+            # 「谢谢参与」由 record_award 内部过滤，不入台账
+            record_award(account or "", cfg.get("label") or "拓展活动", pn)
+        except Exception as e:
+            log.debug("台账写入失败: %s", e)
         time.sleep(random.uniform(1.2, 2.8))
-    return f"{head}，已抽 {len(prizes)} 次: {' / '.join(prizes)}"
+    return f"{head}，已抽 {len(prizes)} 次: {' / '.join(prizes)}", won_names
 
 
 def open_finish_task(cfg: ActConfig, task: dict) -> bool:
@@ -294,6 +304,8 @@ def run_games(cfg, dry_run: bool) -> list[str]:
         if act.get("task_component"):
             lines.append(f"{act['name']} {run_diy_tasks(s, referer, act['task_component'], dry_run)}")
         if act.get("lottery"):
-            lines.append(f"{act['name']} {run_lottery(s, referer, act['lottery'], dry_run)}")
+            lot_txt, _won = run_lottery(s, referer, act["lottery"], dry_run,
+                                        account=getattr(cfg, "phone", "") or "")
+            lines.append(f"{act['name']} {lot_txt}")
         time.sleep(random.uniform(1.5, 4))
     return lines

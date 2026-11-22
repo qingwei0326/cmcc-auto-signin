@@ -15,6 +15,7 @@ from unittest import mock
 
 import sys as _sys
 from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))
 import _guard  # noqa: F401,E402  隔离真实全局配置（见 tests/_guard.py）
 import common as C
@@ -227,10 +228,6 @@ class TestSettingsPage(unittest.TestCase):
         self.assertIn('id="skAtShow"', self.html)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestXxlArgsFromPolicy(unittest.TestCase):
     """消消乐参数改成从「设置」读后是数字，子进程只收字符串。
 
@@ -245,16 +242,19 @@ class TestXxlArgsFromPolicy(unittest.TestCase):
             captured["cmd"] = cmd
             return {"ok": True}
 
-        cfg = Path("configs_fj") / "fj_test.json"
-        (Path(D.BASE) / "configs_fj").mkdir(parents=True, exist_ok=True)
-        cfg.write_text("{}", encoding="utf-8")
-        try:
-            with mock.patch.object(D, "_start", fake_start):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "configs_fj").mkdir()
+            (base / "configs_fj" / "fj_test.json").write_text("{}", encoding="utf-8")
+            with mock.patch.object(D, "BASE", base), \
+                 mock.patch.object(D, "_start", fake_start):
                 r = D.do_action({"action": "xxl_run", "file": "configs_fj/fj_test.json",
                                  "level": 49, "star": 3, "times": 5, "gap": 12})
             self.assertTrue(r["ok"])
             self.assertTrue(all(isinstance(x, str) for x in captured["cmd"]),
                             f"有非字符串参数：{captured['cmd']}")
             self.assertIn("49", captured["cmd"])
-        finally:
-            cfg.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

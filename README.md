@@ -27,7 +27,6 @@
 | 福袋 | 每累计喂食 300 次触发 | 随机 |
 | 优惠抽奖 | 转盘，刷任务换次数 | 流量券 / 话费券 |
 | 一起消消乐 | 每次读取真实关卡再上报；自动做金币任务换体力 | 每天约 5 点体力 + 金币兑换 |
-| 咪咕掼蛋 | 协议已逆向；牌谱还原 + AI 出牌建议可用，自动打牌卡在登录令牌（`cat` 一次性） | 待接入 |
 
 > 日常只需要双击 `签到领福利.exe`，其余内容都是排查和进阶用。
 
@@ -35,11 +34,11 @@
 
 ## 快速开始
 
-> **先说清楚一件事**：`签到领福利.exe` 只是界面外壳，**签到任务仍由系统 Python 执行**。
-> 电脑上必须装着 Python 3.9+ 与 `requests` 等依赖，exe 必须与 `cmcc_*.py` 放在同一目录。
-> 缺 Python 或缺依赖时，程序启动就会弹窗说明该装什么，不会再让你点了按钮才看到一串系统错误码。
+> **先说清楚一件事**：双击 `签到领福利.exe` 在界面里点按钮时，任务脚本由 exe 自带的运行时解释执行
+> （`--run-script`），**不需要目标机器装 Python**，只需确保 exe 与 `cmcc_*.py`、`static/` 在同一目录。
+> 但如果要使用 **Windows 计划任务**（`run_*.bat`）或双击 `run_gui.bat` 在浏览器运行，电脑上仍需安装 Python 3.9+ 与 `requests` 等依赖。
 
-**新电脑三步**
+**从源码运行或使用计划任务（三步）**
 
 1. 装 Python 3.9+（64 位），安装时勾选 `Add Python to PATH`
 2. 在项目目录地址栏输入 `cmd`，执行 `pip install -r requirements.txt`
@@ -91,8 +90,8 @@ python run_all.py --dry-run
 | 页面 | 内容 |
 |---|---|
 | **总览** | **「现在需要你做什么」待办条**；**到账台账**（今天/本月到手流量、可用话费券，逐条记录时间+来源+兑换链接；要充值才生效的券不列入）；本月流量/任务数/凭证可用数；每号一张卡片（双平台数据 + 数据截至时间 + 近 7 天柱状图）；「签到领福利」会签到、领取可领饲料并使用已有转盘次数；也可只跑单平台或只读检查 |
-| **凭证与账号** | ① **账号管理**：新建账号、改手机号、配单个账号的失败推送（Bark / Server酱 / PushPlus）② **导入抓包文件**（一份 HAR 同时更新两个平台，含分步抓包引导）③ 优惠专区抽奖 |
-| **福建活动** | 手动执行：领奖/骰子/喂养/只读；**每日奖励 & 福袋**面板；**流量银行任务周期**面板；**环闽寻宝记**面板（投骰子、开藏宝阁）；执行结果直接留在页面上 |
+| **凭证与账号** | ① **账号管理**：新建账号、改手机号、配单个账号的失败推送（Bark / Server酱 / PushPlus）② **导入抓包文件**（一份 HAR 同时更新两个平台，含分步抓包引导） |
+| **福建活动** | 优惠专区抽奖（用福建账号凭证刷任务 + 抽奖）；手动执行（领奖/骰子/喂养/只读）；**每日奖励 & 福袋**面板；**流量银行任务周期**面板；**环闽寻宝记**面板（投骰子、开藏宝阁）；执行结果直接留在页面上 |
 | **消消乐** | 星级/局数/间隔与「金币任务换体力」开关（存在设置页，这里只显示）；关卡自动读取；只读查次数 |
 | **秒杀抢券** | 每天 12:00 抢 1 元话费券；各号会话是否备好、**票据已用多少分钟**；过了场次时间会明确提示 |
 | **拓展活动** | 周六游戏中心 / 追剧领福利 / 玩游戏抽话费，按各自窗口自动判定 |
@@ -124,27 +123,27 @@ dist\签到领福利.exe → 复制到项目根目录
 
 窗口起不来时程序会自动回退浏览器模式，启动过程记录在 `gui_data/startup.log`。
 
-**目标机器不需要装 Python**：exe 自己带解释器，任务脚本由它以
-`签到领福利.exe --run-script cmcc_sign.py --config ...` 的方式执行。
-早先的做法是找系统 `python.exe`，换台没装 Python 的机器就变成「能开界面、
-一点执行就报错」。现在 preflight 只检查脚本文件是否和 exe 在同一目录。
+**桌面版内运行不依赖系统 Python**：在界面里点按钮时，exe 自己带解释器以
+`签到领福利.exe --run-script cmcc_sign.py --config ...` 方式执行任务脚本。
 源码运行时仍是 `python cmcc_sign.py ...`，两条路径都走 `common.child_cmd`。
+（仅 Windows 计划任务通过 `run_*.bat` 调用时，仍需要系统 `pythonw.exe`。）
 
 ---
 
 ## 定时任务
 
-推荐注册下面六个计划任务（Windows）：
+推荐注册下面八个计划任务（Windows）：
 
 | 任务 | 时间 | 脚本 | 作用 |
 |---|---|---|---|
 | `MobileSignIn` | 每天 **11:45** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐。放在秒杀前 10 分钟，是为了让一张票据同时覆盖 签到→会话刷新→秒杀→拓展 |
-| `MobileDailyReward` | 每天 **06:03 起每小时**，共 17 次 | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 |
-| `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
+| `MobileDailyReward` | 每天 **06:00 起每小时**（长期重复） | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 + 触发自动策略（喂养/转盘/寻宝/券来世界） |
+| `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**（长期重复） | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
 | `MobileSessionRefresh` | 每天 **11:54** | `run_session_refresh.bat` | 只跑 qwhdhub 签到，建立新会话，为秒杀做准备 |
-| `MobileSeckill` | 每天 **11:55** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券；会话未就绪会每 15 秒重试 |
+| `MobileSeckill` | 每天 **11:55** | `run_seckill.bat` | `run_all.py --seckill-only --seckill-at 11:59:50`，等到 12:00 抢 1 元话费券；会话未就绪会每 15 秒重试 |
 | `MobileGames` | 每天 **12:05** | `run_games.bat` | 拓展活动三个：周六游戏中心 / 追剧领福利 / 玩游戏抽话费 |
-| `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**，全天覆盖 | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
+| `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**（长期重复） | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
+| `MobileMailWatch` | 每天 **00:00 起每 10 分钟**（长期重复） | `run_mail_watch.bat` | 凭证失效且当日未完成时查收 HAR 邮件并自动导入与补跑 |
 
 > **每天只需要抓一次包**：qwhdhub 的 `app_token` 存活只有 1~2 小时（实测 22:52 导入的票
 > 23:58 仍有效、00:21 还能签到，01:05 已失效）。所以签到挪到 11:45，与 11:54 会话刷新、
@@ -191,38 +190,22 @@ python run_all.py --daily-only                                 # 所有 BASS 账
 python run_all.py --keepalive                                  # 只试登录，不签到
 ```
 
-注册方式：
+注册方式（建议直接在控制台「定时任务」页点「一键配置全部」，命令行等价写法如下）：
 
 ```powershell
-# 签到任务
-$a = New-ScheduledTaskAction -Execute "<项目目录>\run_scheduled.bat" -WorkingDirectory "<项目目录>"
-$t = New-ScheduledTaskTrigger -Daily -At 08:30
+# 1. 每天定时任务（例：签到 11:45；其余 sess=11:54、seckill=11:55、games=12:05 同理）
+$a = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument '"<项目目录>\run_hidden.py" "<项目目录>\run_scheduled.bat"' -WorkingDirectory "<项目目录>"
+$t = New-ScheduledTaskTrigger -Daily -At 11:45
 Register-ScheduledTask -TaskName "MobileSignIn" -Action $a -Trigger $t -Force
 
-# 每日奖励任务（每小时，持续 17 小时）
-$a2 = New-ScheduledTaskAction -Execute "<项目目录>\run_daily_reward.bat" -WorkingDirectory "<项目目录>"
-$t2 = New-ScheduledTaskTrigger -Daily -At 06:03
-$t2.Repetition = (New-ScheduledTaskTrigger -Once -At 06:03 -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Hours 17)).Repetition
+# 2. 长期重复任务（PowerShell 5.1 需在 New-ScheduledTaskTrigger 直接传 Repetition 参数，不能赋值 $tr.Repetition）
+$start = (Get-Date).AddMinutes(2).ToString("HH:mm")
+$a2 = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument '"<项目目录>\run_hidden.py" "<项目目录>\run_daily_reward.bat"' -WorkingDirectory "<项目目录>"
+$t2 = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650)
 Register-ScheduledTask -TaskName "MobileDailyReward" -Action $a2 -Trigger $t2 -Force
-
-# 会话保活任务（每 90 分钟，全天覆盖）
-$a3 = New-ScheduledTaskAction -Execute "<项目目录>\run_jwt_keepalive.bat" -WorkingDirectory "<项目目录>"
-$t3 = New-ScheduledTaskTrigger -Daily -At 00:00
-$t3.Repetition = (New-ScheduledTaskTrigger -Once -At 00:00 -RepetitionInterval (New-TimeSpan -Minutes 90) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
-Register-ScheduledTask -TaskName "MobileJwtKeepAlive" -Action $a3 -Trigger $t3 -Force
-
-# 会话刷新任务（11:54 建立新会话，紧邻开抢）
-$a4 = New-ScheduledTaskAction -Execute "<项目目录>\run_session_refresh.bat" -WorkingDirectory "<项目目录>"
-$t4 = New-ScheduledTaskTrigger -Daily -At 11:54
-Register-ScheduledTask -TaskName "MobileSessionRefresh" -Action $a4 -Trigger $t4 -Force
-
-# 秒杀抢券任务（11:55 启动，脚本内部等到 12:00）
-$a5 = New-ScheduledTaskAction -Execute "<项目目录>\run_seckill.bat" -WorkingDirectory "<项目目录>"
-$t5 = New-ScheduledTaskTrigger -Daily -At 11:55
-Register-ScheduledTask -TaskName "MobileSeckill" -Action $a5 -Trigger $t5 -Force
 ```
 
-控制台「定时任务」页也能直接查状态、改时间、注销。
+> 重复型任务（`MobileDailyReward` 每小时、`MobileJwtKeepAlive` 每 90 分钟、`MobileMailWatch` 每 10 分钟、`MobileTokenLifeProbe` 每 2 分钟）均使用未来起点 + `-RepetitionDuration (New-TimeSpan -Days 3650)`，避免过去时刻被推到明天或次日停摆。控制台「定时任务」页可直接查状态、改时间、看日志和注销。
 
 ---
 
@@ -258,7 +241,7 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 若已过期就还得抓一次包 —— 这是目前唯一无法自动化的环节。
 
 服务器时间比本机快约 1 秒，脚本用 `markSeckill/sysTime` 校准后**提前 0.4 秒**出手；
-被拒后每 2 秒核对一次库存，库存为 0 立刻停手（避免对着空库存狂打触发风控）。
+被拒后每 2 秒核对一次库存作观测（实测 `leaveStock=0` 仍可能中奖，因此不会因库存显示为 0 而提前放弃），直到拿到明确终态码或达到尝试上限才停手。
 
 多账号是**并发**等到同一时刻一起出手的（串行会让第二个号晚几十秒，库存只有 1 份时等于抢不到）。
 `run_all.py` 给秒杀子进程的超时上限按 `--seckill-at` 距现在还有多久动态计算，
@@ -393,30 +376,6 @@ App 首页那个图标点进去就是它）。每天一次，完成给 **500 饲
 
 脚本遇「体力」关键词立即停止；若一局通关后关卡没推进，也会提前停，避免继续白扣次数。
 
-#### 咪咕掼蛋（协议逆向，暂未接入自动打牌）
-
-中国移动 App 里的「全民掼蛋挑战赛」是咪咕的 H5 小游戏（`gd.migufun.com`），
-对局走 WSS + 明文 JSON，协议已基本吃透：
-
-- **牌值**：`34 + 32×花色组 + (点数-2)`，花色组 `0=♥ 1=♦ 2=♣ 3=♠`，王是 16/17
-- **牌型编号**：0 不出、1 单张、2 对子、3 三张、4 三带二、5 顺子、6 连对、7 钢板、
-  8~九张炸逐级递增、10 同花顺、20 四大天王 —— **编号本身就是牌力序**
-- **出牌上报**：`req:75 → [1,19,2,4,3,10,4,1,5,牌型,6,牌值,7,手牌下标,18,[1,5]]`
-- **红桃级牌**是逢人配（`Series = 32 + 级牌`），可以当任意牌
-
-```bash
-python cmcc_guandan.py --har <HAR> --playbook    # 还原整副牌谱
-python cmcc_guandan.py --har <HAR> --advise      # 我每一手 vs 引擎建议
-```
-
-**卡点**：登录要的 `cat` 令牌由咪咕 SDK 在 App 内签发，抓包外拿不到；
-而且实测抓包 30 分钟后再重放就 `code=132 第三方验证失败`（和伪造值同一个错），
-说明它要么一次性、要么只有几分钟寿命，也可能绑设备。
-`python guandan_bot.py --login-only` 就是用来验证这条链的探针。
-
-牌型规则已用真实对局验证：27 张手牌、对手出 444+222 时，
-引擎给的跟牌与真人完全一致。协议细节见 `docs/guandan.md`。
-
 ### 优惠专区抽奖
 
 三个接口全是 GET，只需 `appId` + `timestamp`：
@@ -543,34 +502,36 @@ python pull_token_phone.py --save     # Termux
 ├── run_scheduled.bat       定时签到用
 ├── run_daily_reward.bat    定时领每日奖励用
 ├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
+├── run_session_refresh.bat 定时刷新活动会话（11:54，供 12:00 秒杀复用）
 ├── run_seckill.bat         定时秒杀抢券（11:55 启动，等到 12:00）
-├── run_games.bat          定时拓展活动（12:05，周六游戏中心抽奖窗口）
-├── run_guandan.bat        定时打掼蛋（需先导入含 api/login 的 HAR）
-├── run_hidden.py          无窗口启动器（计划任务用它跑 bat，不再闪黑窗口）
-├── common.py               共用基础设施：原子写、通知、会话、接口调用
+├── run_games.bat           定时拓展活动（12:05）
+├── run_token_life.bat      定时探测 app_token 寿命（每 2 分钟）
+├── run_mail_watch.bat      定时查收邮箱 HAR 附件并自动导入（每 10 分钟）
+├── run_hidden.py           无窗口启动器（计划任务用它跑 bat，不再闪黑窗口）
+├── common.py               共用基础设施：原子写、文件锁、通知、会话、接口调用、日志轮转
+├── disk_imports.py         冻结环境下优先从磁盘加载项目 .py 模块
 ├── run_all.py              批量调度（多账号并发、失败推送、日志轮转）
 ├── cmcc_sign.py            qwhdhub 签到（全国）
 ├── cmcc_extra.py           qwhdhub 拓展活动模块
 ├── cmcc_fj.py              BASS 签到 + 喂养 + 每日奖励 + 流量银行 + 福袋
 ├── cmcc_xiaoxiaole.py      消消乐
 ├── cmcc_luck.py            优惠专区转盘抽奖（加次数任务 + 抽完次数）
+├── cmcc_xunbao.py          环闽寻宝记（投骰子、开宝箱、奖品领取）
 ├── cmcc_seckill.py         签到有礼每周秒杀（12:00 抢话费券）
 ├── cmcc_wed.py             周三充值日（拼图任务、抽奖、集齐领券）
-├── cmcc_guandan.py         咪咕掼蛋：抓包还原牌谱、协议组帧、级牌推断
-├── guandan_rules.py        掼蛋牌型识别/比大小/拆牌/出牌决策
-├── guandan_ws.py           极简 WebSocket 客户端（标准库，不引新依赖）
-├── guandan_bot.py          掼蛋自动打牌：登录链 + 进桌 + 出牌
 ├── har_import.py           从 HAR 提取 qwhdhub + BASS 凭证并写配置
+├── mail_watch.py           邮箱收 HAR 附件并自动导入与补跑
+├── probe_token_life.py     app_token 寿命精确探测（分钟级）
 ├── dashboard.py            图形控制台后端（HTTP API + 任务调度）
-├── static/index.html       控制台前端页面（打包时由 --add-data 带上）
-├── app_desktop.py          桌面版入口（pywebview 原生窗口）
+├── static/index.html       控制台前端页面（打包时由 spec 的 datas 带上）
+├── app_desktop.py          桌面版入口（pywebview 原生窗口 + --run-script 调度）
 ├── pull_token_phone.py     手机一键登录换 BASS token（免抓包）
 ├── pull_token_iphone.js    同上，iPhone Scriptable 版
 ├── probe_fj.py             只读探测 BASS 接口
 ├── config.example.json     qwhdhub 配置模板
 ├── config_fj.example.json  BASS 配置模板
 ├── tests/                  单元与回归测试（全部用假响应，不发真实请求）
-├── docs/                   接口文档（qwhdhub / 秒杀 / 周三充值日 / BASS / 掼蛋协议）
+├── docs/                   接口文档（qwhdhub / 秒杀 / 周三充值日 / BASS）
 ├── configs/                真实 qwhdhub 配置（不入库）
 ├── configs_fj/             真实 BASS 配置（不入库）
 ├── gui_data/               运行状态与统计（不入库）
@@ -747,8 +708,8 @@ python probe_token_life.py --report
 - 福建以外省份的 BASS 活动未适配（`wap.fj.10086.cn` 为福建站）
 - **拓展活动三个已启用**（`MobileGames` 任务 + 控制台「拓展活动」页）：
   代码早写好了，但此前 `run_all` 从不传 `--games`、界面也没入口，等于从没跑过；
-  现在 12:05 每天跑一次 —— 周六游戏中心的游戏币抽奖窗口是**周六 12:00 起**，
-  追剧的抽奖只在**周日**开放，其它日子只报余额、不消耗。
+  现在 12:05 每天跑一次 —— 周六游戏中心的游戏币全周可抽（10 币/次，31 天周期清零），
+  追剧的抽奖只在**周日**开放（其它日子只打卡/攒次数，不消耗）；全民掼蛋挑战赛任务与抽奖均自动完成。
   抽奖遇到「未中奖」会**继续抽完剩余次数**（毕竟照样扣币），不会中途停下；
   同一次中多张相同奖品也逐张记账，不会被去重吞掉
 - **周三充值日的抽奖与领券已实现**（`cmcc_wed.py`），但端点来自公开实现而非本地抓包，

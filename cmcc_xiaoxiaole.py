@@ -48,11 +48,11 @@ except ImportError:
     print("缺少 pycryptodome，请先运行：python -m pip install pycryptodome", file=sys.stderr)
     sys.exit(1)
 
-from common import atomic_write_json, load_json, record_award, setup_utf8
+from common import app_base, atomic_write_json, file_lock, load_json, record_award, setup_utf8
 
 setup_utf8()
 
-BASE = Path(__file__).parent
+BASE = app_base()
 ASSIST_STATE = BASE / "gui_data" / "xxl_assist_state.json"
 HOST = "https://wap.fj.10086.cn"
 API = HOST + "/bass-commonAreaServer/H5Api/eliminate/"
@@ -170,42 +170,43 @@ def mutual_assist() -> None:
     if len(sessions) < 2:
         return
     month = time.strftime("%Y-%m")
-    state = load_json(ASSIST_STATE, default={}) or {}
-    changed = False
 
     def pair(a, b):
         return "|".join(sorted((a, b)))
 
-    print("\n多号互助力：")
-    for owner, osess in sessions:
-        others = [(h, hs) for h, hs in sessions if h != owner]
-        pending = [(h, hs) for h, hs in others if state.get(pair(owner, h)) != month]
-        pending_names = {h for h, _ in pending}
-        for h, _ in others:
-            if h not in pending_names:
-                print(f"  - {h} 与 {owner} {month} 已互点，跳过")
-        if not pending:
-            continue
-        sh = get_json(osess, "share/2")
-        code = sh.get("data")
-        if not code:
-            print(f"  - {owner} 生成助力码失败: code={sh.get('code')} msg={sh.get('msg')!r}")
-            continue
-        for helper, hsess in pending:
-            r = get_json(hsess, "help/" + str(code))
-            msg = str(r.get("msg") or "")
-            if str(r.get("code")) == "0000":
-                print(f"  ✓ {helper} 帮 {owner}（{owner} +200 金币）")
-                state[pair(owner, helper)] = month
-                changed = True
-            elif "本月已接受过" in msg:
-                print(f"  - {helper} 与 {owner} 本月已互点过（服务端口径）")
-                state[pair(owner, helper)] = month
-                changed = True
-            else:
-                print(f"  ✗ {helper} 帮 {owner}: code={r.get('code')} msg={msg!r}")
-    if changed:
-        atomic_write_json(ASSIST_STATE, state)
+    with file_lock(ASSIST_STATE):
+        state = load_json(ASSIST_STATE, default={}) or {}
+        changed = False
+        print("\n多号互助力：")
+        for owner, osess in sessions:
+            others = [(h, hs) for h, hs in sessions if h != owner]
+            pending = [(h, hs) for h, hs in others if state.get(pair(owner, h)) != month]
+            pending_names = {h for h, _ in pending}
+            for h, _ in others:
+                if h not in pending_names:
+                    print(f"  - {h} 与 {owner} {month} 已互点，跳过")
+            if not pending:
+                continue
+            sh = get_json(osess, "share/2")
+            code = sh.get("data")
+            if not code:
+                print(f"  - {owner} 生成助力码失败: code={sh.get('code')} msg={sh.get('msg')!r}")
+                continue
+            for helper, hsess in pending:
+                r = get_json(hsess, "help/" + str(code))
+                msg = str(r.get("msg") or "")
+                if str(r.get("code")) == "0000":
+                    print(f"  ✓ {helper} 帮 {owner}（{owner} +200 金币）")
+                    state[pair(owner, helper)] = month
+                    changed = True
+                elif "本月已接受过" in msg:
+                    print(f"  - {helper} 与 {owner} 本月已互点过（服务端口径）")
+                    state[pair(owner, helper)] = month
+                    changed = True
+                else:
+                    print(f"  ✗ {helper} 帮 {owner}: code={r.get('code')} msg={msg!r}")
+        if changed:
+            atomic_write_json(ASSIST_STATE, state)
 
 
 def do_coin_tasks(s: requests.Session) -> dict:

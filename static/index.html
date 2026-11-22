@@ -256,7 +256,7 @@ select.inp{cursor:pointer}
         <div class="phead">
           <div><h2>总览</h2><div class="desc">每个号码的签到状态、本月收益与近 7 天记录</div></div>
           <div class="ops">
-            <button class="btn pri" onclick="runAll('all')" title="全国和福建签到、领取可领饲料、使用大转盘已有次数">签到领福利</button>
+            <button class="btn pri" onclick="runAll('all')" title="全国和福建签到、每日饲料、大转盘、寻宝、拓展活动与消消乐">签到领福利</button>
             <button class="btn" onclick="runAll('qwhd')">只跑全国签到</button>
             <button class="btn" onclick="runAll('bass')" title="福建签到 + 领每日奖励 + 环闽寻宝（顺带投骰子、报加骰子任务）">只跑福建活动</button>
             <label class="chk" title="只查询状态，不签到、不领取、不消耗"><input type="checkbox" id="dashDry">只读检查</label>
@@ -331,10 +331,9 @@ select.inp{cursor:pointer}
           <div class="ops"><button class="btn sm" onclick="gotoSettings()" title="喂养时段、抽奖开关、推送等长期策略都在设置页">自动设置</button></div>
         </div>
         <div class="panel">
-          <h3>优惠专区抽奖 <span class="hint">自动从最新 HAR 取 token，刷任务 + 抽奖</span></h3>
-          <div class="infobox">先打开一次「优惠专区抽奖」页面，让抓包工具记录，然后在下面点执行——
-            脚本会自动在<b>项目目录 / 下载 / 微信接收目录</b>里找最新的 HAR 并提取 token。
-            抓到的 bearer 能撑数小时，不必每次都抓。token 失效会提示重新打开活动页。</div>
+          <h3>优惠专区抽奖 <span class="hint">使用福建账号凭证，刷任务 + 抽奖</span></h3>
+          <div class="infobox">直接使用已保存的福建活动凭证（与养成游戏共用，能撑数小时，不必每次抓包）；
+            若提示凭证失效（401），在手机打开一次「优惠专区抽奖」页重新抓包导入 HAR 即可。</div>
           <div class="frow">
             <button class="btn pri" onclick="act({action:'luck_run'},()=>setTimeout(pullState,3000))">刷任务并抽奖</button>
             <button class="btn" onclick="act({action:'luck_run',dry:1},()=>setTimeout(pullState,3000))">只查状态</button>
@@ -388,9 +387,9 @@ select.inp{cursor:pointer}
         </div>
         <div class="panel">
           <h3>环闽寻宝记 <span class="hint">投骰子走棋盘，到终点开藏宝阁</span></h3>
-          <div class="infobox">骰子当天不用就作废。点「投掉现有骰子」会先把「参与天天大转盘」这类
-            真做过的任务报掉换骰子，再一路投到没骰子为止；走到第 29 格会自动开宝箱。
-            <b>好友助力不会代报</b>（那个得真有好友点链接，脚本只能 `--invite` 生成链接）。
+          <div class="infobox">骰子当天不用就作废。单点「投掉现有骰子」会领取待领奖品、投完现有骰子并在第 29 格自动开宝箱；
+            「参与天天大转盘 / 一起消消乐」等加骰子任务会在点「签到领福利」或每日奖励自动任务实际跑过对应活动后上报。
+            <b>好友助力不会代报</b>（必须真人好友点链接）。
             中奖直接记进「总览 → 到账台账」。</div>
           <div class="frow">
             <button class="btn pri" onclick="act({action:'xunbao_run'},()=>setTimeout(pullState,3000))">投掉现有骰子</button>
@@ -409,8 +408,8 @@ select.inp{cursor:pointer}
           <div class="frow"><label>参数</label><span style="font-size:13px" id="xxlParams">加载中…</span>
             <button class="btn sm" onclick="gotoSettings()">去设置里改</button></div>
           <div class="warnbox">关卡号必须接近账号真实进度（乱填会被判异常请求）；每天约 5 次可用，有全局频控；性质比空报浏览更重，请自行决定使用。<br>
-            关卡号 / 星级 / 局数 / 间隔在 <b>设置 → 自动策略</b> 里长期保存，这里直接照着跑。
-            不知道填几？先点「探测当前关卡」，探到的关卡号会填进设置页，去那里保存即生效。</div>
+            星级 / 局数 / 间隔在 <b>设置 → 自动策略</b> 里长期保存，关卡每次运行自动读取真实进度。
+            想提前看当前打到第几关，点下方「探测当前关卡」（只读查看，不消耗次数）。</div>
           <div class="frow">
             <button class="btn pri" onclick="runXxl()">开始执行</button>
             <button class="btn" onclick="runXxlAll()" title="所有福建号并行跑，跑完顺手把寻宝骰子投掉（含「参与消消乐」换的骰子）">全部账号（并行）</button>
@@ -437,7 +436,7 @@ select.inp{cursor:pointer}
           </div>
           <div id="skBox"></div>
           <div class="infobox">流程：校服务器时间 → 拉场次 → 查当日签到资格 → 等到点 → 密集重试抢券接口。
-            开抢时会<b>提前 0.4 秒</b>出手以抵消网络延迟，被拒后每 2 秒核对一次库存，没货立刻停手。
+            开抢时会<b>提前 0.4 秒</b>出手以抵消网络延迟，被拒后每 2 秒核对一次库存作观测（实测库存显示 0 仍可能中奖），直到拿到明确终态或达到尝试上限才停手。
             抢到的券进 App「我的奖品」核销，配了推送的话会通知到手机。</div>
           <div class="warnbox"><b>只需要提前几分钟准备</b>——会话刷新 11:54 执行，秒杀 11:55 启动。
             如果启动时会话未就绪，脚本会每 15 秒重试并重新读取配置；
@@ -467,11 +466,11 @@ select.inp{cursor:pointer}
           </div>
           <div id="gmBox"></div>
           <div class="infobox">三个活动各有自己的<b>消耗窗口</b>，脚本自己判定，不在窗口就只报余额、不消耗：
-            <br>· <b>周六游戏中心</b>：游戏币攒着，<b>周六 12:00 起</b>才能抽（余额按 31 天周期清零）
-            <br>· <b>追剧领福利</b>：抽奖次数只在<b>周日</b>开放
-            <br>· <b>玩游戏抽话费</b>：每周一刷新的周任务，没有抽奖
-            <br>计划任务 <code>MobileGames</code> 默认每天 <b>12:05</b> 跑一次，正好覆盖周六 12:00 的游戏币抽奖，
-            其它日子只报状态、不消耗。</div>
+            <br>· <b>周六游戏中心</b>：游戏币全周可抽，10 币/次（余额按 31 天周期清零）
+            <br>· <b>追剧领福利</b>：抽奖次数只在<b>周日</b>开放（其余时间只打卡、做视频任务攒次数）
+            <br>· <b>全民掼蛋挑战赛</b>：每周一刷新任务，可用抽奖机会会自动抽完
+            <br>计划任务 <code>MobileGames</code> 默认每天 <b>12:05</b> 跑一次，
+            每天打卡做任务并按窗口自动抽奖。</div>
           <div class="warnbox">拓展活动需要<b>有效票据</b>（约 30~46 分钟寿命）。
             票据过期时三个活动一个都跑不了，需要重新抓包导入。</div>
         </div>
@@ -484,14 +483,14 @@ select.inp{cursor:pointer}
           <h3>Windows 计划任务</h3>
           <div class="frow"><label>整套配置</label>
             <button class="btn pri" onclick="applyAllSched()">一键配置全部（推荐方案）</button>
-            <button class="btn sm danger" onclick="cf('注销全部 7 个计划任务？注销后电脑不再自动签到。',unregAllSched)">全部注销</button>
+            <button class="btn sm danger" onclick="cf('注销全部 8 个计划任务？注销后电脑不再自动签到。',unregAllSched)">全部注销</button>
             <button class="btn sm" data-nobusy onclick="refreshSched()">刷新状态</button>
           </div>
           <div class="infobox">推荐方案：签到 <b>11:45</b> · 每日奖励每小时 · 会话保活每 90 分钟 ·
-            会话刷新 <b>11:54</b> · 秒杀 <b>11:55</b> · 拓展活动 <b>12:05</b> · 票据探测每 2 分钟。
+            会话刷新 <b>11:54</b> · 秒杀 <b>11:55</b> · 拓展活动 <b>12:05</b> · 票据探测每 2 分钟 · 邮箱收 HAR 每 10 分钟。
             签到放在秒杀前 10 分钟：票据只活 1~2 小时，这样一张票覆盖全天所有要票的任务，
             <b>每天只在 11:30~11:40 抓一次包</b>就够。
-            一键配置会把这 7 个任务按上面的时刻一次注册好，覆盖当前触发时间；
+            一键配置会把这 8 个任务按上面的时刻一次注册好，覆盖当前触发时间；
             想单独调某一个，改下面表格里的「触发时刻」再点该行的注册即可。</div>
           <div class="scrollhint">← 表格可左右滑动，查看状态、下次运行与操作 →</div>
           <div id="schedBox"></div>
@@ -1292,11 +1291,12 @@ function renderMail(){
   if(!$('mUser'))return;
   if(!MAIL_ONCE){
     MAIL_ONCE=true;
+    const prov=m.provider||'qq';
     $('mEnabled').checked=!!m.enabled;
-    $('mProvider').value=m.provider||'qq';
+    $('mProvider').value=prov;
     $('mUser').value=m.user||'';
     $('mPass').value='';                 // 不回显密码，留空=沿用已存的
-    $('mHost').value=m.host||'imap.gmail.com';
+    $('mHost').value=m.host||(MAIL_PRESETS[prov]||MAIL_PRESETS.qq)[0];
     $('mPort').value=m.port||993;
     $('mSender').value=m.sender||'';
     $('mKeyword').value=m.subject_keyword||'HAR';
@@ -1398,8 +1398,8 @@ function renderTodo(){
     if(signed!==todayLocal())noSign.push(esc(mask(g.phone))+'（'+esc(PLAT_CN[plat]||plat)+'）');
   }));
   if(noSign.length)items.push(['sub',`今日还没签到：${noSign.join('、')} —— 11:45 的任务会自动补，也可在下方卡片手动点`]);
-  // 下一个「你会在意」的自动任务：探测任务每 2 分钟一次，放进来只会刷屏
-  const nx=(STATE.sched||[]).filter(x=>x.next&&x.name!=='MobileTokenLifeProbe')
+  // 下一个「你会在意」的自动任务：探测和邮箱轮询每几分钟一次，放进来只会刷屏
+  const nx=(STATE.sched||[]).filter(x=>x.next&&x.name!=='MobileTokenLifeProbe'&&x.name!=='MobileMailWatch')
     .sort((a,b)=>(a.next<b.next?-1:1))[0];
   if(nx)items.push(['acc',`下一个自动任务：<b>${esc((STATE.sched_cn||{})[nx.kind]||nx.name)}</b> ${esc(nx.next)}`]);
   box.innerHTML='<div class="todo"><div class="th">现在需要你做什么</div>'+
@@ -1414,7 +1414,8 @@ const SCHED=[
   {kind:'sess',      cn:'会话刷新',    name:'MobileSessionRefresh', bat:'run_session_refresh.bat',desc:'刷新活动会话，供秒杀复用'},
   {kind:'seckill',   cn:'秒杀抢券',    name:'MobileSeckill',        bat:'run_seckill.bat',        desc:'启动后内部等到 12:00 开抢'},
   {kind:'games',     cn:'拓展活动',    name:'MobileGames',          bat:'run_games.bat',          desc:'拓展活动三合一'},
-  {kind:'probe',     cn:'票据寿命探测',name:'MobileTokenLifeProbe', bat:'run_token_life.bat',     desc:'每 2 分钟探测票据寿命'}
+  {kind:'probe',     cn:'票据寿命探测',name:'MobileTokenLifeProbe', bat:'run_token_life.bat',     desc:'每 2 分钟探测票据寿命'},
+  {kind:'mail',      cn:'邮箱收 HAR',  name:'MobileMailWatch',      bat:'run_mail_watch.bat',     desc:'每 10 分钟查收 HAR 邮件并自动导入'}
 ];
 function codeText(c,kind){
   if(c===0)return '<span style="color:var(--ok)">成功</span>';
@@ -1473,7 +1474,7 @@ function updSched(){
     else if(STATE.sched_read_ok==null)
       html='<div class="infobox schedtip">正在读取计划任务状态…（首次要几秒，读到后自动更新）</div>';
     else
-      html='<div class="infobox schedtip">还没有注册任何计划任务 —— 点上方「一键配置全部（推荐方案）」一次配好 7 个，电脑才会每天自动跑。</div>';
+      html='<div class="infobox schedtip">还没有注册任何计划任务 —— 点上方「一键配置全部（推荐方案）」一次配好 8 个，电脑才会每天自动跑。</div>';
   }
   if(!html){if(tip)tip.remove();return;}
   if(tip)tip.outerHTML=html;
@@ -1483,16 +1484,16 @@ async function refreshSched(){
   const r=await act({action:'sched_refresh'});
   if(r&&r.sched){STATE.sched=r.sched;updSched();toast('已刷新任务状态');}
 }
-// 推荐方案：与后端 SCHED_PLAN 一致，一键把这 7 个都配好，不用逐个点
+// 推荐方案：与后端 SCHED_PLAN 一致，一键把这 8 个都配好，不用逐个点
 const SCHED_PLAN=[["sign","11:45"],["daily","06:00"],["keepalive","00:00"],
-                  ["sess","11:54"],["seckill","11:55"],["games","12:05"],["probe","00:00"]];
+                  ["sess","11:54"],["seckill","11:55"],["games","12:05"],["probe","00:00"],["mail","00:00"]];
 async function applyAllSched(){
   const cn=k=>(SCHED.find(x=>x.kind===k)||{}).cn||k;
   const desc=SCHED_PLAN.map(([k,t])=>`${cn(k)}　${t}`).join('\n');
-  if(!confirm('将按推荐方案重新注册 7 个计划任务，会覆盖当前触发时刻：\n\n'+desc+
+  if(!confirm('将按推荐方案重新注册 8 个计划任务，会覆盖当前触发时刻：\n\n'+desc+
               '\n\n注意：「每天签到」那一趟含消消乐（伪造通关成绩）。\n\n继续吗？'))return;
   const r=await act({action:'sched_apply_all',plan:SCHED_PLAN});
-  if(r&&r.ok)setTimeout(refreshSched,6000);   // 7 个任务要跑几秒，等它落盘
+  if(r&&r.ok)setTimeout(refreshSched,6000);   // 8 个任务要跑几秒，等它落盘
 }
 async function unregAllSched(){
   await act({action:'sched_unreg_all'});
@@ -1510,6 +1511,7 @@ async function unregSched(name){
   setTimeout(refreshSched,2000);
 }
 let _stateFail=0;
+const FAIL_RELOAD_KEY='cmcc_fail_reloaded';
 async function pullState(visible){
   let raw;
   try{raw=await(await fetch('/api/state')).json();}
@@ -1519,10 +1521,16 @@ async function pullState(visible){
     _stateSig='';   // 恢复后必须重绘一次，否则「连不上」的提示会一直挂着
     $('envBox').innerHTML='<div class="envbar">连不上控制台服务（'+esc(e&&e.message||e)+
       '）。请确认程序还在运行，再刷新本页。</div>';
-    // 连续 5 次都拿不到（空闲节奏下约 75 秒）：多半是窗口这一侧卡住了，自愈一次
-    if(_stateFail>=5&&!_stateFail.reloaded){_stateFail.reloaded=1;location.reload();}
+    // 连续 5 次都拿不到（空闲节奏下约 75 秒）：多半是窗口这一侧卡住了，自愈一次（sessionStorage 防止无限刷新）
+    let reloaded=false;
+    try{reloaded=sessionStorage.getItem(FAIL_RELOAD_KEY)==='1';}catch(_){}
+    if(_stateFail>=5&&!reloaded){
+      try{sessionStorage.setItem(FAIL_RELOAD_KEY,'1');}catch(_){}
+      location.reload();
+    }
     return;}
   _stateFail=0;
+  try{sessionStorage.removeItem(FAIL_RELOAD_KEY);}catch(_){}
   // 内容没变就不重绘。空闲时 /api/state 几乎每次都一样，跳过整页重建能省掉
   // 绝大部分 DOM 抖动；任务在跑时 elapsed 会变，自然照常重绘。
   const sig=JSON.stringify(raw);
@@ -1653,8 +1661,10 @@ function importHar(){
   fr.readAsText(f);
 }
 function runAll(platform){
+  const dry=$('dashDry').checked;
+  if(platform==='all'&&!dry&&!confirm('将执行「签到领福利」（含全部平台签到、大转盘、寻宝、拓展活动及消消乐伪造通关成绩），确定继续吗？'))return;
   return act({action:'run_all',platform:platform,
-    dry:$('dashDry').checked, luck:platform==='all', games:platform==='all',
+    dry:dry, luck:platform==='all', games:platform==='all',
     xxl:platform==='all'});
 }
 // 刷新状态本身就是只读检查，不该顺手改掉用户勾的选项
@@ -1662,12 +1672,11 @@ function refreshStatus(){act({action:'refresh_status'});}
 // 日志
 const cons=$('console');
 function colorize(l){
-  let c='';
-  if(/✓|OK |成功|已签/.test(l))c='ok';
-  else if(/✗|!!|ERROR|失败|过期|异常/.test(l))c='err';
-  else if(/▶|■|——|警告|⚠/.test(l))c='hl';
-  else if(/^\$/.test(l))c='dim';
-  return c?` class="${c}"`:'';}
+  if(/✓|OK |成功|已签/.test(l))return 'ok';
+  if(/✗|!!|ERROR|失败|过期|异常/.test(l))return 'err';
+  if(/▶|■|——|警告|⚠/.test(l))return 'hl';
+  if(String(l).startsWith('$'))return 'dim';
+  return '';}
 let lastRunning=false;
 async function pullLogs(){
   let r;
@@ -1676,12 +1685,10 @@ async function pullLogs(){
     const atBottom=cons.scrollHeight-cons.scrollTop-cons.clientHeight<40;
     r.lines.forEach(l=>{logSeq=l.seq;capPush(l.line);
       const d=document.createElement('div');
-      d.innerHTML=`<span class="t">${esc(l.t)}</span><span${colorize(l.line)}></span>`;
+      const cls=colorize(l.line);
+      d.innerHTML=`<span class="t">${esc(l.t)}</span><span></span>`;
       d.lastChild.textContent=l.line;
-      if(/✓|OK |成功|已签/.test(l.line))d.lastChild.className='ok';
-      else if(/✗|!!|ERROR|失败|过期|异常/.test(l.line))d.lastChild.className='err';
-      else if(/▶|■|——|⚠/.test(l.line))d.lastChild.className='hl';
-      else if(l.line.startsWith('$'))d.lastChild.className='dim';
+      if(cls)d.lastChild.className=cls;
       cons.appendChild(d);});
     while(cons.children.length>1200)cons.removeChild(cons.firstChild);
     $('consoleEmpty').style.display='none';

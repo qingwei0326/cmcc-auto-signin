@@ -65,8 +65,8 @@ with sync_playwright() as p:
 
     has_acct = page.evaluate("()=>(STATE.raw_accounts||[]).length>0")
     check("待办条有内容", page.eval_on_selector("#todoBox", "e=>e.innerText.trim().length") > 10)
-    check("KPI 四张", page.eval_on_selector_all("#sumbar .kpi", "e=>e.length") == 4)
-    check("定时任务表已建", page.eval_on_selector_all("#schedBox .stab tbody tr", "e=>e.length") == 7)
+    check("KPI 六张", page.eval_on_selector_all("#sumbar .kpi", "e=>e.length") == 6)
+    check("定时任务表已建", page.eval_on_selector_all("#schedBox .stab tbody tr", "e=>e.length") == 8)
     if has_acct:
         check("账号卡渲染", page.eval_on_selector_all("#cards .acct", "e=>e.length") >= 1)
         check("卡片带数据时间", "数据截至" in page.inner_text("#cards"))
@@ -115,7 +115,7 @@ with sync_playwright() as p:
 
     for key, title in [("token", "凭证与账号"), ("bass", "福建活动"), ("xxl", "消消乐"),
                        ("seckill", "秒杀抢券"), ("games", "拓展活动"),
-                       ("sched", "定时任务"), ("logs", "日志")]:
+                       ("sched", "定时任务"), ("logs", "日志"), ("settings", "设置")]:
         page.click('nav button[data-p="%s"]' % key)
         page.wait_for_timeout(250)
         got = page.inner_text("#pageTitle")
@@ -176,13 +176,12 @@ with sync_playwright() as p:
     check("空闲后恢复可点",
           page.eval_on_selector_all('.content .btn:not([data-nobusy])', "es=>es.every(e=>!e.disabled)"))
 
-    # 探测关卡回填
+    # 消消乐：关卡改为自动读取，页面只展示参数与执行结果区
     page.click('nav button[data-p="xxl"]')
-    page.evaluate("""()=>{capStart('xxl',lines=>{const m=lines.join('\\n').match(/自动探测当前关卡:\\s*(\\d+)/);
-        if(m){document.getElementById('xLevel').value=m[1];}});
-        capPush('  自动探测当前关卡: 63（共 5 条通关记录）');capEnd();}""")
-    check("探测结果回填关卡号", page.input_value("#xLevel") == "63", page.input_value("#xLevel"))
-    check("消消乐默认不勾", not page.eval_on_selector("#dashXxl", "e=>e.checked"))
+    page.wait_for_timeout(200)
+    check("消消乐参数区显示自动读取", "关卡自动读取" in page.inner_text("#xxlParams"))
+    check("不再保留手填关卡输入框", page.eval_on_selector_all("#xLevel", "e=>e.length") == 0)
+    check("消消乐结果区存在", page.eval_on_selector_all("#xxlBox", "e=>e.length") == 1)
 
     # 喂到用完：勾上就置灰轮数框，不用手填
     page.click('nav button[data-p="bass"]')

@@ -41,11 +41,11 @@ from pathlib import Path
 
 import requests
 
-from common import mask_phone, record_award, setup_utf8, update_json
+from common import app_base, mask_phone, record_award, setup_utf8, update_json
 
 setup_utf8()
 
-BASE = Path(__file__).parent
+BASE = app_base()
 CFG_DIR = BASE / "configs_fj"
 STATE_FILE = BASE / "gui_data" / "luck_state.json"
 API = "https://wap.fj.10086.cn/bass-preferentialAreaServer/luck/"

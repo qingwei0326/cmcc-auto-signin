@@ -14,9 +14,11 @@ from pathlib import Path
 
 import requests
 
-sys.stdout.reconfigure(encoding="utf-8")
+from common import app_base, setup_utf8
 
-BASE = Path(__file__).parent
+setup_utf8()
+
+BASE = app_base()
 HOST = "https://wap.fj.10086.cn"
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
       "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/wkwebview")

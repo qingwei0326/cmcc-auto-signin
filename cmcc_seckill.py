@@ -49,7 +49,7 @@ from cmcc_sign import (
     notify,
     save_activity_session,
 )
-from common import emit_result, record_award
+from common import app_base, emit_result, record_award
 
 log = logging.getLogger("cmcc_seckill")
 
@@ -184,7 +184,7 @@ def record_seckill_prize(resp: dict, cfg: Config, zone: dict) -> str:
 def load_session(cfg: Config = None):
     """从磁盘恢复已保存的会话；不可用返回 None。"""
     path = activity_session_file(cfg) if cfg else (
-        Path(__file__).resolve().parent / "gui_data" / "seckill_session.json")
+        app_base() / "gui_data" / "seckill_session.json")
     if not path.exists():
         return None
     try:

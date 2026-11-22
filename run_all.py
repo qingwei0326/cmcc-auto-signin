@@ -16,30 +16,34 @@ run_all.py —— 多账号批量运行器（两个平台）
 
 import argparse
 import datetime
-import os
 import json
+import os
 import random
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import (atomic_write_json, child_cmd, collect_notify_settings,
-                    is_token_dead, load_awards, load_json, load_policy, notify,
-                    notify_once)   # 导入即固定 UTF-8 输出
+from common import (RotatingLog, Tee, app_base, atomic_write_json, child_cmd,
+                    collect_notify_settings, is_token_dead, load_awards,
+                    load_json, load_policy, notify, notify_once,
+                    update_json)   # 导入即固定 UTF-8 输出
 
-BASE = Path(__file__).parent
+BASE = app_base()
 RUNS_FILE = BASE / "gui_data" / "runs.json"
 
 # 这一轮里「凭证过期」的账号。它们不是真的执行失败，只是票过期了，
 # 汇总成一条通知就行；每小时一轮的每日奖励任务不该一小时骂一次。
 TOKEN_DEAD_ACCOUNTS = []
+_TOKEN_DEAD_LOCK = threading.Lock()
 
 
 def note_token_dead(name: str):
-    if name and name not in TOKEN_DEAD_ACCOUNTS:
-        TOKEN_DEAD_ACCOUNTS.append(name)
+    with _TOKEN_DEAD_LOCK:
+        if name and name not in TOKEN_DEAD_ACCOUNTS:
+            TOKEN_DEAD_ACCOUNTS.append(name)
 
 
 def token_dead_notice(accounts) -> tuple:
@@ -148,13 +152,13 @@ def mark_mail_needed(accounts) -> None:
     账号列表取**并集**：先发现 3239 失效、后一轮才发现 4167 失效时，
     旧实现会把 3239 覆盖掉，提醒里就只剩一个号，另一个号白等一整天。
     """
-    prev = (load_json(MAIL_NEED, {}) or {})
-    merged = list(dict.fromkeys(list(prev.get("accounts") or []) + list(accounts or [])))
-    atomic_write_json(MAIL_NEED, {
-        "needed": True,
-        "at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "accounts": merged,
-    }, indent=1)
+    def mutate(prev):
+        merged = list(dict.fromkeys(list(prev.get("accounts") or []) + list(accounts or [])))
+        prev["needed"] = True
+        prev["at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prev["accounts"] = merged
+
+    update_json(MAIL_NEED, mutate, default={}, indent=1)
 
 
 def mark_today_done() -> None:
@@ -199,92 +203,7 @@ PLATFORMS = {
 MAX_WORKERS = 4
 
 
-# ---------------------------------------------------------------- 日志
-
-class RotatingLog:
-    """按天轮转的文本日志：每天一个文件，只保留最近 N 天。
-
-    定时任务每天追加，长期跑下去单个日志会涨到几十 MB，
-    这里在写入新一天之前把旧文件改名归档，并清掉过期的。
-    """
-
-    def __init__(self, path, keep_days=7):
-        self.path = Path(path) if path else None
-        self.keep = keep_days
-
-    @property
-    def enabled(self):
-        return self.path is not None
-
-    def _archive_old(self, today):
-        if not self.path.parent.exists():
-            return
-        stem = self.path.stem
-        for f in self.path.parent.glob(f"{stem}.*.log"):
-            try:
-                day = f.name[len(stem) + 1:].rsplit(".", 1)[0]
-                age = (today - datetime.date.fromisoformat(day)).days
-            except Exception:
-                continue
-            if age >= self.keep:
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
-
-    def write(self, text):
-        if not self.enabled:
-            return
-        today = datetime.date.today()
-        target = self.path
-        if target.exists():
-            try:
-                mtime_day = datetime.date.fromtimestamp(target.stat().st_mtime)
-            except OSError:
-                mtime_day = today
-            if mtime_day != today:
-                # 跨天：把旧文件改名为「它自己那天的日期」，今天的输出另起新文件。
-                # 早先这里只是改了 target 的名字、并没有真的改名，于是今天的全部
-                # 输出都被写进「daily_reward.2026-11-20.log」这种昨天日期的文件里
-                # （而 daily_reward.log 停在昨天不动），按日期翻日志会看错。
-                self._archive_old(today)
-                archived = self.path.with_name(f"{self.path.stem}.{mtime_day.isoformat()}.log")
-                try:
-                    target.replace(archived)
-                except OSError:
-                    pass
-                target = self.path
-        try:
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(text)
-        except OSError:
-            pass
-
-    def line(self, text):
-        self.write(text + "\n")
-
-
-class Tee:
-    """把 stdout 同时写到终端和日志文件（按行缓冲，避免频繁开文件）。"""
-
-    def __init__(self, log):
-        self.log = log
-        self.term = sys.stdout
-        self.buf = ""
-
-    def write(self, s):
-        self.term.write(s)
-        if self.log.enabled:
-            self.buf += s
-            while "\n" in self.buf:
-                line, self.buf = self.buf.split("\n", 1)
-                self.log.write(line + "\n")
-
-    def flush(self):
-        self.term.flush()
-        if self.log.enabled and self.buf:
-            self.log.write(self.buf)
-            self.buf = ""
+# RotatingLog / Tee 已抽到 common.py（这里保留导入名以兼容已有调用与测试）
 
 
 # ---------------------------------------------------------------- 辅助
@@ -433,16 +352,19 @@ def run_xxl(dry_run: bool, times: int) -> list:
     gap = int(pol.get("gap") or 15)
     star = int(pol.get("star") or 3)
 
-    def one(conf):
+    def one(idx, conf):
         args = ["--star", str(star), "--times", str(times), "--gap", str(gap)]
         if not dry_run and pol.get("tasks"):
             args.append("--tasks")
+            if idx > 0:
+                # 多号并发时只让第一个子进程做全局互助力，避免重复发互点请求与状态锁竞争
+                args.append("--skip-mutual")
         if dry_run:
             args.append("--dry-run")
         return run_script(script, conf, args, 900)
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(confs))) as ex:
-        futs = [ex.submit(one, c) for c in confs]
+        futs = [ex.submit(one, i, c) for i, c in enumerate(confs)]
         for fut in futs:
             name, ok, sec, text = fut.result()
             if text:
@@ -652,6 +574,8 @@ def main():
 
     # 让子脚本别自己推「凭证过期」——本轮结束由这里合并成一条
     os.environ["CMCC_NOTIFY_BATCH"] = "1"
+    with _TOKEN_DEAD_LOCK:
+        TOKEN_DEAD_ACCOUNTS.clear()
 
     # 额外参数按平台分发：--extra 是给 BASS 的，qwhd 的由模式开关自己决定。
     # 早先两个平台共用一个 extra 字符串、却只透传给 bass，导致 --keepalive

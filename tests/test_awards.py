@@ -222,10 +222,6 @@ class TestLedger(unittest.TestCase):
         self.assertEqual(v["month"]["flow_mb"], 1024.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestLuckDayCounter(unittest.TestCase):
     """一天跑几轮时，抽奖次数要按天累加，并和「中了几次」分开。
 
@@ -362,3 +358,7 @@ class TestXunbao(unittest.TestCase):
         self.assertEqual(st["day_rolls"], 3)
         self.assertEqual(st["day_prizes"], 2)
         self.assertEqual(st["seq"], 18)
+
+
+if __name__ == "__main__":
+    unittest.main()

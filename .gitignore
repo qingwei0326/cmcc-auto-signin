@@ -30,12 +30,16 @@ __pycache__/
 *.exe
 
 # 本地工具状态
+.claude/
 .workbuddy/
 .qwen/
 .vscode/
 .idea/
 .venv/
 venv/
+_archive/
+incoming_har/
+*.lnk
 
 # 系统文件
 .DS_Store

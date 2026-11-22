@@ -481,6 +481,7 @@ class TaskRunner:
     def __init__(self, persist_path=None):
         self.logs = deque(maxlen=self.LOG_KEEP)
         self.seq = 0
+        self._log_lock = threading.Lock()
         self.running = False
         self.label = ""
         self.proc = None
@@ -507,9 +508,10 @@ class TaskRunner:
                 rows.append({"t": str(r["t"]), "line": str(r["line"])})
             except Exception:
                 continue
-        for r in rows:
-            self.seq += 1
-            self.logs.append({"seq": self.seq, **r})
+        with self._log_lock:
+            for r in rows:
+                self.seq += 1
+                self.logs.append({"seq": self.seq, **r})
         # 启动时顺手截短，文件不会无限长
         try:
             self._persist.write_text(
@@ -518,9 +520,12 @@ class TaskRunner:
             _swallow("log.truncate", e)
 
     def push(self, line: str):
-        self.seq += 1
-        row = {"seq": self.seq, "t": datetime.now().strftime("%m-%d %H:%M:%S"), "line": line.rstrip("\n")}
-        self.logs.append(row)
+        stamp = datetime.now().strftime("%m-%d %H:%M:%S")
+        txt = line.rstrip("\n")
+        with self._log_lock:
+            self.seq += 1
+            row = {"seq": self.seq, "t": stamp, "line": txt}
+            self.logs.append(row)
         if self._persist:
             try:
                 with self._plock, self._persist.open("a", encoding="utf-8") as f:
@@ -529,6 +534,10 @@ class TaskRunner:
                 # 写不进磁盘时，界面上仍能看到（在内存里），但重启就丢了。
                 # 以前这里静默 pass，日志缺一段完全没人知道。
                 _swallow("log.persist", e)
+
+    def logs_since(self, since: int) -> list:
+        with self._log_lock:
+            return [l for l in self.logs if l["seq"] > since]
 
     def start(self, label, cmd, parser=None, shell=False):
         return self.start_sequence(label, [(cmd, parser)], shell=shell)
@@ -744,7 +753,7 @@ def act_refresh_status() -> dict:
     return {"ok": started} if started else {"ok": False, "err": _busy_err()}
 
 
-# 7 个计划任务的唯一定义处：名字、脚本、触发器类型、注册后的提示语。
+# 8 个计划任务的唯一定义处：名字、脚本、触发器类型、注册后的提示语。
 # 单个注册与「一键配置全部」都从这里取，两处不会跑偏。
 SCHED_DEF = {
     "sign":      ("MobileSignIn", "run_scheduled.bat", "daily",
@@ -761,7 +770,10 @@ SCHED_DEF = {
                   "每天 {t} 运行（游戏中心 / 追剧 / 抽话费）"),
     "probe":     ("MobileTokenLifeProbe", "run_token_life.bat", "2m",
                   "每 2 分钟一次（长期运行）"),
+    "mail":      ("MobileMailWatch", "run_mail_watch.bat", "10m",
+                  "每 10 分钟一次（长期运行，凭证过期时自动收 HAR）"),
 }
+SCHED_TASKS = tuple(v[0] for v in SCHED_DEF.values())
 
 # 推荐方案：一键配置全部时用的时刻。和 README / 文档里的说明保持一致。
 # 「签到」放在 11:45：qwhd 票据寿命只有 1~2 小时，原来 08:30 跑完 10:30 就失效，
@@ -775,6 +787,7 @@ SCHED_PLAN = [
     ("seckill", "11:55"),
     ("games", "12:05"),
     ("probe", "00:00"),
+    ("mail", "00:00"),
 ]
 
 # 每个计划任务的日志文件名（与各 bat 里写的一致）。
@@ -787,6 +800,7 @@ SCHED_LOG = {
     "seckill": "seckill.log",
     "games": "games.log",
     "probe": "token_life.log",
+    "mail": "mail_watch.log",
 }
 
 _NO_PYW_ERR = ("找不到系统 Python（pythonw.exe），无法注册计划任务。\n"
@@ -796,7 +810,7 @@ _NO_PYW_ERR = ("找不到系统 Python（pythonw.exe），无法注册计划任�
 SCHED_CN = {
     "sign": "每天签到", "daily": "每日奖励", "keepalive": "会话保活",
     "sess": "会话刷新", "seckill": "秒杀抢券", "games": "拓展活动",
-    "probe": "票据寿命探测",
+    "probe": "票据寿命探测", "mail": "邮箱收 HAR",
 }
 
 
@@ -863,7 +877,8 @@ def _sched_ps(kind: str, t: str, pyw: str, launcher: str):
         # 重复型任务：起点 + 长期 RepetitionDuration。见 REPEAT_DAYS 的说明。
         start = _sched_start(t)
         iv = {"hourly": "(New-TimeSpan -Hours 1)",
-              "90m":    "(New-TimeSpan -Minutes 90)"}.get(trig, "(New-TimeSpan -Minutes 2)")
+              "90m":    "(New-TimeSpan -Minutes 90)",
+              "10m":    "(New-TimeSpan -Minutes 10)"}.get(trig, "(New-TimeSpan -Minutes 2)")
         trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{start}' "
                f"-RepetitionInterval {iv} "
                f"-RepetitionDuration (New-TimeSpan -Days {REPEAT_DAYS});")
@@ -1280,7 +1295,8 @@ def do_action(body: dict):
                 "msg": "策略已保存，定时任务下一轮就按这个执行"}
 
     if act == "sched_query":
-        ps = ("foreach($n in 'MobileSignIn','MobileDailyReward','MobileJwtKeepAlive','MobileSeckill','MobileSessionRefresh','MobileTokenLifeProbe','MobileGames'){"
+        names = ",".join(f"'{n}'" for n in SCHED_TASKS)
+        ps = ("foreach($n in @(" + names + ")){"
               "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
               "if($t){$i=Get-ScheduledTaskInfo -TaskName $n;"
               "Write-Host ($n+'  状态='+$t.State+'  下次='+$i.NextRunTime+'  上次结果='+$i.LastTaskResult)}"
@@ -1351,9 +1367,7 @@ def do_action(body: dict):
 
     if act == "sched_unreg":
         name = body.get("name", "")
-        if name not in ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
-                        "MobileSeckill", "MobileSessionRefresh", "MobileTokenLifeProbe",
-                        "MobileGames"):
+        if name not in SCHED_TASKS:
             return {"ok": False, "err": "非法任务名"}
         ps = f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false; Write-Host '{name} 已注销'"
         return _start(f"注销计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps], need_py=False)
@@ -1473,15 +1487,10 @@ def _awards_view(limit=40) -> dict:
     today = TODAY()
     month = today[:7]
     recs = C.load_awards()          # 新的在前
-    recent, seen = [], {}
+    recent = []
     for r in recs:
         if r.get("ignored"):
             continue                 # 话费型手气红包：用户要求直接不显示
-        # 同一秒同一奖品的重复登记（多账号/重复读接口）只留一条
-        sig = (r.get("at"), r.get("account"), r.get("name"))
-        if sig in seen:
-            continue
-        seen[sig] = 1
         if r.get("need_recharge"):
             continue                 # 要充值 / 要花钱买的券不上榜
         if r.get("kind") not in ("flow", "fee"):
@@ -1549,7 +1558,8 @@ def _awards_view(limit=40) -> dict:
             b["last"] = r.get("name") or ""
 
     usable_fee = [r for r in recs
-                  if r.get("kind") == "fee" and not r.get("need_recharge")]
+                  if r.get("kind") == "fee" and not r.get("need_recharge")
+                  and not r.get("ignored")]
     return {"recent": recent, "today": agg(today), "month": agg(month),
             "by_account": by, "by_day": by_day, "fee_day": fee_day,
             "by_plat": by_plat, "by_day_plat": by_day_plat,
@@ -1618,9 +1628,6 @@ def _list_token_life() -> list:
     return out
 
 
-SCHED_TASKS = ("MobileSignIn", "MobileDailyReward", "MobileJwtKeepAlive",
-               "MobileSeckill", "MobileSessionRefresh", "MobileGames",
-               "MobileTokenLifeProbe")
 _SCHED_KIND_BY_NAME = {v[0]: k for k, v in SCHED_DEF.items()}
 _SCHED_CACHE = {"at": 0.0, "data": [], "ok": None, "th": None}
 _SCHED_LOCK = threading.Lock()
@@ -1838,7 +1845,7 @@ class Handler(BaseHTTPRequestHandler):
                 since = int((q.get("since") or ["0"])[0])
             except ValueError:
                 since = 0
-            lines = [l for l in RUNNER.logs if l["seq"] > since]
+            lines = RUNNER.logs_since(since)
             self._json({"lines": lines, "running": RUNNER.running, "label": RUNNER.label})
         elif u.path == "/api/tasklog":
             data = read_task_log((q.get("name") or [""])[0], (q.get("tail") or ["200"])[0])

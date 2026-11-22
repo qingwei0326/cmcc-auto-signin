@@ -45,7 +45,7 @@ import uuid
 from pathlib import Path
 
 import requests
-from common import atomic_write_json, setup_utf8
+from common import app_base, atomic_write_json, load_json, setup_utf8
 
 setup_utf8()   # stdout/stderr 都固定 UTF-8，Termux 上不支持 reconfigure 时自动跳过
 
@@ -100,6 +100,21 @@ def cmcc_headers() -> dict:
 
 def step(name: str, ok: bool, detail: str = ""):
     print(f"  {'✓' if ok else '✗'} {name:<12} {detail}")
+
+
+def save_bass_config(out: Path, phone: str, token: str) -> dict:
+    """合并写入 BASS 配置：保留原有的 prize_prefer、推送密钥和备注。"""
+    old = load_json(out, default={})
+    cfg = dict(old) if isinstance(old, dict) else {}
+    cfg.setdefault("app_id", "0")
+    cfg.setdefault("prize_prefer", "flow")
+    cfg.setdefault("referer", "https://wap.fj.10086.cn/bass-cultivateGameServer/")
+    cfg.setdefault("note", "一键登录自动获取")
+    cfg["bearer_token"] = token
+    cfg["phone"] = phone
+    out.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(out, cfg, indent=2)
+    return cfg
 
 
 def main() -> int:
@@ -244,15 +259,8 @@ def main() -> int:
         step("BASS 验证", False, str(e))
 
     if args.save and phone:
-        out = Path(__file__).parent / "configs_fj" / f"{phone[-4:]}.json"
-        out.parent.mkdir(exist_ok=True)
-        atomic_write_json(out, {
-            "bearer_token": token,
-            "app_id": "0",
-            "referer": "https://wap.fj.10086.cn/bass-cultivateGameServer/",
-            "note": "一键登录自动获取",
-            "phone": phone,
-        }, indent=2)
+        out = app_base() / "configs_fj" / f"{phone[-4:]}.json"
+        save_bass_config(out, phone, token)
         print(f"\n已写入 {out}")
 
     print("\n把这个 token 填进 configs_fj/<尾号>.json 的 bearer_token 即可。")

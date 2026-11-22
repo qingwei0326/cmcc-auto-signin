@@ -54,7 +54,7 @@ echo   exe 位置: %~dp0dist\签到领福利.exe
 echo.
 echo   ★ 使用方法：把 dist\签到领福利.exe 复制到项目根目录
 echo     （与 cmcc_sign.py、dashboard.py 同一层级），双击运行即可。
-echo   ★ 注意：签到任务仍由系统 Python 执行，电脑上需保留 Python
-echo     和已安装的 requests 等依赖（你平时能跑脚本就没问题）。
+echo   ★ 注意：界面内点按钮由本 exe 自带运行时执行（--run-script），无需装 Python；
+echo     仅通过 Windows 计划任务（run_*.bat）或 run_gui.bat 定时运行时才需系统 Python。
 echo.
 pause

@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import cmcc_sign as CS
-from common import setup_utf8, app_base
+from common import RotatingLog, Tee, app_base, atomic_write_json, setup_utf8
 
 # 冻结成 exe 后 __file__ 指向临时解包目录，必须改用 exe 所在目录，
 # 否则探测记录会写进临时目录，exe 一关就丢。
@@ -54,10 +54,7 @@ def _load(p: Path) -> dict:
 
 
 def _save(p: Path, obj: dict) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(p)
+    atomic_write_json(p, obj, indent=1)
 
 
 # 只有服务端明确拒绝票据才算「失效」；网络抖动 / SSL / SSO 入口变更都不算
@@ -266,25 +263,35 @@ def main() -> int:
     ap.add_argument("--report", action="store_true", help="只打印结论，不发请求")
     ap.add_argument("--mark-issued", metavar="ISO时间", nargs="?", const="",
                     help="标记 app_token 签发时刻（不传则用当前时间）")
+    ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
     args = ap.parse_args()
 
-    if args.report:
-        return report()
-    if args.mark_issued is not None:
-        return mark_issued(args.mark_issued or None)
-
-    if args.once:
-        return run_once()
-
-    # 常驻模式：适合手动跑着观察
+    log = RotatingLog(args.log)
+    old_stdout = sys.stdout
+    if log.enabled:
+        sys.stdout = Tee(log)
     try:
-        while True:
-            run_once()
-            print(f"--- 等待 {args.interval} 秒后下一轮 ---", flush=True)
-            time.sleep(args.interval)
-    except KeyboardInterrupt:
-        print("\n探测结束")
-        return 0
+        if args.report:
+            return report()
+        if args.mark_issued is not None:
+            return mark_issued(args.mark_issued or None)
+
+        if args.once:
+            return run_once()
+
+        # 常驻模式：适合手动跑着观察
+        try:
+            while True:
+                run_once()
+                print(f"--- 等待 {args.interval} 秒后下一轮 ---", flush=True)
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print("\n探测结束")
+            return 0
+    finally:
+        if log.enabled:
+            sys.stdout.flush()
+            sys.stdout = old_stdout
 
 
 if __name__ == "__main__":

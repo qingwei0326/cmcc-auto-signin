@@ -36,7 +36,8 @@ import time
 from email import policy
 from pathlib import Path
 
-from common import app_base, atomic_write_json, load_json, notify_once, setup_utf8, update_json
+from common import (RotatingLog, Tee, app_base, atomic_write_json, load_json,
+                    notify_once, setup_utf8, update_json)
 
 setup_utf8()
 
@@ -61,8 +62,8 @@ PROVIDERS = {
 
 DEFAULTS = {
     "enabled": False,
-    "provider": "gmail",
-    "host": "imap.gmail.com",
+    "provider": "qq",
+    "host": "imap.qq.com",
     "port": 993,
     "user": "",
     "password": "",
@@ -213,8 +214,8 @@ def test_connection(cfg) -> int:
         return 1
 
 
-def run_once(cfg) -> int:
-    cfg = conf()
+def run_once(cfg=None) -> int:
+    cfg = conf() if cfg is None else cfg
     if not cfg.get("enabled"):
         print("邮箱收件未启用（gui_data/mail_settings.json 里 enabled=false）")
         return 0
@@ -309,11 +310,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="邮箱收 HAR 自动导入")
     ap.add_argument("--once", action="store_true", help="查一次收件箱（默认）")
     ap.add_argument("--test", action="store_true", help="只测连通，不导入")
+    ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
     args = ap.parse_args()
-    cfg = conf()
-    if args.test:
-        return test_connection(cfg)
-    return run_once(cfg)
+    log = RotatingLog(args.log)
+    old_stdout = sys.stdout
+    if log.enabled:
+        sys.stdout = Tee(log)
+    try:
+        cfg = conf()
+        if args.test:
+            return test_connection(cfg)
+        return run_once(cfg)
+    finally:
+        if log.enabled:
+            sys.stdout.flush()
+            sys.stdout = old_stdout
 
 
 if __name__ == "__main__":

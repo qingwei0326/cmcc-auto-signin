@@ -247,7 +247,8 @@ class TestSchedPlan(unittest.TestCase):
             dashboard.RUNNER = real
         self.assertTrue(r["ok"])
         ps = started["ps"]
-        self.assertEqual(ps.count("Register-ScheduledTask"), 7, "7 个任务要在一个脚本里注册完")
+        self.assertEqual(ps.count("Register-ScheduledTask"), len(dashboard.SCHED_DEF),
+                         "全部任务要在一个脚本里注册完")
         for name, _, _, _ in dashboard.SCHED_DEF.values():
             self.assertIn(f"-TaskName '{name}'", ps)
 

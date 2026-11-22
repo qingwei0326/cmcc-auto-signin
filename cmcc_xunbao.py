@@ -38,12 +38,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from common import (api_post, make_session, mask_phone, record_award,
+from common import (api_post, app_base, make_session, mask_phone, record_award,
                     setup_utf8, update_json)
 
 setup_utf8()
 
-BASE = Path(__file__).parent
+BASE = app_base()
 CFG_DIR = BASE / "configs_fj"
 STATE_FILE = BASE / "gui_data" / "xunbao_state.json"
 

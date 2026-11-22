@@ -111,8 +111,8 @@ def main():
         _fail(f"找不到 dashboard.py，请把本程序放在项目根目录（与 cmcc_sign.py 同级）。\n\n{e}")
         return
 
-    # exe 只是外壳，任务由系统 Python 跑：缺 Python / 缺依赖时先说人话，
-    # 而不是等用户点了签到才在日志里吐一个 WinError 2。
+    # 冻结态下任务脚本由 exe 自带运行时以 --run-script 执行，preflight 只确认脚本在同目录；
+    # 缺失时启动前就弹窗说明，不让用户点了签到才报错。
     ok, msg = dashboard.preflight(force=True)
     if not ok:
         _fail(msg)

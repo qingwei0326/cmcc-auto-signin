@@ -15,9 +15,11 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import requests
@@ -68,16 +70,33 @@ def now_ms():
 
 
 def atomic_write_text(path, text):
-    """原子写文本：先写 .tmp 再 os.replace。
+    """原子写文本：先写临时文件再 os.replace。
 
     定时任务（每小时轮询）与一键签到可能同时写同一个 json，
     直接 write_text 在中途被打断就会留下半截文件导致后续解析失败。
+    临时文件名带进程/线程/随机后缀，避免未加文件锁的并发写争抢同一 .tmp。
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
+    )
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt >= 7:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as cleanup_err:
+            _ = cleanup_err
+        raise
 
 
 def atomic_write_json(path, obj, indent=1):
@@ -440,6 +459,8 @@ def load_awards():
         if not isinstance(r, dict):
             continue
         cls = classify_award(r.get("name"))
+        if r.get("name"):
+            r["kind"] = cls["kind"]
         r["need_recharge"] = cls["need_recharge"]      # 以当前规则为准（流量红包要改回 False）
         r["ignored"] = cls["ignored"]
         if is_paid_pack(r.get("name")):
@@ -929,6 +950,90 @@ def mask_phone(phone):
     """手机号脱敏，显示用。"""
     s = str(phone or "")
     return f"...{s[-4:]}" if len(s) >= 4 else s
+
+
+class RotatingLog:
+    """按天轮转的文本日志：每天一个文件，只保留最近 N 天。
+
+    定时任务每天追加，长期跑下去单个日志会涨到几十 MB，
+    这里在写入新一天之前把旧文件改名归档，并清掉过期的。
+    """
+
+    def __init__(self, path, keep_days=7):
+        self.path = Path(path) if path else None
+        self.keep = keep_days
+
+    @property
+    def enabled(self):
+        return self.path is not None
+
+    def _archive_old(self, today):
+        if not self.path.parent.exists():
+            return
+        stem = self.path.stem
+        for f in self.path.parent.glob(f"{stem}.*.log"):
+            try:
+                day = f.name[len(stem) + 1:].rsplit(".", 1)[0]
+                age = (today - date.fromisoformat(day)).days
+            except Exception:
+                continue
+            if age >= self.keep:
+                try:
+                    f.unlink()
+                except OSError:
+                    continue
+
+    def write(self, text):
+        if not self.enabled:
+            return
+        today = date.today()
+        target = self.path
+        if target.exists():
+            try:
+                mtime_day = date.fromtimestamp(target.stat().st_mtime)
+            except OSError:
+                mtime_day = today
+            if mtime_day != today:
+                # 跨天：把旧文件改名为「它自己那天的日期」，今天的输出另起新文件。
+                self._archive_old(today)
+                archived = self.path.with_name(f"{self.path.stem}.{mtime_day.isoformat()}.log")
+                try:
+                    target.replace(archived)
+                except OSError:
+                    archived = None
+                target = self.path
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError:
+            return
+
+    def line(self, text):
+        self.write(text + "\n")
+
+
+class Tee:
+    """把 stdout 同时写到终端和日志文件（按行缓冲，避免频繁开文件）。"""
+
+    def __init__(self, log):
+        self.log = log
+        self.term = sys.stdout
+        self.buf = ""
+
+    def write(self, s):
+        self.term.write(s)
+        if self.log.enabled:
+            self.buf += s
+            while "\n" in self.buf:
+                line, self.buf = self.buf.split("\n", 1)
+                self.log.write(line + "\n")
+
+    def flush(self):
+        self.term.flush()
+        if self.log.enabled and self.buf:
+            self.log.write(self.buf)
+            self.buf = ""
 
 
 # ---------------------------------------------------------------- 结构化结果

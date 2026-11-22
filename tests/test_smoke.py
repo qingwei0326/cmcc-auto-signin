@@ -493,7 +493,9 @@ class TestMailWatch(unittest.TestCase):
 
         cfg = {"enabled": True, "host": "imap.test", "user": "u@t",
                "password": "p", "sender": "", "subject_keyword": "HAR"}
-        with mock.patch.object(mw, "conf", return_value=cfg), \
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(mw, "INBOX_DIR", Path(td)), \
+             mock.patch.object(mw, "conf", return_value=cfg), \
              mock.patch.object(mw, "should_check", return_value=True), \
              mock.patch.object(mw, "load_state", return_value={}), \
              mock.patch.object(mw, "connect", return_value=fake), \

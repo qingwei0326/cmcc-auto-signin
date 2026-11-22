@@ -418,7 +418,7 @@ class TestSchedTrigger(unittest.TestCase):
                                    r"D:\proj\run_hidden.py")
 
     def test_repeat_tasks_use_long_duration(self):
-        for kind in ("daily", "keepalive", "probe"):
+        for kind in ("daily", "keepalive", "probe", "mail"):
             name, ps = self._ps(kind)
             self.assertIn("-Days 3650", ps, f"{kind} 的重复窗口不该再是短窗口")
             self.assertNotIn("-Hours 17", ps, f"{kind} 还是当年的 17 小时窗口")
@@ -428,9 +428,14 @@ class TestSchedTrigger(unittest.TestCase):
         _, ps = self._ps("daily")
         self.assertIn("-RepetitionInterval (New-TimeSpan -Hours 1)", ps)
 
+    def test_mail_task_is_every_10_minutes(self):
+        name, ps = self._ps("mail")
+        self.assertEqual(name, "MobileMailWatch")
+        self.assertIn("-RepetitionInterval (New-TimeSpan -Minutes 10)", ps)
+
     def test_trigger_kinds_are_known(self):
         """拼错类型会静默落到「每 2 分钟」兜底，把每小时任务跑成 720 次。"""
-        known = {"daily", "hourly", "90m", "2m"}
+        known = {"daily", "hourly", "90m", "10m", "2m"}
         for kind, (name, bat, trig, note) in dashboard.SCHED_DEF.items():
             self.assertIn(trig, known, f"{kind} 的触发类型 {trig} 不认识")
 
@@ -951,8 +956,10 @@ class TestFrozenPathGuards(unittest.TestCase):
     def test_no_module_writes_to_frozen_tempdir(self):
         """凡是会被 exe 动态导入的模块，都不能用 Path(__file__).parent 当数据目录。"""
         import ast
-        # 这些模块跑在 exe 里（dashboard 动态 import 它们）
-        for name in ("har_import.py", "probe_token_life.py", "common.py"):
+        # 这些模块跑在 exe 里（dashboard 动态 import 它们或 --run-script 直接运行）
+        for name in ("har_import.py", "probe_token_life.py", "common.py",
+                     "cmcc_fj.py", "cmcc_xiaoxiaole.py", "cmcc_luck.py",
+                     "cmcc_xunbao.py", "run_all.py", "probe_fj.py", "mail_watch.py"):
             src = (ROOT / name).read_text(encoding="utf-8")
             tree = ast.parse(src)
             for node in tree.body:
@@ -2504,10 +2511,6 @@ class TestFeedReward(unittest.TestCase):
         self.assertEqual(acc["feed_reward"]["fodder"], 950)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestRotatingLogArchive(unittest.TestCase):
     """跨天归档：旧文件要归到它自己那天的名字，今天的输出另起新文件。
 
@@ -2827,3 +2830,208 @@ class TestClaimableAwardIds(unittest.TestCase):
         status = {"accumulateTaskInfo": [
             {"id": "272903", "lackDay": None, "status": "1"}]}
         self.assertEqual(cmcc_sign.claimable_award_ids(status), [])
+
+
+class TestAuditFixes11To16(unittest.TestCase):
+    """覆盖审查报告 11~16 项的并发、台账、轮转日志、路径合并、前端与隔离修复。"""
+
+    def test_atomic_write_concurrent_leaves_no_tmp(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "shared.json"
+            errors = []
+
+            def worker(tid):
+                try:
+                    for i in range(15):
+                        common.atomic_write_text(p, f'{{"t": {tid}, "i": {i}}}')
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=worker, args=(k,)) for k in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [])
+            self.assertTrue(p.is_file())
+            self.assertIn('"i":', p.read_text(encoding="utf-8"))
+            self.assertEqual(list(Path(td).glob("*.tmp")), [])
+
+    def test_task_runner_logs_since_thread_safe(self):
+        runner = dashboard.TaskRunner()
+        errors = []
+        done = threading.Event()
+
+        def writer():
+            try:
+                for i in range(250):
+                    runner.push(f"line-{i}")
+            except Exception as e:
+                errors.append(e)
+            finally:
+                done.set()
+
+        def reader():
+            try:
+                while not done.is_set():
+                    rows = runner.logs_since(0)
+                    seqs = [r["seq"] for r in rows]
+                    if seqs != sorted(seqs):
+                        errors.append("non-monotonic seq")
+                        break
+            except Exception as e:
+                errors.append(e)
+
+        tw = threading.Thread(target=writer)
+        tr = threading.Thread(target=reader)
+        tr.start()
+        tw.start()
+        tw.join()
+        tr.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(runner.logs_since(0)), 250)
+
+    def test_run_xxl_skips_mutual_after_first(self):
+        calls = []
+
+        def fake_run(script, conf, args, timeout, **_kw):
+            calls.append((conf.name, list(args)))
+            return (conf.stem, True, 0.1, "ok")
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "configs_fj").mkdir()
+            (base / "configs_fj" / "fj1.json").write_text('{"phone":"13800001234"}', encoding="utf-8")
+            (base / "configs_fj" / "fj2.json").write_text('{"phone":"13900005678"}', encoding="utf-8")
+            (base / "cmcc_xiaoxiaole.py").write_text("# stub\n", encoding="utf-8")
+            with mock.patch.object(run_all, "BASE", base), \
+                 mock.patch.object(run_all, "load_policy",
+                                   return_value={"xxl": {"tasks": True, "star": 3, "gap": 12}}), \
+                 mock.patch.object(run_all, "run_script", side_effect=fake_run), \
+                 redirect_stdout(io.StringIO()):
+                run_all.run_xxl(dry_run=False, times=5)
+        self.assertEqual(len(calls), 2)
+        by_name = dict(calls)
+        self.assertIn("--tasks", by_name["fj1.json"])
+        self.assertNotIn("--skip-mutual", by_name["fj1.json"])
+        self.assertIn("--tasks", by_name["fj2.json"])
+        self.assertIn("--skip-mutual", by_name["fj2.json"])
+
+    @unittest.skipUnless(HAS_CRYPTO, "需要 pycryptodome")
+    def test_mutual_assist_uses_file_lock(self):
+        locks = []
+        real_lock = XXL.file_lock
+
+        @contextmanager
+        def spy_lock(path, timeout=20.0):
+            locks.append(Path(path))
+            with real_lock(path, timeout=timeout):
+                yield
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "configs_fj").mkdir()
+            (base / "configs_fj" / "fj1.json").write_text('{"bearer_token":"t1"}', encoding="utf-8")
+            (base / "configs_fj" / "fj2.json").write_text('{"bearer_token":"t2"}', encoding="utf-8")
+            assist = base / "gui_data" / "xxl_assist_state.json"
+
+            def fake_get(_s, path, params=None):
+                if path.startswith("share/"):
+                    return {"code": "0000", "data": "INVITE"}
+                return {"code": "0000", "msg": "ok"}
+
+            with mock.patch.object(XXL, "BASE", base), \
+                 mock.patch.object(XXL, "ASSIST_STATE", assist), \
+                 mock.patch.object(XXL, "file_lock", spy_lock), \
+                 mock.patch.object(XXL, "get_json", side_effect=fake_get), \
+                 redirect_stdout(io.StringIO()):
+                XXL.mutual_assist()
+            self.assertEqual(locks, [assist])
+            self.assertTrue(assist.is_file())
+            st = json.loads(assist.read_text(encoding="utf-8"))
+            self.assertIn("fj1|fj2", st)
+
+    def test_awards_view_dup_consistency_and_load_awards_kind(self):
+        now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "awards.json"
+            # 构造同秒两张 1 元券（allow_dup=True 场景）、一条未标记 ignored 的话费手气红包、
+            # 以及一条旧流水里 kind 写错成 other 的流量包
+            p.write_text(json.dumps({"records": [
+                {"at": now_s, "account": "13800001234", "source": "游戏币",
+                 "name": "1元话费券", "kind": "fee", "size_mb": 0.0, "yuan": 1.0,
+                 "need_recharge": False, "ignored": False, "url": ""},
+                {"at": now_s, "account": "13800001234", "source": "游戏币",
+                 "name": "1元话费券", "kind": "fee", "size_mb": 0.0, "yuan": 1.0,
+                 "need_recharge": False, "ignored": False, "url": ""},
+                {"at": now_s, "account": "13800001234", "source": "天天大转盘",
+                 "name": "2-3元话费券手气红包", "kind": "fee", "size_mb": 0.0, "yuan": 3.0,
+                 "need_recharge": False, "ignored": False, "url": ""},
+                {"at": now_s, "account": "13800001234", "source": "每日签到",
+                 "name": "1GB流量日包", "kind": "other", "size_mb": 1024.0, "yuan": 0.0,
+                 "need_recharge": False, "ignored": False, "url": ""},
+            ]}, ensure_ascii=False), encoding="utf-8")
+            with mock.patch.object(common, "AWARDS_FILE", p):
+                recs = common.load_awards()
+                flow_row = [r for r in recs if r["name"] == "1GB流量日包"][0]
+                self.assertEqual(flow_row["kind"], "flow")
+                v = dashboard._awards_view()
+        fee_recent = [r for r in v["recent"] if r["name"] == "1元话费券"]
+        self.assertEqual(len(fee_recent), 2)
+        self.assertEqual(v["month"]["fee_count"], 2)
+        self.assertEqual(v["fee_total"], 2)
+        self.assertEqual(v["fee_yuan_total"], 2.0)
+
+    def test_mail_watch_and_probe_token_life_log_rotation(self):
+        import mail_watch as MW
+        self.assertEqual(MW.DEFAULTS["provider"], "qq")
+        self.assertEqual(MW.DEFAULTS["host"], "imap.qq.com")
+        with mock.patch.object(MW, "conf", return_value={"enabled": True}), \
+             mock.patch.object(MW, "should_check", side_effect=AssertionError("不应覆盖传入 cfg")), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(MW.run_once({"enabled": False}), 0)
+
+        with tempfile.TemporaryDirectory() as td:
+            log1 = Path(td) / "mw.log"
+            log2 = Path(td) / "pt.log"
+            with mock.patch.object(MW, "run_once", lambda cfg: print("mw_line") or 0), \
+                 mock.patch.object(MW, "conf", return_value={}), \
+                 mock.patch.object(sys, "argv", ["mail_watch.py", "--once", "--log", str(log1)]), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(MW.main(), 0)
+            self.assertIn("mw_line", log1.read_text(encoding="utf-8"))
+
+            with mock.patch.object(PT, "report", lambda: print("pt_line") or 0), \
+                 mock.patch.object(sys, "argv", ["probe_token_life.py", "--report", "--log", str(log2)]), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(PT.main(), 0)
+            self.assertIn("pt_line", log2.read_text(encoding="utf-8"))
+
+    def test_pull_token_phone_save_preserves_existing_fields(self):
+        import pull_token_phone as PTP
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "1234.json"
+            cfg.write_text(json.dumps({
+                "phone": "13800001234",
+                "bearer_token": "old",
+                "prize_prefer": "fee",
+                "bark_url": "https://bark.example/k",
+            }), encoding="utf-8")
+            PTP.save_bass_config(cfg, "13800001234", "new-tok")
+            saved = json.loads(cfg.read_text(encoding="utf-8"))
+            self.assertEqual(saved["bearer_token"], "new-tok")
+            self.assertEqual(saved["prize_prefer"], "fee")
+            self.assertEqual(saved["bark_url"], "https://bark.example/k")
+
+    def test_frontend_audit_12_13_fixes(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("_stateFail.reloaded", html)
+        self.assertIn("FAIL_RELOAD_KEY", html)
+        self.assertIn("MAIL_PRESETS[prov]", html)
+        self.assertIn("MobileMailWatch", html)
+        self.assertIn("run_mail_watch.bat", html)
+        self.assertNotIn("7 个计划任务", html)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

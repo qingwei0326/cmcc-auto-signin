@@ -7,5 +7,5 @@ rem Started at 11:55; retry session setup until just after the firing time.
 rem --seckill-only: run the seckill only, no repeated sign-in.
 rem All accounts under configs wait and fire concurrently at the same instant.
 rem A HAR imported while this script is waiting is picked up on the next retry.
-python run_all.py --seckill-only --seckill-at 11:59:50 >> "logs\seckill.log" 2>&1
+python run_all.py --seckill-only --seckill-at 11:59:50 --log "logs\seckill.log" >nul 2>&1
 exit /b %errorlevel%

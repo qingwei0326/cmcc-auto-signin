@@ -83,7 +83,9 @@ class TestCouponWorldFlow(unittest.TestCase):
             reported.append(path)
             return {"ok": True, "code": "0000", "msg": "成功", "data": None}
 
-        with mock.patch.object(F, "call", fake_call), \
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(F, "DAILY_STATE", Path(td) / "daily_state.json"), \
+             mock.patch.object(F, "call", fake_call), \
              mock.patch.object(F, "call_post", fake_post), \
              mock.patch.object(F, "pause", lambda *a, **k: None), \
              mock.patch.object(F, "new_session", lambda cfg: FakeS()), \
@@ -136,3 +138,7 @@ class TestPolicy(unittest.TestCase):
         self.assertTrue(bass)
         for c in bass:
             self.assertIn("--coupon-world", c, "每日那一轮要带上券来世界访问")
+
+
+if __name__ == "__main__":
+    unittest.main()

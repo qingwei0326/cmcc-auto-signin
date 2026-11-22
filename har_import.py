@@ -102,8 +102,6 @@ def parse_har_text(text):
 
     qwhd = {}
     bass_candidates = {}
-    guandan = None
-    saw_migu = False
     mobiles = set()
     # x-token 兜底：APP 已登录时不再发 appTokenLogin，但每个 wx.10086.cn 请求
     # 都带 x-token 头，里面就是同一张 App 票据（JSESSIONID=..; UID=..; ticketID=..）
@@ -159,36 +157,6 @@ def parse_har_text(text):
 
         # ---- 响应里的 ticketID 时刻 = 票据签发时间 ----
 
-        # ---- 咪咕掼蛋：POST api/login 的 cat 就是游戏 token ----
-        if "migufun.com" in url:
-            saw_migu = True
-        if "gd-api.migufun.com/api/login" in url:
-            raw = (req.get("postData") or {}).get("text") or ""
-            cat = ""
-            if raw.strip().startswith("{"):
-                try:
-                    cat = str(json.loads(raw).get("cat") or "")
-                except Exception:
-                    cat = ""
-            info = {}
-            rtxt = str(((e.get("response") or {}).get("content") or {}).get("text") or "")
-            if rtxt.strip().startswith("{"):
-                try:
-                    info = json.loads(rtxt).get("data") or {}
-                except Exception:
-                    info = {}
-            if cat.startswith("ANDTYZ"):
-                cand = {"cat": cat, "uid": info.get("mid") or None,
-                        "u": info.get("u") or "", "expire": info.get("tokenExpire") or 0,
-                        "ts": ts, "phone_mask": ""}
-                try:
-                    ext = json.loads(info.get("ext") or "{}")
-                    cand["phone_mask"] = str(ext.get("msisdn") or "")
-                except Exception:
-                    pass
-                if guandan is None or cand["expire"] >= (guandan.get("expire") or 0):
-                    guandan = cand
-
         # ---- BASS ----
         auth = hdr.get("authorization", "")
         if (origin.scheme == "https" and origin.hostname in BASS_HOSTS
@@ -212,7 +180,7 @@ def parse_har_text(text):
     candidates = sorted(reversed(list(bass_candidates.values())), key=lambda row: row["ts"], reverse=True)
     return {"qwhd": qwhd, "bass": next(iter(candidates), None),
             "bass_candidates": candidates, "mobiles": sorted(mobiles),
-            "masked": masked_hint, "guandan": guandan, "saw_migu": saw_migu}
+            "masked": masked_hint}
 
 
 def _read_json(path):
@@ -458,22 +426,6 @@ def apply(text, key=None):
         report.append("qwhdhub 无可用 token（未抓到 App 登录票据）")
     if not p["bass_candidates"]:
         report.append("BASS 无可用 token（未抓到福建 Bearer）")
-
-    # 掼蛋的一次性票据留给实际登录消费。
-    if p.get("guandan"):
-        g = p["guandan"]
-        out = BASE / "gui_data" / "guandan_auth.json"
-        old = _read_json(out)
-        merged = {**old, **{k: v for k, v in g.items() if k != "ts"}}
-        merged.setdefault("device", "00-00-00-00")
-        merged["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            _write_json(out, merged)
-            report.append("✓ 掼蛋凭证已保存，待实际使用时验证")
-        except OSError:
-            report.append("✗ 掼蛋凭证保存失败")
-    elif p.get("saw_migu"):
-        report.append("掼蛋：HAR 中未找到登录票据")
     return report
 
 
@@ -513,7 +465,7 @@ def scan_files(files):
         except Exception as e:
             lines.append("✗ HAR 解析失败，请重新导出")
             continue
-        if not p["qwhd"] and not p["bass"] and not p["guandan"]:
+        if not p["qwhd"] and not p["bass"]:
             lines.append(f"{f.name}：未含目标请求，跳过")
             continue
         used += 1

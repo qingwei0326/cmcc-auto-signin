@@ -50,8 +50,8 @@ from urllib.parse import urlsplit
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import (atomic_write_json, emit_result, load_global_settings, load_json,
-                    record_award, setup_utf8)
+from common import (app_base, atomic_write_json, emit_result, load_global_settings,
+                    load_json, record_award, setup_utf8)
 
 # ---------------------------------------------------------------- 常量
 
@@ -172,7 +172,7 @@ def api_headers(referer: str) -> dict:
 
 def jwt_cache_file(cfg: Config) -> Path:
     """jwt 缓存按手机尾号隔离（jwt 与账号绑定，换号配置时防止用到旧账号的凭证）。"""
-    return Path(__file__).with_name(f".cmcc_jwt_cache_{cfg.phone[-4:]}.json")
+    return app_base() / f".cmcc_jwt_cache_{cfg.phone[-4:]}.json"
 
 
 def load_jwt_cache(cfg: Config) -> tuple[str, float] | None:
@@ -433,7 +433,7 @@ SESSION_LIFE_HOURS = 2.0
 def activity_session_file(cfg: Config) -> Path:
     """按账号隔离会话文件——不同号的券各记各的，不能共用。"""
     tag = (cfg.phone or cfg.activity_id or "default")[-4:]
-    return Path(__file__).resolve().parent / "gui_data" / f"seckill_session_{tag}.json"
+    return app_base() / "gui_data" / f"seckill_session_{tag}.json"
 
 
 def save_activity_session(s: requests.Session, referer: str, cfg: Config = None) -> None:
@@ -459,7 +459,7 @@ def save_activity_session(s: requests.Session, referer: str, cfg: Config = None)
         if not cks:
             return
         path = activity_session_file(cfg) if cfg else (
-            Path(__file__).resolve().parent / "gui_data" / "seckill_session.json")
+            app_base() / "gui_data" / "seckill_session.json")
         old = load_json(path, {})
         if old.get("cookie") == cks and old.get("at"):
             at = old["at"]

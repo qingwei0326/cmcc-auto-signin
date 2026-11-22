@@ -20,13 +20,13 @@ import sys
 import time
 from pathlib import Path
 
-from common import (api_get, api_post, emit_result, file_lock, load_config as _load_config,
-                    load_json, make_session, now_ms, record_award, setup_utf8, show,
-                    update_json)
+from common import (api_get, api_post, app_base, emit_result, file_lock,
+                    load_config as _load_config, load_json, make_session,
+                    now_ms, record_award, setup_utf8, show, update_json)
 
 setup_utf8()
 
-BASE = Path(__file__).parent
+BASE = app_base()
 CONFIG_PATH = BASE / "config_fj.json"
 
 HOST = "https://wap.fj.10086.cn"

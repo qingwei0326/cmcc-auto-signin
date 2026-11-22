@@ -37,3 +37,6 @@ if _common is not None:
     # 掼蛋机器人自己的日志也别写进项目 logs/
     os.environ["CMCC_GUANDAN_LOG"] = str(Path(_TMP) / "guandan_bot.log")
     _common.NOTIFY_STATE_FILE = Path(_TMP) / "notify_state.json"
+    # 自动策略也一样：测试不能因为用户把「转盘/寻宝」勾掉了就红，
+    # 也不能反过来把用户的策略文件改掉。
+    _common.POLICY_FILE = Path(_TMP) / "policy.json"

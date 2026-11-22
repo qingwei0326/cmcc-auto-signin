@@ -30,7 +30,7 @@ import threading
 import time
 import webbrowser
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -55,6 +55,28 @@ IS_WIN = os.name == "nt"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WIN else 0
 
 TODAY = lambda: datetime.now().strftime("%Y-%m-%d")
+
+# ---- 被吞掉的异常要留痕 ------------------------------------------------
+# 全项目有几十处 `except Exception: pass`。它们本身是必要的（计划任务探测、
+# 可选依赖、窗口回退…），但**无声无息**是问题：昨天就是靠用户追问才发现
+# 「今天的任务已全部完成」把邮箱监听蒙了一整天。
+# 这里不要求每处都写日志，只要求在会丢数据的路径上记一笔，并在 /api/state
+# 的 diagnostics 里暴露计数，出问题时能一眼看出「是这里吞的」。
+SWALLOWED = {}
+_SWALLOW_LOCK = threading.Lock()
+
+
+def _swallow(ctx: str, exc: BaseException = None, keep_examples: int = 3) -> str:
+    """记录一次被吞掉的异常，返回一句话方便拼进日志。"""
+    msg = f"{type(exc).__name__}: {exc}" if exc is not None else "unknown"
+    with _SWALLOW_LOCK:
+        slot = SWALLOWED.setdefault(ctx, {"count": 0, "at": "", "examples": []})
+        slot["count"] += 1
+        slot["at"] = datetime.now().strftime("%m-%d %H:%M:%S")
+        if len(slot["examples"]) < keep_examples and msg not in slot["examples"]:
+            slot["examples"].append(msg)
+    return f"[{ctx}] {msg}"
+
 
 # 冻结成 exe 后任务脚本交给系统 Python 跑。缺 Python / 缺 requests 时，
 # 早先只在日志里吐「[WinError 2] 系统找不到指定的文件」，用户看不懂也没法自救，
@@ -466,8 +488,8 @@ class TaskRunner:
         try:
             self._persist.write_text(
                 "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow("log.truncate", e)
 
     def push(self, line: str):
         self.seq += 1
@@ -477,8 +499,10 @@ class TaskRunner:
             try:
                 with self._plock, self._persist.open("a", encoding="utf-8") as f:
                     f.write(json.dumps({"t": row["t"], "line": row["line"]}, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
+            except Exception as e:
+                # 写不进磁盘时，界面上仍能看到（在内存里），但重启就丢了。
+                # 以前这里静默 pass，日志缺一段完全没人知道。
+                _swallow("log.persist", e)
 
     def start(self, label, cmd, parser=None, shell=False):
         return self.start_sequence(label, [(cmd, parser)], shell=shell)
@@ -699,23 +723,26 @@ def act_refresh_status() -> dict:
 SCHED_DEF = {
     "sign":      ("MobileSignIn", "run_scheduled.bat", "daily",
                   "每天 {t} 运行"),
-    "daily":     ("MobileDailyReward", "run_daily_reward.bat", "1h17",
-                  "{t} 起每小时一次（持续 17 小时）"),
-    "keepalive": ("MobileJwtKeepAlive", "run_jwt_keepalive.bat", "90m1d",
-                  "{t} 起每 90 分钟一次（全天覆盖）"),
+    "daily":     ("MobileDailyReward", "run_daily_reward.bat", "hourly",
+                  "每小时一次（长期运行，领完自动空转）"),
+    "keepalive": ("MobileJwtKeepAlive", "run_jwt_keepalive.bat", "90m",
+                  "每 90 分钟一次（长期运行）"),
     "sess":      ("MobileSessionRefresh", "run_session_refresh.bat", "daily",
                   "每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）"),
     "seckill":   ("MobileSeckill", "run_seckill.bat", "daily",
                   "每天 {t} 运行（脚本内部等到 12:00 开抢）"),
     "games":     ("MobileGames", "run_games.bat", "daily",
                   "每天 {t} 运行（游戏中心 / 追剧 / 抽话费）"),
-    "probe":     ("MobileTokenLifeProbe", "run_token_life.bat", "2m1d",
-                  "{t} 起每 2 分钟一次（全天覆盖）"),
+    "probe":     ("MobileTokenLifeProbe", "run_token_life.bat", "2m",
+                  "每 2 分钟一次（长期运行）"),
 }
 
 # 推荐方案：一键配置全部时用的时刻。和 README / 文档里的说明保持一致。
+# 「签到」放在 11:45：qwhd 票据寿命只有 1~2 小时，原来 08:30 跑完 10:30 就失效，
+# 中午的秒杀 / 拓展还得再抓一次包。把它挪到秒杀前 10 分钟，一张票就能
+# 覆盖 签到 → 会话刷新(11:54) → 秒杀(11:55) → 拓展(12:05)，一天只抓一次包。
 SCHED_PLAN = [
-    ("sign", "08:30"),
+    ("sign", "11:45"),
     ("daily", "06:00"),
     ("keepalive", "00:00"),
     ("sess", "11:54"),
@@ -770,28 +797,50 @@ def read_task_log(name: str, tail: int = 200):
         return {"name": name, "lines": [], "err": str(e)}
 
 
+# 重复型任务的 RepetitionDuration 长度。这里踩过一个静默失效的坑：
+# 早先写的是「17 小时」和「1 天」，语义是**从注册那一刻起的一个窗口**，
+# 窗口一过任务就永久停摆，既不报错也不留痕——
+#   11-22 早上就是这样丢了一整天的每日奖励：MobileDailyReward 只在 11-21
+#   06:00~23:00 跑过那 17 次，票据探针的样本也正好停在 11-21 23:58。
+# 任务计划没有「一直重复」的开关，给 10 年等价于长期有效（到期后重注册即可）。
+REPEAT_DAYS = 3650
+
+
+def _sched_start(t: str) -> str:
+    """重复型任务的起点：传入时刻若已过，就从现在（+2 分钟）开始。
+
+    StartBoundary 落在过去时，任务计划会把它推到**明天**同一时刻，
+    今天剩下的轮次就全丢了——用户当天看不到任何执行记录，还以为任务没注册。
+    """
+    try:
+        hh, mm = (int(x) for x in str(t).split(":"))
+    except Exception:
+        return t
+    now = datetime.now()
+    at = now.replace(hour=hh % 24, minute=mm % 60, second=0, microsecond=0)
+    if at <= now:
+        at = now + timedelta(minutes=2)
+    return at.strftime("%H:%M")
+
+
 def _sched_ps(kind: str, t: str, pyw: str, launcher: str):
     """生成单个任务的注册脚本，返回 (任务名, PowerShell 片段)。
 
-    触发器只有三种形态：每天定时、每小时若干次、以及 90 分钟 / 2 分钟的重复。
+    触发器只有两种形态：每天定时，以及「从现在起长期每 N 重复一次」。
     注意不能用 `$tr.Repetition=` 去改重复——PS 5.1 上该属性不可写，写了等于没设。
     """
     name, bat, trig, note = SCHED_DEF[kind]
     d = str(BASE)
     if trig == "daily":
         trg = f"$tr=New-ScheduledTaskTrigger -Daily -At '{t}';"
-    elif trig == "1h17":
-        trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' "
-               f"-RepetitionInterval (New-TimeSpan -Hours 1) "
-               f"-RepetitionDuration (New-TimeSpan -Hours 17);")
-    elif trig == "90m1d":
-        trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' "
-               f"-RepetitionInterval (New-TimeSpan -Minutes 90) "
-               f"-RepetitionDuration (New-TimeSpan -Days 1);")
-    else:  # 2m1d
-        trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{t}' "
-               f"-RepetitionInterval (New-TimeSpan -Minutes 2) "
-               f"-RepetitionDuration (New-TimeSpan -Days 1);")
+    else:
+        # 重复型任务：起点 + 长期 RepetitionDuration。见 REPEAT_DAYS 的说明。
+        start = _sched_start(t)
+        iv = {"hourly": "(New-TimeSpan -Hours 1)",
+              "90m":    "(New-TimeSpan -Minutes 90)"}.get(trig, "(New-TimeSpan -Minutes 2)")
+        trg = (f"$tr=New-ScheduledTaskTrigger -Once -At '{start}' "
+               f"-RepetitionInterval {iv} "
+               f"-RepetitionDuration (New-TimeSpan -Days {REPEAT_DAYS});")
     ps = (f"$a=New-ScheduledTaskAction -Execute '{pyw}' "
           f"-Argument '\"{launcher}\" \"{d}\\{bat}\"' -WorkingDirectory '{d}';"
           + trg +
@@ -826,11 +875,19 @@ def do_action(body: dict):
             cmd.append("--seckill")
             if body.get("seckill_at"):
                 cmd += ["--seckill-at", body["seckill_at"]]
+        # 环闽寻宝的骰子当天不用就作废，而且寻宝里本身还有「参与消消乐 / 大转盘」
+        # 两个加骰子任务，所以只要跑福建这一路就顺带投掉（全国签到不带）。
+        xunbao = plat in ("all", "bass") and bool(body.get("xunbao", True))
+        if xunbao:
+            cmd.append("--xunbao")
+            if load_policy().get("xunbao_tasks", True):
+                cmd.append("--xunbao-tasks")
         pname = {"all": "全部平台", "qwhd": "全国签到", "bass": "福建活动",
                  "none": "不跑签到"}.get(plat, plat)
         title = "签到领福利" if luck else "一键签到"
-        label = "%s（%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
+        label = "%s（%s%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
                                   "，含消消乐" if xxl else "",
+                                  "，含寻宝" if xunbao else "",
                                   "，含秒杀" if body.get("seckill") else "")
         return _start(label, cmd)
 
@@ -947,6 +1004,17 @@ def do_action(body: dict):
             if pol.get("tasks"):
                 cmd.append("--tasks")
         return _start("消消乐", cmd)
+
+    if act == "xxl_all":
+        # 多账号并行：走 run_all 的 ThreadPoolExecutor（每号一个子进程），
+        # 顺序是 抽奖 → 消消乐 → 寻宝，所以消消乐做完能顺手把「参与消消乐」
+        # 换来的骰子投掉。单号一局、同号不会重复开。
+        times = body.get("times") or (load_policy().get("xxl") or {}).get("times", 5)
+        cmd = py("run_all.py", "--platform", "none", "--xxl",
+                 "--xxl-times", str(times), "--xunbao", "--xunbao-tasks")
+        if body.get("dry"):
+            cmd.append("--dry-run")
+        return _start("消消乐（全部账号并行，含寻宝）", cmd)
 
     # ---- token 管理 ----
     if act == "har_import":
@@ -1142,6 +1210,8 @@ def do_action(body: dict):
         }}
         # 转盘免费次数当天清零，默认开；界面勾掉才不自动抽
         patch["luck"] = bool(body.get("luck", True))
+        # 抽之前顺手把「加抽奖次数」的任务做掉（4 个任务 ≈ 2 次机会）
+        patch["luck_tasks"] = bool(body.get("luck_tasks", True))
         # 寻宝骰子同样当天作废；任务上报只涉及「参与天天大转盘」这类真做过的
         patch["xunbao"] = bool(body.get("xunbao", True))
         patch["coupon_world"] = bool(body.get("coupon_world", True))
@@ -1183,7 +1253,7 @@ def do_action(body: dict):
             return {"ok": False, "err": _NO_PYW_ERR}
         launcher = str(BASE / "run_hidden.py")
         kind = body.get("kind", "sign")
-        t = str(body.get("time") or "08:30").strip()
+        t = str(body.get("time") or "11:45").strip()
         # t 会插进单引号 PowerShell 字符串，不校验就能闭合引号注入任意命令
         if not re.fullmatch(r"\d{1,2}:\d{2}", t):
             return {"ok": False, "err": "时间格式应为 HH:MM"}
@@ -1318,6 +1388,8 @@ def build_state():
         "settings": load_global_settings(),
         "mail": {**(_load_json_safe(DATA / "mail_settings.json") or {}),
                  "password": "******" if (_load_json_safe(DATA / "mail_settings.json") or {}).get("password") else ""},
+        # 被吞掉的异常计数：排障时先看这里，就知道「是哪一处静默失败」
+        "diagnostics": {"swallowed": dict(SWALLOWED)},
     }
 
 
@@ -1332,6 +1404,20 @@ def award_platform(source) -> str:
     return "qwhdhub" if any(src.startswith(x) for x in QWHD_SOURCES) else "BASS"
 
 
+def _common_for_awards():
+    """取「口径函数」所在的 common 模块。
+
+    历史上这里干过一件脏活：打包后 `common.py` 是打包当天冻进 exe 的，
+    所以额外按文件路径再加载一份"磁盘版"给台账用。代价是内存里同时存在两份
+    common，其它函数（is_token_dead / save_policy …）仍用冻结版，规则只改了一半。
+
+    现在由 disk_imports 在启动时统一接管：`import common` 拿到的就是磁盘那份，
+    这个函数因此退化成「直接返回同一个模块」，只为兼容旧调用点保留。
+    """
+    import common as mod
+    return mod
+
+
 def _awards_view(limit=40) -> dict:
     """到账台账：只挑「到手可用」的，按天/按号汇总给前端。
 
@@ -1340,7 +1426,7 @@ def _awards_view(limit=40) -> dict:
     有门槛的券（充值/满减/手气红包）只计数、不进列表、不计入张数。
     """
     try:
-        import common as C
+        C = _common_for_awards()
     except Exception:
         return {"recent": [], "today": {}, "month": {}, "by_account": {}}
 
@@ -1439,11 +1525,20 @@ def _awards_view(limit=40) -> dict:
                                 and r.get("need_recharge") and not r.get("ignored")]}
 
 
+TOKEN_LIFE_STALE_MIN = 30  # 探针每 2 分钟一次，半小时没新样本即视为「探针已停」
+
+
 def _list_token_life() -> list:
     """列出各账号的 app_token 寿命探测结论。
 
     探测由计划任务 MobileTokenLifeProbe 每 2 分钟跑一次，状态落在
     gui_data/token_life/<尾号>.json。这里只读出来展示，不发任何请求。
+
+    文件里的 state 是**最后一次探测时**的结论，不是「现在」。探针停了以后
+    这个 alive 会被一直显示成绿标，看着就像凭证活了十几个小时（11-22 用户
+    就问过「4167 这次凭证存活这么久」——实际上它只活到 00:31，之后没再验过）。
+    所以这里算出 age_min，超过 TOKEN_LIFE_STALE_MIN 就把 state 降级为 stale，
+    前端据此改回落「上次跑任务」的结论，并对同样过期的那份再判一次陈旧。
     """
     out = []
     d = DATA / "token_life"
@@ -1452,15 +1547,30 @@ def _list_token_life() -> list:
     for f in sorted(d.glob("*.json")):
         try:
             o = load_json(f) or {}
-        except Exception:
+        except Exception as e:
+            _swallow("token_life.read", e)
             continue
         s = o.get("samples") or []
+        upd = str(o.get("updated") or "")
+        age = None
+        if upd:
+            try:
+                age = round((datetime.now() - datetime.fromisoformat(upd)).total_seconds() / 60)
+            except Exception as e:
+                _swallow("token_life.age", e)
+        state = o.get("state") or "unknown"
+        # 只降级 alive：失效是终态，旧结论不会随时间变得不成立，
+        # 而且它正是「该去重新抓包」的提示，不该被抹成「待复验」。
+        if age is not None and age > TOKEN_LIFE_STALE_MIN and state == "alive":
+            state = "stale"
         out.append({
             "key": f.stem,
             "phone": o.get("phone") or "",
-            "state": o.get("state") or "unknown",
+            "state": state,
+            "raw_state": o.get("state") or "unknown",
+            "age_min": age,
             "issued_at": o.get("issued_at") or "",
-            "updated": o.get("updated") or "",
+            "updated": upd,
             "conclusion": o.get("conclusion") or "",
             "last_ok": bool(s and s[-1].get("ok")),
             "samples": len(s),
@@ -1607,8 +1717,8 @@ def _list_seckill_sessions() -> list:
                 "left_min": left_min,
                 "keys": list((o.get("cookie") or {}).keys()),
             })
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow("token_probe.read", e)
     return out
 
 

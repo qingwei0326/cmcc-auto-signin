@@ -102,17 +102,35 @@ def feed_due(pol: dict) -> bool:
 
 
 def mark_mail_needed(accounts) -> None:
-    """票失效时打标记，邮箱监听只在看到这个标记后才去收 HAR。"""
+    """票失效时打标记，邮箱监听只在看到这个标记后才去收 HAR。
+
+    账号列表取**并集**：先发现 3239 失效、后一轮才发现 4167 失效时，
+    旧实现会把 3239 覆盖掉，提醒里就只剩一个号，另一个号白等一整天。
+    """
+    prev = (load_json(MAIL_NEED, {}) or {})
+    merged = list(dict.fromkeys(list(prev.get("accounts") or []) + list(accounts or [])))
     atomic_write_json(MAIL_NEED, {
         "needed": True,
         "at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "accounts": list(accounts or []),
+        "accounts": merged,
     }, indent=1)
 
 
 def mark_today_done() -> None:
     """今天所有任务都跑顺了：邮箱监听就不必再查。"""
     atomic_write_json(TODAY_DONE, {"date": datetime.date.today().isoformat()}, indent=1)
+
+
+def should_mark_done(platform: str, good: int, total: int) -> bool:
+    """这一轮跑完，算不算「今天的活儿已经干完」。
+
+    `--platform none`（只跑消消乐 / 寻宝这类）没碰签到，不能算：
+    一旦写了 today_done，mail_watch 会一整天认为「没事干」，
+    11:40 发来的 HAR 再也导不进来，中午的签到和秒杀就全空。
+    """
+    if total <= 0 or good != total:
+        return False
+    return str(platform or "") != "none"
 
 
 def mark_fed() -> None:
@@ -468,8 +486,13 @@ def run_wed(dry_run: bool) -> list:
     return results
 
 
-def run_xunbao(dry_run: bool, tasks: bool = False) -> list:
-    """环闽寻宝记：投掉现有骰子、开宝箱，中奖写进到账台账。"""
+def run_xunbao(dry_run: bool, tasks: bool = False,
+               did_xxl: bool = False, did_luck: bool = False) -> list:
+    """环闽寻宝记：投掉现有骰子、开宝箱，中奖写进到账台账。
+
+    `did_xxl` / `did_luck` 表示本轮已经玩过消消乐 / 抽过大转盘：
+    寻宝的加骰子任务里有这两项，只有真做过才允许上报换骰子。
+    """
     confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
     if not confs:
         print("环闽寻宝：没有福建账号，跳过。")
@@ -482,8 +505,12 @@ def run_xunbao(dry_run: bool, tasks: bool = False) -> list:
     print(f"\n环闽寻宝记 · {len(confs)} 个福建账号")
     args = []
     if tasks:
-        # 只报「参与天天大转盘」这类这一轮真做过的任务；好友助力不会被报
+        # 只报这一轮真做过的任务；好友助力永远不报
         args.append("--tasks")
+        if did_xxl:
+            args.append("--did-xxl")
+        if did_luck:
+            args.append("--did-luck")
     if dry_run:
         args.append("--dry-run")
     results = []
@@ -503,8 +530,12 @@ def run_xunbao(dry_run: bool, tasks: bool = False) -> list:
     return results
 
 
-def run_luck(dry_run: bool) -> list:
-    """用福建账号现有的次数抽奖，并逐个记录结果。"""
+def run_luck(dry_run: bool, tasks: bool = True) -> list:
+    """用福建账号抽奖。
+
+    tasks=True 时先刷「加抽奖次数」的任务（4 个任务实测能换 2 次），
+    再把次数抽完；False 就是老行为，只花已有次数。
+    """
     confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
     if not confs:
         print("优惠专区抽奖：没有福建账号，跳过。")
@@ -515,7 +546,7 @@ def run_luck(dry_run: bool) -> list:
         return [("luck", "优惠专区", False, 0)]
 
     print(f"\n优惠专区抽奖 · {len(confs)} 个福建账号")
-    args = ["--no-tasks"]
+    args = [] if tasks else ["--no-tasks"]
     if dry_run:
         args.append("--dry-run")
     results = []
@@ -544,7 +575,8 @@ def main():
                     help='传给 BASS 脚本的额外参数，写成 --extra="--roll"')
     ap.add_argument("--xxl", action="store_true", help="签完之后接着跑消消乐")
     ap.add_argument("--xxl-times", type=int, default=5, help="消消乐每个号玩几局，默认 5")
-    ap.add_argument("--luck", action="store_true", help="优惠专区使用已有转盘抽奖次数")
+    ap.add_argument("--luck", action="store_true",
+                    help="优惠专区：先做加次数任务，再把转盘次数抽完")
     ap.add_argument("--xunbao", action="store_true", help="环闽寻宝记：投掉现有骰子")
     ap.add_argument("--xunbao-tasks", action="store_true",
                     help="寻宝顺手上报「参与天天大转盘」任务换骰子")
@@ -579,6 +611,11 @@ def main():
     # 的 --login-only 被丢掉，保活任务变成了每 90 分钟真签到一次。
     extra_map = {"qwhd": [], "bass": args.extra.split() if args.extra else []}
     feed_injected = False   # 这一轮是否按策略注入了 --feed（成功后才记「今天已喂」）
+    # 策略读一次就够：bass 段落是喂养/任务这类子项，luck / xunbao 这些是顶层开关。
+    # 早先全从 policy["bass"] 里取，顶层开关永远是 None → 一律走默认 True，
+    # 结果「设置」里取消勾选不生效。
+    policy = load_policy()
+    luck_tasks = bool(policy.get("luck_tasks", True))
 
     # 只领每日奖励：只跑 BASS，且把 --daily-only 透传给 cmcc_fj.py
     if args.daily_only:
@@ -587,7 +624,7 @@ def main():
         extra_map["bass"].append("--daily-only")
         # 自动策略（控制台「自动策略」面板保存一次即可）：这一轮顺带喂养、阶段满了怎么办、
         # 领哪一档奖品。不读策略就等于回到「只领三档、不喂」的老行为。
-        pol = (load_policy().get("bass") or {})
+        pol = (policy.get("bass") or {})
         feed = int(pol.get("feed") or 0)
         feed_all = bool(pol.get("feed_all"))
         if (feed > 0 or feed_all) and feed_due(pol):
@@ -605,14 +642,14 @@ def main():
         if pol.get("tasks"):
             extra_map["bass"].append("--tasks")
         # 天天大转盘的免费次数当天不用就清零，跟着每日奖励一起抽完。
-        # 抽奖只消耗已有次数（run_luck 传 --no-tasks），不会替人做加次数任务。
-        args.luck = args.luck or bool(pol.get("luck", True))
+        # 加次数任务（4 个）由 luck_tasks 控制，默认顺手做掉——实测能从 0 换到 2 次。
+        args.luck = args.luck or bool(policy.get("luck", True))
         # 券来世界（App 首页访问活动）：每天一次 500 饲料，先打开页面再上报
-        if pol.get("coupon_world", True):
+        if policy.get("coupon_world", True):
             extra_map["bass"].append("--coupon-world")
         # 寻宝的骰子当天不用就作废，跟着每日奖励一起投掉
-        args.xunbao = args.xunbao or bool(pol.get("xunbao", True))
-        args.xunbao_tasks = args.xunbao_tasks or bool(pol.get("xunbao_tasks", True))
+        args.xunbao = args.xunbao or bool(policy.get("xunbao", True))
+        args.xunbao_tasks = args.xunbao_tasks or bool(policy.get("xunbao_tasks", True))
         if pol.get("fb_tasks"):
             extra_map["bass"].append("--fb-tasks")
 
@@ -684,13 +721,19 @@ def main():
         mark_fed()
 
     if args.luck:
-        results.extend(run_luck(args.dry_run))
-
-    if args.xunbao:
-        results.extend(run_xunbao(args.dry_run, tasks=args.xunbao_tasks))
+        results.extend(run_luck(args.dry_run, tasks=luck_tasks))
 
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))
+
+    # 寻宝放在转盘 / 消消乐之后：它的加骰子任务里就有「参与天天大转盘」「参与一起消消乐」，
+    # 先投骰子再去做任务，等于把本轮赚到的骰子留到明天（骰子当天不用就作废）。
+    # 只有这两件事**真的跑成功**才允许上报对应任务，失败时宁可少拿骰子也不空报。
+    if args.xunbao:
+        did_xxl = any(k == "xxl" and ok for k, _n, ok, _s in results)
+        did_luck = any(k == "luck" and ok for k, _n, ok, _s in results)
+        results.extend(run_xunbao(args.dry_run, tasks=args.xunbao_tasks,
+                                  did_xxl=did_xxl, did_luck=did_luck))
 
     if args.seckill:
         results.extend(run_seckill(args.dry_run, args.seckill_at))
@@ -713,7 +756,7 @@ def main():
     # 给邮箱监听用的触发标记：只有「票失效了、今天还没全做完」才值得去收 HAR
     if TOKEN_DEAD_ACCOUNTS:
         mark_mail_needed(TOKEN_DEAD_ACCOUNTS)
-    elif good == len(results):
+    elif should_mark_done(args.platform, good, len(results)):
         mark_today_done()
 
     # 推送通道配置：战报和失败提醒都用它

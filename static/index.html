@@ -256,7 +256,7 @@ select.inp{cursor:pointer}
           <div class="ops">
             <button class="btn pri" onclick="runAll('all')" title="全国和福建签到、领取可领饲料、使用大转盘已有次数">签到领福利</button>
             <button class="btn" onclick="runAll('qwhd')">只跑全国签到</button>
-            <button class="btn" onclick="runAll('bass')">只跑福建活动</button>
+            <button class="btn" onclick="runAll('bass')" title="福建签到 + 领每日奖励 + 环闽寻宝（顺带投骰子、报加骰子任务）">只跑福建活动</button>
             <label class="chk" title="只查询状态，不签到、不领取、不消耗"><input type="checkbox" id="dashDry">只读检查</label>
           </div>
         </div>
@@ -412,6 +412,7 @@ select.inp{cursor:pointer}
             不知道填几？先点「探测当前关卡」，探到的关卡号会填进设置页，去那里保存即生效。</div>
           <div class="frow">
             <button class="btn pri" onclick="runXxl()">开始执行</button>
+            <button class="btn" onclick="runXxlAll()" title="所有福建号并行跑，跑完顺手把寻宝骰子投掉（含「参与消消乐」换的骰子）">全部账号（并行）</button>
             <button class="btn" onclick="xxlQuery()">只读查剩余次数</button>
             <button class="btn" onclick="detectLevel()">探测当前关卡</button>
           </div>
@@ -485,14 +486,16 @@ select.inp{cursor:pointer}
             <button class="btn sm danger" onclick="cf('注销全部 7 个计划任务？注销后电脑不再自动签到。',unregAllSched)">全部注销</button>
             <button class="btn sm" data-nobusy onclick="refreshSched()">刷新状态</button>
           </div>
-          <div class="infobox">推荐方案：签到 <b>08:30</b> · 每日奖励 <b>06:00</b> 起每小时 · 会话保活每 90 分钟 ·
+          <div class="infobox">推荐方案：签到 <b>11:45</b> · 每日奖励每小时 · 会话保活每 90 分钟 ·
             会话刷新 <b>11:54</b> · 秒杀 <b>11:55</b> · 拓展活动 <b>12:05</b> · 票据探测每 2 分钟。
+            签到放在秒杀前 10 分钟：票据只活 1~2 小时，这样一张票覆盖全天所有要票的任务，
+            <b>每天只在 11:30~11:40 抓一次包</b>就够。
             一键配置会把这 7 个任务按上面的时刻一次注册好，覆盖当前触发时间；
             想单独调某一个，改下面表格里的「触发时刻」再点该行的注册即可。</div>
           <div class="scrollhint">← 表格可左右滑动，查看状态、下次运行与操作 →</div>
           <div id="schedBox"></div>
           <div class="infobox">每日奖励三档（150/250/350）之间必须间隔 60 分钟，一次跑只能领一档。
-            这个任务从设定时间起每小时检查一次、共 17 次，能领就领，领完自动空转。<br>
+            这个任务每小时检查一次（长期有效，不是只跑一天），能领就领，领完自动空转。<br>
             <b>会话保活</b>：每 90 分钟只试登录一次，不签到、不推送。实测长期凭证单独用服务端不认，
             登录终究依赖那张 30 分钟的票据，所以保活<b>续不了命</b>：它只是在票据有效期内多跑几次，
             一旦失败就说明该重新抓包了。<br>
@@ -580,8 +583,9 @@ select.inp{cursor:pointer}
             </select></div>
           <div class="frow"><label>天天大转盘</label>
             <label class="chk" title="福建移动「优惠专区 · 天天大转盘」每天有免费次数，当天不用就清零"><input type="checkbox" id="pLuck">自动把免费次数抽完</label>
+            <label class="chk" title="「请好友帮忙 / 逛移动爱购商城 / APP 中参与 / 浏览调研」四个任务，实测能把次数从 0 换到 2；带链接的会先真打开一次页面再上报"><input type="checkbox" id="pLuckTasks">顺手做加次数任务</label>
             <label class="chk" title="环闽寻宝记：骰子当天不用就作废，顺带投掉"><input type="checkbox" id="pXunbao">自动投掉寻宝骰子</label>
-            <span style="font-size:12px;color:var(--sub)">跟每日奖励同一次运行，只花已有次数，不替你做加次数任务</span>
+            <span style="font-size:12px;color:var(--sub)">跟每日奖励同一次运行；加次数任务一天只算一次，重跑不会重复薅</span>
           </div>
           <div class="frow"><label style="color:var(--warn)">伪造类</label>
             <label class="chk"><input type="checkbox" id="pTasks">养成浏览任务（空报）</label>
@@ -672,6 +676,7 @@ function tokenBadge(s){
   if(s==='ok')return '<span class="badge ok">凭证有效</span>';
   if(s==='expired')return '<span class="badge bad">凭证已过期</span>';
   if(s==='empty')return '<span class="badge na">凭证未配置</span>';
+  if(s==='stale')return '<span class="badge na" title="超过凭证有效期没有新的验证，上次的结论不能再当作现在有效">待复验</span>';
   return '<span class="badge na">凭证未校验</span>';}
 function ymd(d){const p=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());}
 function todayLocal(){return ymd(new Date());}
@@ -688,16 +693,32 @@ function fmtNum(v){return v==null?'—':v;}
 function flowTxt(v){return v>=1024?(v/1024).toFixed(2)+' GB':Math.round(v)+' MB';}
 function flowFmt(v){return v>=1024?(v/1024).toFixed(2)+'<small>GB</small>':Math.round(v)+'<small>MB</small>';}
 
+// 实测 appToken 寿命 90~135 分钟；超过这个窗口还没再验过，上次那句「有效」
+// 就不能当现在有效展示。BASS 的 bearer 按天走，给一整天余量。
+const TOKEN_TTL_MIN={qwhdhub:135,BASS:1560};
+// "11-22 00:31" → 距今多少分钟；跨年时（比现在还晚）往前推一年
+function minsAgo(mdhm){
+  const m=/^(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})$/.exec(String(mdhm||''));
+  if(!m)return null;
+  const now=new Date();
+  const d=new Date(now.getFullYear(),+m[1]-1,+m[2],+m[3],+m[4]);
+  if(d-now>864e5)d.setFullYear(d.getFullYear()-1);
+  return (now-d)/60000;}
 // 票据有效性以「每 2 分钟探测」为准：stats 里的 token_* 是上次跑任务时记下的，
 // 可能已经是几小时前的结论。总览卡片和「凭证与账号」表都走这一个函数，免得两页说法不一。
 function tokState(a,s){
   s=s||(STATE.stats||{})[a.key]||{};
   if(a.token_state==='empty')return 'empty';
-  if(a.plat==='qwhdhub'){
-    const live=(STATE.token_life||[]).find(x=>x.key===a.key);
-    if(live&&live.state==='alive')return 'ok';
-    if(live&&live.state==='expired')return 'expired';}
-  return (a.plat==='qwhdhub'?s.token_qwhd:s.token_bass)||'unchecked';}
+  // 探针最近半小时内的结论最可信（后端已把更早的一律降级成 stale）
+  const live=(STATE.token_life||[]).find(x=>x.key===a.key);
+  if(live&&live.state==='alive')return 'ok';
+  if(live&&live.state==='expired')return 'expired';
+  // 探针没在跑：回落上次跑任务时的结论。只有「有效」需要判时效——
+  // 失效是终态，旧结论不会随时间变得不成立，「已过期」正好提示去重新抓包。
+  const st=(a.plat==='qwhdhub'?s.token_qwhd:s.token_bass)||'unchecked';
+  const age=minsAgo(s.last_run);
+  if(st==='ok'&&age!==null&&age>(TOKEN_TTL_MIN[a.plat]||TOKEN_TTL_MIN.qwhdhub))return 'stale';
+  return st;}
 function render(){
   if(!STATE)return;
   const S=STATE.stats, accts=STATE.raw_accounts;
@@ -1176,6 +1197,7 @@ function renderPolicy(){
     $('pTasks').checked=!!b.tasks;
     $('pFb').checked=!!b.fb_tasks;
     if($('pLuck'))$('pLuck').checked=(p.luck!==false);
+    if($('pLuckTasks'))$('pLuckTasks').checked=(p.luck_tasks!==false);
     if($('pXunbao'))$('pXunbao').checked=(p.xunbao!==false);
     if($('pCouponWorld'))$('pCouponWorld').checked=(p.coupon_world!==false);
     const x=p.xxl||{};
@@ -1212,6 +1234,7 @@ function feedAllToggle(p){
 async function savePolicy(){
   const body={action:'policy_save',
     luck:($('pLuck')?$('pLuck').checked:true),
+    luck_tasks:($('pLuckTasks')?$('pLuckTasks').checked:true),
     xunbao:($('pXunbao')?$('pXunbao').checked:true),
     coupon_world:($('pCouponWorld')?$('pCouponWorld').checked:true),
     bass:{feed:$('pFeedAll').checked?0:(Number(V('pFeed'))||0),
@@ -1334,7 +1357,7 @@ function renderTodo(){
     const signed=plat==='qwhdhub'?st.today_signed_qwhd:st.today_signed_bass;
     if(signed!==todayLocal())noSign.push(mask(g.phone)+'（'+(PLAT_CN[plat]||plat)+'）');
   }));
-  if(noSign.length)items.push(['sub',`今日还没签到：${noSign.join('、')} —— 08:30 的任务会自动补，也可在下方卡片手动点`]);
+  if(noSign.length)items.push(['sub',`今日还没签到：${noSign.join('、')} —— 11:45 的任务会自动补，也可在下方卡片手动点`]);
   // 下一个「你会在意」的自动任务：探测任务每 2 分钟一次，放进来只会刷屏
   const nx=(STATE.sched||[]).filter(x=>x.next&&x.name!=='MobileTokenLifeProbe')
     .sort((a,b)=>(a.next<b.next?-1:1))[0];
@@ -1421,7 +1444,7 @@ async function refreshSched(){
   if(r&&r.sched){STATE.sched=r.sched;updSched();toast('已刷新任务状态');}
 }
 // 推荐方案：与后端 SCHED_PLAN 一致，一键把这 7 个都配好，不用逐个点
-const SCHED_PLAN=[["sign","08:30"],["daily","06:00"],["keepalive","00:00"],
+const SCHED_PLAN=[["sign","11:45"],["daily","06:00"],["keepalive","00:00"],
                   ["sess","11:54"],["seckill","11:55"],["games","12:05"],["probe","00:00"]];
 async function applyAllSched(){
   const cn=k=>(SCHED.find(x=>x.kind===k)||{}).cn||k;
@@ -1446,13 +1469,29 @@ async function unregSched(name){
   await act({action:'sched_unreg',name:name});
   setTimeout(refreshSched,2000);
 }
-async function pullState(){
-  try{STATE=await(await fetch('/api/state')).json();}
+let _stateFail=0;
+async function pullState(visible){
+  let raw;
+  try{raw=await(await fetch('/api/state')).json();}
   catch(e){
     // 服务连不上时要说出来，不能停在旧数据上装没事
+    _stateFail++;
+    _stateSig='';   // 恢复后必须重绘一次，否则「连不上」的提示会一直挂着
     $('envBox').innerHTML='<div class="envbar">连不上控制台服务（'+esc(e&&e.message||e)+
       '）。请确认程序还在运行，再刷新本页。</div>';
+    // 连续 5 次都拿不到（空闲节奏下约 75 秒）：多半是窗口这一侧卡住了，自愈一次
+    if(_stateFail>=5&&!_stateFail.reloaded){_stateFail.reloaded=1;location.reload();}
     return;}
+  _stateFail=0;
+  // 内容没变就不重绘。空闲时 /api/state 几乎每次都一样，跳过整页重建能省掉
+  // 绝大部分 DOM 抖动；任务在跑时 elapsed 会变，自然照常重绘。
+  const sig=JSON.stringify(raw);
+  STATE=raw;
+  if(sig===_stateSig){
+    setBusy(STATE.task.running,STATE.task.label);
+    return;
+  }
+  _stateSig=sig;
   render();
   setBusy(STATE.task.running,STATE.task.label);
 }
@@ -1509,8 +1548,13 @@ function runXxl(){if(!confirm('消消乐属于伪造游戏通关成绩，中奖�
        level:(x.level!=null?x.level:49),star:(x.star!=null?x.star:3),
        times:(x.times!=null?x.times:5),gap:(x.gap!=null?x.gap:12)})
     .then(r=>{if(!r||!r.ok)capDrop();});}
-function xxlQuery(){
+// 多账号并行：后端走 run_all 的线程池（每号一个子进程），跑完顺手投寻宝骰子
+function runXxlAll(){if(!confirm('所有福建号并行跑消消乐（每号按策略局数），跑完顺手投寻宝骰子。确定？'))return;
+  const x=((STATE&&STATE.policy)||{}).xxl||{};
   capStart('xxl');
+  act({action:'xxl_all',times:(x.times!=null?x.times:5)})
+    .then(r=>{if(!r||!r.ok)capDrop();});}
+function xxlQuery(){  capStart('xxl');
   act({action:'xxl_run',file:V('xxlFile'),dry:1}).then(r=>{if(!r||!r.ok)capDrop();});}
 // 只读查一次真实关卡：关卡已改为运行时自动读取，不需要再回填/手填
 function detectLevel(){
@@ -1598,7 +1642,7 @@ async function pullLogs(){
       else if(/▶|■|——|⚠/.test(l.line))d.lastChild.className='hl';
       else if(l.line.startsWith('$'))d.lastChild.className='dim';
       cons.appendChild(d);});
-    while(cons.children.length>2500)cons.removeChild(cons.firstChild);
+    while(cons.children.length>1200)cons.removeChild(cons.firstChild);
     $('consoleEmpty').style.display='none';
     if(atBottom)cons.scrollTop=cons.scrollHeight;}
   const wasRunning=lastRunning; lastRunning=!!r.running;
@@ -1620,7 +1664,30 @@ function zoomBy(d){
 }
 applyZoom();
 (function(){const h=location.hash.slice(1);const b=h&&document.querySelector('nav button[data-p="'+h+'"]');if(b)nav(b);})();
-pullState();pullLogs();setInterval(pullLogs,1200);setInterval(pullState,6000);
+pullState();pullLogs();
+// 轮询节奏跟着「有没有任务在跑」走：空闲时 6 秒一次的全量重绘，开一整天
+// 就是几万次 DOM 重建，WebView2 会越跑越卡（点按钮没反应的元凶之一）。
+// 空闲 15 秒、有任务 3 秒、窗口最小化时 60 秒，日志同理。
+let _stateSig='',_lastActivity=Date.now();
+['click','keydown','mousemove','wheel'].forEach(ev=>
+  document.addEventListener(ev,()=>{_lastActivity=Date.now();},{passive:true}));
+(async function tick(){
+  const hidden=document.visibilityState==='hidden';
+  const running=!!(STATE&&STATE.task&&STATE.task.running);
+  await pullState(!hidden);
+  await pullLogs();
+  setTimeout(tick, hidden?60000:(running?3000:15000));
+})();
+// 页面自愈：开太久（>6 小时）且没任务在跑，就整页重载一次，
+// 把 WebView2 里累积的 JS 堆和 DOM 清干净。不打断正在跑的任务。
+setInterval(()=>{
+  if(STATE&&STATE.task&&STATE.task.running)return;
+  if(Date.now()-_lastActivity<60000)return;         // 正在操作就别刷
+  location.reload();
+},6*60*60*1000);
+window.addEventListener('error',e=>{
+  try{toast('页面脚本出错：'+(e.message||'未知'),true);}catch(_){}
+});
 </script>
 </body>
 </html>

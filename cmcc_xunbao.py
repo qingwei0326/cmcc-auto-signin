@@ -60,6 +60,30 @@ UA_APP = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/60
 ASSIST_TASK = "TASK_1501"
 SKIP_TASKS = {ASSIST_TASK, "TASK_1502"}
 
+# 加骰子任务里有两类「要真去做别的事」才成立：
+#   · 参与一起消消乐活动 → 这一轮跑过消消乐（run_all 传 --did-xxl）
+#   · 参与天天大转盘     → 这一轮抽过转盘（run_all 传 --did-luck）
+# task/report 只递 taskCode，服务端不校验你到底做没做，所以这层判断只能在本地做，
+# 没做过的任务一律不报（白拿骰子既不公平，也容易把这个号标记成异常）。
+XXL_TASK = "TASK_1515"
+XXL_WORD = "消消乐"
+LUCK_WORD = "大转盘"
+ASSIST_WORD = "助力"
+NOTIFY_WORD = "消息提醒"
+
+
+def task_reportable(task, did_xxl=False, did_luck=False):
+    """这个加骰子任务能不能替用户上报（前提：本轮确实做过对应动作）。"""
+    code = str(task.get("taskCode") or "")
+    name = str(task.get("taskName") or "")
+    if code in SKIP_TASKS or ASSIST_WORD in name or NOTIFY_WORD in name:
+        return False
+    if code == XXL_TASK or XXL_WORD in name:
+        return bool(did_xxl)
+    if LUCK_WORD in name:
+        return bool(did_luck)
+    return True
+
 CELL_NAMES = {
     "START": "起点", "END": "终点", "FUDAI": "福袋", "KOI": "锦鲤",
     "REST": "歇脚", "EVENT": "事件", "MARKET": "集市",
@@ -183,8 +207,13 @@ def run_one(tag, phone_hint, tok, args):
         print("  加骰子任务：")
         for t in tasks:
             done = str(t.get("status")) == "1"
+            usable = task_reportable(t, getattr(args, "did_xxl", False),
+                                     getattr(args, "did_luck", False))
+            note = ""
+            if not done and not usable:
+                note = "　（本轮没做过，不报）"
             print(f"    {'✓' if done else '·'} {t.get('taskName')}  +{t.get('rewardDice')} 个"
-                  f"  {t.get('limitType')}×{t.get('limitCount')}")
+                  f"  {t.get('limitType')}×{t.get('limitCount')}{note}")
 
     # ---- 我的奖品 ----
     prize_state = {}
@@ -215,7 +244,9 @@ def run_one(tag, phone_hint, tok, args):
     # ---- 上报任务（可选）----
     if args.tasks:
         todo = [t for t in tasks
-                if str(t.get("status")) != "1" and t.get("taskCode") not in SKIP_TASKS]
+                if str(t.get("status")) != "1"
+                and task_reportable(t, getattr(args, "did_xxl", False),
+                                    getattr(args, "did_luck", False))]
         if todo:
             print("  [上报任务]")
         for t in todo:
@@ -248,15 +279,51 @@ def run_one(tag, phone_hint, tok, args):
                 record_award(phone, "环闽寻宝", r.get("prizeName") or "")
             time.sleep(random.uniform(1.0, 1.6))
 
-    # ---- 投骰子 ----
-    rolls, win_prizes = 0, []
-    for i in range(args.max):
-        if not can_roll or dice <= 0:
+    # ---- 投骰子 + 开宝箱 ----
+    # 走到终点后地图会**重置回第 1 格、开始新一圈**（实测 currentSeq 回到 1、
+    # canRoll 恢复 true、骰子还在），所以「到达终点」不等于「本轮结束」：
+    # 要先开宝箱，再把剩下的骰子接着投下一圈。旧实现在终点就 break，
+    # 余下的骰子当天作废——用户 2026-11-22 指出过这个坑。
+    rolls, win_prizes, treasures = 0, [], []
+    opened = set()          # 已经开过箱的 (圈内位置)，防止服务端延迟时反复开箱
+
+    def read_state():
+        d3 = (api.call("activity/init").get("data") or {})
+        return (int(d3.get("currentSeq") or 0), int(d3.get("diceBalance") or 0),
+                bool(d3.get("canRoll")), bool(d3.get("treasureClaimRequired")))
+
+    def open_treasure():
+        r = api.call("treasure/open")
+        if not r.get("ok"):
+            print(f"  [宝箱] 失败 code={r.get('code')} {r.get('msg')}")
+            return ""
+        nm = (r.get("data") or {}).get("prizeName") or ""
+        print(f"  [宝箱] 开出：{nm or '(未返回奖品名)'}")
+        if nm:
+            record_award(phone, "环闽寻宝·藏宝阁", nm)
+            treasures.append(nm)
+        return nm
+
+    guard = 0
+    while guard < args.max * 3 + 5:
+        guard += 1
+        need_open = claim_req or bool(total and seq >= total and not can_roll)
+        if need_open:
+            spot = (seq, total)
+            if spot in opened:
+                break            # 开过了但服务端没重置，别死循环
+            opened.add(spot)
+            open_treasure()
+            seq, dice, can_roll, claim_req = read_state()
+            print(f"    → 开箱后回到第 {seq}/{total} 格，骰子 {dice} 个")
+            time.sleep(random.uniform(1.0, 1.8))
+            continue
+        if rolls >= args.max or not can_roll or dice <= 0:
             break
         r = api.call("dice/roll")
         code = str(r.get("code"))
         if not r.get("ok"):
-            print(f"    [{i + 1}] 投掷失败 code={code} {r.get('msg')}")
+            print(f"    [{rolls + 1}] 投掷失败 code={code} {r.get('msg')}")
             if code in ("401", "-1"):
                 break
             time.sleep(2.0)
@@ -272,7 +339,7 @@ def run_one(tag, phone_hint, tok, args):
             ev = mv.get("event") or {}
             if ev.get("eventDesc"):
                 events.append(ev.get("eventDesc"))
-        line = (f"    [{i + 1}] 🎲{dd.get('dicePoint')}  "
+        line = (f"    [{rolls}] 🎲{dd.get('dicePoint')}  "
                 f"{dd.get('fromSeq')}→{dd.get('finalSeq')}")
         cell2 = next((c for c in board if c.get("seq") == dd.get("finalSeq")), None)
         if cell2:
@@ -285,30 +352,19 @@ def run_one(tag, phone_hint, tok, args):
             win_prizes.append(nm)
             record_award(phone, "环闽寻宝", nm)
         if dd.get("reachedEnd"):
-            print("        → 已到终点")
+            print("        → 到达终点，开宝箱后进入下一圈")
 
         # 每投一次都重新读状态：事件/宝箱会改变骰子数和可投性
-        d2 = (api.call("activity/init").get("data") or {})
-        seq = int(d2.get("currentSeq") or seq)
-        dice = int(d2.get("diceBalance") or 0)
-        can_roll = bool(d2.get("canRoll"))
-        claim_req = bool(d2.get("treasureClaimRequired"))
+        seq, dice, can_roll, claim_req = read_state()
         time.sleep(random.uniform(1.5, 2.5))
 
-    # ---- 开宝箱（走到终点才有）----
-    treasure_prize = ""
-    if claim_req or (can_roll is False and seq >= total and total):
-        r = api.call("treasure/open")
-        if r.get("ok"):
-            td = r.get("data") or {}
-            treasure_prize = td.get("prizeName") or ""
-            print(f"  [宝箱] 开出：{treasure_prize or '(未返回奖品名)'}")
-            if treasure_prize:
-                record_award(phone, "环闽寻宝·藏宝阁", treasure_prize)
-        else:
-            print(f"  [宝箱] 失败 code={r.get('code')} {r.get('msg')}")
+    # 兜底：骰子用完了但正好停在终点（上面循环因 rolls 达上限先退出）
+    if (claim_req or (total and seq >= total and not can_roll)) \
+            and (seq, total) not in opened:
+        open_treasure()
+        seq, dice, can_roll, claim_req = read_state()
 
-    all_win = new_prizes + win_prizes + ([treasure_prize] if treasure_prize else [])
+    all_win = new_prizes + win_prizes + treasures
     save_state(phone, {
         "phone": phone, "seq": seq, "total": total, "dice": dice,
         "can_roll": can_roll, "treasure_claim_required": claim_req,
@@ -332,6 +388,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只查进度，不投骰子")
     ap.add_argument("--tasks", action="store_true",
                     help="上报跳转类任务换骰子（不含好友助力）")
+    ap.add_argument("--did-xxl", action="store_true",
+                    help="本轮真跑过消消乐，允许上报「参与一起消消乐」任务")
+    ap.add_argument("--did-luck", action="store_true",
+                    help="本轮真抽过天天大转盘，允许上报「参与天天大转盘」任务")
     ap.add_argument("--max", type=int, default=20, help="每号本次最多投几次，默认 20")
     ap.add_argument("--invite", action="store_true", help="只生成好友助力链接，不投骰子")
     args = ap.parse_args()

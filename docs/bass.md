@@ -265,6 +265,26 @@ GET /bass-preferentialAreaServer/luck/qrySubscription     → 订阅状态
   - `POST bass-commonActServer/marathon/H5Api/getTaskInfo` body `{appId,timestamp,id:"100106"}` → 「浏览天天大转盘」，`browseTime:1`（马拉松式任务体系）。
   - `POST bass-commonAreaServer/H5Api/evaluate/evaluateInfo` body `{appId,timestamp,pageType:13,evaluatePageTitle}` → 「请您评一评」，文案写着「提交后可随机获得奖励」，提交接口未抓到，暂不实现。
 
+**2026-11-22 加次数任务实测（此前一直被 `--no-tasks` 跳过）**
+
+四个任务逐个 `doTask` 全部回 `0000`，剩余次数 **0 → 2**：
+
+| taskName | taskType | taskUrl | 备注 |
+|---|---|---|---|
+| 请好友帮忙 | 3 | null | 没有对端账号，只能直接上报；`--skip-assist` 可跳过 |
+| 中国移动APP中参与 | 2 | null | 同上 |
+| 浏览调研页面 | 5 | 有 | `cycle:1`，先 GET 页面再上报 |
+| 逛移动爱购商城 | 5 | 有 | 先 GET 页面再上报 |
+
+- `complete:true` 表示服务端已记完成，再报也**不会**多给次数，必须跳过
+- 「请好友帮忙」是例外：`doTask` 回 `0000 成功`，但**次数不涨、`complete` 一直是
+  false** —— 它确实要真人点一下才算。重复上报无害但也没用，嫌脏就加 `--skip-assist`
+- 任务**一天只算一次**，重跑 `run_luck` 不会重复薅到次数
+- `doTask` 偶尔回 `401 未登陆`（同一张 bearer 前两分钟 `index` 还是好的），
+  说明它比 `index` 更早失效；遇到就整轮收手，别继续抽
+- 之前 `run_all.run_luck` 写死 `--no-tasks`（README 也写着"不替人做加次数任务"），
+  等于每天白扔 2 次抽奖机会。现在由策略项 `luck_tasks` 控制，默认开
+
 ---
 
 ## 一起消消乐 `bass-commonAreaServer`
@@ -323,6 +343,35 @@ GET /bass-commonAreaServer/H5Api/hmxb/treasure/open
 ```
 
 掷骰子会消耗次数，属游戏内正常消耗。
+
+**加骰子任务（2026-11-22 实测）**
+
+`task/list` 返回的任务里，`task/report` 只递 `taskCode`，服务端**不校验你是否真做过**，
+所以「报不报」的判断只能放在本地 `cmcc_xunbao.task_reportable()`：
+
+| taskCode | 任务名 | 奖励 | 上报条件 |
+|---|---|---|---|
+| TASK_1501 | 好友助力（每日最多3次） | +1 | **永不自动上报**，要真人点链接 |
+| TASK_1502 | 打开消息提醒 | +5 | 不报，要真去开通知权限 |
+| TASK_1515 | 参与一起消消乐活动 | +1 | 本轮 `--xxl` **真跑成功**才报（`--did-xxl`） |
+| — | 参与天天大转盘 | +1 | 本轮抽过转盘才报（`--did-luck`） |
+
+顺序上，`run_all` 把寻宝排在**转盘 / 消消乐之后**：先投骰子再去做任务，
+等于把本轮赚到的骰子留到明天，而骰子当天不用就作废。
+「只跑福建活动」与「签到领福利」现在都自带 `--xunbao --xunbao-tasks`，
+控制台消消乐页另有「全部账号（并行）」按钮，走 `run_all --platform none --xxl --xunbao`。
+
+**到终点不等于本轮结束（2026-11-22 实测）**
+
+走到第 29/29 格后，服务端把地图**重置回第 1 格**：`activity/init` 返回
+`currentSeq=1`、`canRoll=true`，`diceBalance` 保留。所以顺序是
+「投到终点 → `treasure/open` 开宝箱 → 重读状态 → 剩下的骰子接着投下一圈」。
+
+注意终点那一瞬间 `canRoll` 是 **false**（等开箱），旧实现只看这个快照就 `break`，
+剩下的骰子当天白扔。现改为循环里处理开箱：开完重读，`canRoll` 恢复就继续投；
+用 `(seq, total)` 记「这一圈已开过箱」，服务端延迟未重置时只开一次、不死循环。
+
+
 
 ### 补充接口（2026-11-20 抓包新增）
 

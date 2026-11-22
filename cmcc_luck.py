@@ -15,11 +15,18 @@ token 说明：
     · loginByHangYan 入参的 SSO ticket（YZsidssolg…）一次性，无法复用
     · 它换来的 bearer 寿命较长（实测 18 分钟后仍可用）
 
+加次数任务（taskList → doTask）：
+    taskType 3 = 请好友帮忙（没有对端账号，只能直接上报）
+    taskType 2 = 中国移动APP中参与
+    taskType 5 = 浏览类，带 taskUrl（先真打开一次页面再上报，和券来世界同一套路）
+    实测一次全刷能把次数从 0 换到 2；complete=true 的已经在服务端记过，跳过。
+
 用法：
     python cmcc_luck.py                 # 所有 configs_fj 账号：刷任务 + 抽奖
     python cmcc_luck.py --dry-run       # 只看剩余次数和任务，不抽
     python cmcc_luck.py --key fj2       # 只跑某一个配置
     python cmcc_luck.py --no-tasks      # 不刷任务，只抽现有次数
+    python cmcc_luck.py --skip-assist   # 刷任务，但跳过「请好友帮忙」
     python cmcc_luck.py --max 5         # 每号最多抽 5 次
     python cmcc_luck.py --har x.har     # 改用 HAR 里的会话（兜底）
 """
@@ -156,6 +163,47 @@ def save_state(phone, info, draws=0, wins=0):
         pass
 
 
+# ---------------------------------------------------------------- 加次数任务
+
+TASK_ASSIST = 3          # taskType=3 请好友帮忙（没有对端账号，只能空报）
+
+
+def do_tasks(get, visit, tasks, skip_assist=False):
+    """把「加抽奖次数」的任务做掉。返回 {"done", "skip", "expired"}。
+
+    设计取舍：
+    · complete=true 的跳过 —— 服务端已经记过账，再报一次也不会多给次数
+    · 带 taskUrl 的先真打开一次页面再上报，尽量走和真人一样的路径
+    · 不带 taskUrl 的（请好友帮忙 / APP 中参与）只能直接上报，实测同样 0000
+    · 碰到 401 立刻收手 —— 后面抽奖也一定失败，别把次数白耗在重试上
+    """
+    done, skip, expired = [], [], False
+    for t in tasks:
+        name = str(t.get("taskName") or "")
+        tt, tid = t.get("taskType"), t.get("id")
+        if t.get("complete"):
+            skip.append((name, "服务端已记完成"))
+            continue
+        if skip_assist and int(tt or 0) == TASK_ASSIST:
+            skip.append((name, "好友助力，已跳过"))
+            continue
+        url = t.get("taskUrl")
+        if isinstance(url, str) and url:
+            visit(url)
+        r = get(f"doTask/{tt}/{tid}")
+        code = str(r.get("code"))
+        if code == "0000":
+            done.append(name)
+        elif code in ("401", "-1"):
+            expired = True
+            skip.append((name, "token 失效"))
+            break
+        else:
+            skip.append((name, f"code={code} {r.get('msg') or ''}".strip()))
+        time.sleep(random.uniform(1.2, 2.0))
+    return {"done": done, "skip": skip, "expired": expired}
+
+
 # ---------------------------------------------------------------- 单账号流程
 
 def run_one(tag, phone_hint, tok, args):
@@ -169,6 +217,16 @@ def run_one(tag, phone_hint, tok, args):
             return s.get(API + path, params=p, timeout=20).json()
         except Exception as e:
             return {"code": "-1", "msg": f"请求异常: {e}"}
+
+    def visit(url):
+        """浏览类任务：先真的打开一次目标页。打不开也照常上报，不因此丢掉次数。"""
+        u = str(url).replace("{token}", tok)
+        try:
+            s.get(u, timeout=15)
+            time.sleep(random.uniform(0.6, 1.2))
+            return True
+        except Exception:
+            return False
 
     print("\n" + "-" * 62)
     print(f"【{tag}】{mask_phone(phone_hint)}")
@@ -187,7 +245,14 @@ def run_one(tag, phone_hint, tok, args):
     tasks = d.get("taskList") or []
     print(f"  账号 {mask_phone(phone) or '(未返回)'}   剩余次数 {surplus}")
     if tasks:
-        print("  可加次数任务：" + "、".join(str(t.get("taskName")) for t in tasks))
+        todo = [t for t in tasks if not t.get("complete")]
+        done = [t for t in tasks if t.get("complete")]
+        if todo:
+            print("  可加次数任务：" + "、".join(str(t.get("taskName")) for t in todo))
+        if done:
+            print("  今天已做过：" + "、".join(str(t.get("taskName")) for t in done))
+        if not todo:
+            print("  加次数任务今天已经做完了")
 
     sub = get("qrySubscription").get("data") or {}
     print(f"  订阅状态 subscriptionStatus={sub.get('subscriptionStatus')}  first={sub.get('first')}")
@@ -197,19 +262,24 @@ def run_one(tag, phone_hint, tok, args):
                            "tasks": [t.get("taskName") for t in tasks]})
         return {"tag": tag, "phone": phone, "surplus": surplus, "draws": 0, "wins": 0}
 
-    # ---- 刷任务 ----
+    # ---- 刷任务（加抽奖次数）----
     if tasks and not args.no_tasks:
         print("  [刷任务]")
-        for t in tasks:
-            tt, tid, name = t.get("taskType"), t.get("id"), t.get("taskName")
-            r = get(f"doTask/{tt}/{tid}")
-            ok = str(r.get("code")) == "0000"
-            print(f"    {'OK ' if ok else '!! '} {name}  code={r.get('code')} {'' if ok else r.get('msg')}")
-            time.sleep(random.uniform(1.2, 2.0))
-        time.sleep(1.5)
-        d2 = get("index").get("data") or {}
-        surplus = int(d2.get("surplusLuckCount") or 0)
-        print(f"    刷完任务后剩余次数 {surplus}")
+        rep = do_tasks(get, visit, tasks, skip_assist=args.skip_assist)
+        for name in rep["done"]:
+            print(f"    OK  {name}")
+        for name, why in rep["skip"]:
+            print(f"    --  {name}  {why}")
+        if rep["expired"]:
+            print("  token 在刷任务途中失效，放弃这一轮（新票到手再跑）。")
+            save_state(phone, {"phone": phone, "surplus": surplus})
+            return {"tag": tag, "phone": phone, "surplus": surplus,
+                    "draws": 0, "wins": 0, "skip": True}
+        if rep["done"]:
+            time.sleep(1.5)
+            d2 = get("index").get("data") or {}
+            surplus = int(d2.get("surplusLuckCount") or 0)
+            print(f"    刷完 {len(rep['done'])} 个任务，剩余次数 {surplus}")
 
     if surplus <= 0:
         print("  没有可抽次数，结束。")
@@ -271,6 +341,8 @@ def main():
     ap.add_argument("--har", default=None, help="用 HAR 里的会话（兜底），不指定则读配置里的 bearer")
     ap.add_argument("--dry-run", action="store_true", help="只查状态，不做任务不抽奖")
     ap.add_argument("--no-tasks", action="store_true", help="不刷任务，只抽现有次数")
+    ap.add_argument("--skip-assist", action="store_true",
+                    help="刷任务，但跳过「请好友帮忙」（没有对端账号，只能空报）")
     ap.add_argument("--max", type=int, default=20, help="每个号最多抽几次，默认 20")
     args = ap.parse_args()
 

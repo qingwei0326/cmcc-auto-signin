@@ -9,6 +9,7 @@
 """
 
 import ast
+import contextlib
 import io
 import json
 import os
@@ -63,7 +64,7 @@ def _fake_config_dir(tmp, name):
 # ======================================================================
 
 class TestRunAllRouting(unittest.TestCase):
-    def _run(self, argv):
+    def _run(self, argv, policy=None):
         cmds = []
 
         def fake(cmd, **kw):
@@ -74,11 +75,16 @@ class TestRunAllRouting(unittest.TestCase):
             platforms = {k: dict(v) for k, v in run_all.PLATFORMS.items()}
             platforms["qwhd"]["dir"] = _fake_config_dir(tmp, "configs")
             platforms["bass"]["dir"] = _fake_config_dir(tmp, "configs_fj")
-            with mock.patch.object(run_all, "PLATFORMS", platforms), \
-                 mock.patch.object(run_all.subprocess, "run", fake), \
-                 mock.patch.object(sys, "argv", ["run_all.py", *argv]), \
-                 mock.patch.object(run_all, "notify"), \
-                 redirect_stdout(io.StringIO()):
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(run_all, "PLATFORMS", platforms))
+                stack.enter_context(mock.patch.object(run_all.subprocess, "run", fake))
+                stack.enter_context(mock.patch.object(sys, "argv", ["run_all.py", *argv]))
+                stack.enter_context(mock.patch.object(run_all, "notify"))
+                stack.enter_context(redirect_stdout(io.StringIO()))
+                if policy is not None:
+                    # 传了策略就整份替换，用例结果不该取决于用户此刻勾了哪些开关
+                    stack.enter_context(mock.patch.object(run_all, "load_policy",
+                                                          lambda: policy))
                 run_all.main()
         return cmds
 
@@ -98,15 +104,38 @@ class TestRunAllRouting(unittest.TestCase):
         self.assertTrue(bass)          # 每日奖励那一轮必须真跑 BASS
         for c in bass:
             self.assertIn("--daily-only", c)
-        # 转盘免费次数跟着这一轮一起抽（cmcc_luck.py 只花已有次数）
+        # 转盘免费次数跟着这一轮一起抽
         self.assertTrue(any("cmcc_luck.py" in c[1] for c in cmds))
 
-    def test_luck_uses_existing_draws_and_respects_dry_run(self):
+    def test_luck_also_does_add_count_tasks_by_default(self):
+        """默认要把「加次数」任务做掉。
+
+        旧实现写死 `--no-tasks`，每天白扔 2 次机会：4 个任务全回 0000、
+        剩余次数 0 → 2（2026-11-22 实测）。
+        """
         cmds = self._run(["--platform", "all", "--luck", "--dry-run"])
         self.assertEqual([Path(c[1]).name for c in cmds],
                          ["cmcc_sign.py", "cmcc_fj.py", "cmcc_luck.py"])
         conf = Path(cmds[1][3])
-        self.assertEqual(cmds[-1][2:], ["--key", conf.stem, "--no-tasks", "--dry-run"])
+        self.assertEqual(cmds[-1][2:], ["--key", conf.stem, "--dry-run"])
+        self.assertNotIn("--no-tasks", cmds[-1])
+
+    def test_luck_can_turn_off_add_count_tasks(self):
+        """「设置」里取消勾选后必须真的不刷，否则开关是假的。"""
+        cmds = self._run(["--platform", "all", "--luck", "--dry-run"],
+                         policy={"bass": {}, "luck": True, "luck_tasks": False})
+        self.assertIn("--no-tasks", cmds[-1])
+
+    def test_top_level_switches_are_not_read_from_bass_section(self):
+        """luck / xunbao 是顶层开关，早先从 policy["bass"] 里取，永远走默认 True。"""
+        cmds = self._run(["--daily-only"],
+                         policy={"bass": {}, "luck": False, "xunbao": False,
+                                 "coupon_world": False, "xunbao_tasks": False})
+        names = [Path(c[1]).name for c in cmds]
+        self.assertNotIn("cmcc_luck.py", names)
+        self.assertNotIn("cmcc_xunbao.py", names)
+        bass = [c for c in cmds if "cmcc_fj.py" in c[1]][0]
+        self.assertNotIn("--coupon-world", bass)
 
     def test_extra_only_goes_to_bass(self):
         """--extra 是给 BASS 的，不能塞给 qwhd（argparse 会直接报错）。
@@ -327,6 +356,99 @@ class TestTokenLifeProbe(unittest.TestCase):
         text = PT._conclude(rec)
         self.assertIn("09:05:00", text)
         self.assertNotIn("08:32:00", text)
+
+    def test_stale_probe_result_is_downgraded(self):
+        """探针停掉后，文件里那声 alive 只是历史结论，不能一直当「现在有效」。
+
+        11-22 用户看到 4167 显示「凭证有效」以为是活了十几个小时，实际是
+        11-21 23:58 最后一次探测留下的绿标（那次运行 00:31 才结束，之后没再验过）。
+        appToken 实测寿命 90~135 分钟，半小时没新样本就该降级成待复验。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            d = root / "token_life"
+            d.mkdir()
+            now = datetime.now()
+            (d / "5678.json").write_text(json.dumps({
+                "phone": "13900005678", "state": "alive",
+                "updated": (now - timedelta(minutes=660)).isoformat(timespec="seconds"),
+                "samples": [{"at": "x", "ok": True, "kind": "alive"}],
+            }), encoding="utf-8")
+            (d / "1234.json").write_text(json.dumps({
+                "phone": "13800001234", "state": "alive",
+                "updated": now.isoformat(timespec="seconds"),
+                "samples": [{"at": "y", "ok": True, "kind": "alive"}],
+            }), encoding="utf-8")
+            # 没有 updated 的旧文件：算不出年龄时保持原判，别整成 stale 吓人
+            (d / "9000.json").write_text(json.dumps({
+                "phone": "13800138000", "state": "expired", "samples": [],
+            }), encoding="utf-8")
+            # 陈旧的 expired 不降级：失效是终态，它正是「该重新抓包」的提示
+            (d / "7777.json").write_text(json.dumps({
+                "phone": "13900005678", "state": "expired",
+                "updated": (now - timedelta(minutes=900)).isoformat(timespec="seconds"),
+                "samples": [{"at": "z", "ok": False, "kind": "expired"}],
+            }), encoding="utf-8")
+            with mock.patch.object(dashboard, "DATA", root):
+                out = {o["key"]: o for o in dashboard._list_token_life()}
+            self.assertEqual(out["5678"]["state"], "stale")
+            self.assertEqual(out["5678"]["raw_state"], "alive")   # 原始结论仍可查
+            self.assertGreater(out["5678"]["age_min"], 600)
+            self.assertEqual(out["1234"]["state"], "alive")
+            self.assertLess(out["1234"]["age_min"], 30)
+            self.assertEqual(out["9000"]["state"], "expired")
+            self.assertIsNone(out["9000"]["age_min"])
+            self.assertEqual(out["7777"]["state"], "expired")
+
+
+# ======================================================================
+# 计划任务触发器
+# ======================================================================
+
+class TestSchedTrigger(unittest.TestCase):
+    """重复型任务必须「长期有效」，不能是一次性窗口。
+
+    11-22 踩到的静默失效：MobileDailyReward 用 -Once + 17 小时重复，
+    窗口一过就永久停摆，当天一次都没跑、也不报错；票据探针（2 分钟 × 1 天）
+    同样停在 11-21 23:58。这里把它钉死。
+    """
+
+    def _ps(self, kind, t="00:00"):
+        return dashboard._sched_ps(kind, t, r"C:\py\pythonw.exe",
+                                   r"D:\proj\run_hidden.py")
+
+    def test_repeat_tasks_use_long_duration(self):
+        for kind in ("daily", "keepalive", "probe"):
+            name, ps = self._ps(kind)
+            self.assertIn("-Days 3650", ps, f"{kind} 的重复窗口不该再是短窗口")
+            self.assertNotIn("-Hours 17", ps, f"{kind} 还是当年的 17 小时窗口")
+            self.assertNotIn("-Days 1)", ps, f"{kind} 还是当年的 1 天窗口")
+
+    def test_daily_task_is_hourly(self):
+        _, ps = self._ps("daily")
+        self.assertIn("-RepetitionInterval (New-TimeSpan -Hours 1)", ps)
+
+    def test_trigger_kinds_are_known(self):
+        """拼错类型会静默落到「每 2 分钟」兜底，把每小时任务跑成 720 次。"""
+        known = {"daily", "hourly", "90m", "2m"}
+        for kind, (name, bat, trig, note) in dashboard.SCHED_DEF.items():
+            self.assertIn(trig, known, f"{kind} 的触发类型 {trig} 不认识")
+
+    def test_repeat_start_never_in_past(self):
+        """StartBoundary 落在过去会被推到明天，今天剩下的轮次全丢。"""
+        now = datetime.now()
+        s = dashboard._sched_start("00:00")
+        h, m = (int(x) for x in s.split(":"))
+        cand = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if now.hour == 0 and now.minute <= 2:
+            self.skipTest("正好在零点附近，00:00 尚未过期")
+        self.assertGreater(cand, now, f"起点 {s} 仍在过去")
+
+    def test_daily_trigger_stays_fixed_time(self):
+        """每天定时的那几个任务不能被改成「从现在开始」。"""
+        _, ps = self._ps("sign", "11:45")
+        self.assertIn("-Daily -At '11:45'", ps)
+        self.assertNotIn("RepetitionInterval", ps)
 
 
 # ======================================================================
@@ -2237,3 +2359,229 @@ class TestRotatingLogArchive(unittest.TestCase):
             live = path.read_text(encoding="utf-8")
             self.assertIn("今天的内容", live)
             self.assertNotIn("旧内容", live)
+
+
+class TestXunbaoTaskReport(unittest.TestCase):
+    """寻宝的「加骰子任务」不能随便报。
+
+    task/report 只递 taskCode，服务端不校验是否真做过：一律上报等于白拿骰子，
+    而这个号一旦被活动方标记异常，整个寻宝都玩不了。
+    「参与一起消消乐 / 参与大转盘」这两类只有在**这一轮真跑过**时才允许报。
+    """
+
+    def test_assist_and_notify_never_reported(self):
+        import cmcc_xunbao as X
+        for name, code in (("好友助力（每日最多3次）", "TASK_1501"),
+                           ("打开消息提醒", "TASK_1502")):
+            t = {"taskCode": code, "taskName": name}
+            self.assertFalse(X.task_reportable(t))
+            self.assertFalse(X.task_reportable(t, True, True))
+
+    def test_xxl_task_needs_real_run(self):
+        import cmcc_xunbao as X
+        t = {"taskCode": "TASK_1515", "taskName": "参与一起消消乐活动"}
+        self.assertFalse(X.task_reportable(t))
+        self.assertFalse(X.task_reportable(t, did_luck=True))
+        self.assertTrue(X.task_reportable(t, did_xxl=True))
+
+    def test_luck_task_needs_real_roll(self):
+        import cmcc_xunbao as X
+        t = {"taskCode": "TASK_9999", "taskName": "参与天天大转盘"}
+        self.assertFalse(X.task_reportable(t))
+        self.assertFalse(X.task_reportable(t, did_xxl=True))
+        self.assertTrue(X.task_reportable(t, did_luck=True))
+
+    def test_plain_browse_task_still_reported(self):
+        import cmcc_xunbao as X
+        t = {"taskCode": "TASK_1509", "taskName": "浏览活动页"}
+        self.assertTrue(X.task_reportable(t))
+
+    def test_bass_button_carries_xunbao(self):
+        """「只跑福建活动」必须带寻宝；只跑全国签到不能带（福建号才有的活动）。"""
+        import dashboard
+        import types
+        captured = []
+
+        def fake_start(label, cmd, **kw):
+            captured.append((label, list(cmd)))
+            return {"ok": True}
+
+        with mock.patch.object(dashboard, "_start", fake_start):
+            dashboard.do_action({"action": "run_all", "platform": "bass"})
+            self.assertEqual(len(captured), 1)
+            label, cmd = captured[0]
+            self.assertIn("--xunbao", cmd)
+            self.assertIn("--xunbao-tasks", cmd)
+            self.assertIn("含寻宝", label)
+
+            captured.clear()
+            dashboard.do_action({"action": "run_all", "platform": "qwhd"})
+            label, cmd = captured[0]
+            self.assertNotIn("--xunbao", cmd)
+            self.assertNotIn("含寻宝", label)
+
+
+class TestMailWatchGate(unittest.TestCase):
+    """凭证失效标记必须压倒「今天已完成」。
+
+    00:52 那次只跑消消乐/寻宝（--platform none）也写了 today_done，
+    结果 01:29 检测到票失效写了 mail_need，mail_watch 却因为「今天已完成」
+    一整天不查邮箱——用户 11:40 发来的 HAR 永远导不进去，中午签到和秒杀全空。
+    """
+
+    def test_expired_token_always_wakes_watcher(self):
+        import mail_watch as MW
+        import datetime
+        with mock.patch.object(MW, "load_json") as lj:
+            def fake(path, default=None):
+                if path == MW.MAIL_NEED:
+                    return {"needed": True, "accounts": ["a"]}
+                if path == MW.TODAY_DONE:
+                    return {"date": datetime.date.today().isoformat()}
+                return default or {}
+            lj.side_effect = fake
+            self.assertTrue(MW.should_check())
+
+    def test_no_need_and_no_done_stays_quiet(self):
+        import mail_watch as MW
+        with mock.patch.object(MW, "load_json") as lj:
+            def fake(path, default=None):
+                if path == MW.MAIL_NEED:
+                    return {"needed": False}
+                if path == MW.TODAY_DONE:
+                    return {}
+                return default or {}
+            lj.side_effect = fake
+            self.assertFalse(MW.should_check())
+
+    def test_partial_run_is_not_today_done(self):
+        """--platform none 全成功，也不能算今天做完。"""
+        import run_all as R
+        self.assertTrue(R.should_mark_done("all", 5, 5))
+        self.assertTrue(R.should_mark_done("bass", 3, 3))
+        self.assertFalse(R.should_mark_done("none", 4, 4))
+        self.assertFalse(R.should_mark_done("all", 4, 5))
+
+
+class TestDiskImports(unittest.TestCase):
+    """打包后必须优先用磁盘上的 .py，而不是 exe 里冻结的旧副本。
+
+    这个坑踩过三次（index.html / common.py / cmcc_xunbao.py），
+    修法一直是「在某个函数里单独打补丁」。现在统一成 disk_imports，
+    这里守住它的两条边界：非冻结环境完全不介入；只接管项目根目录的顶层模块。
+    """
+
+    def test_noop_when_not_frozen(self):
+        import disk_imports
+        with mock.patch.object(disk_imports, "_installed", None), \
+                mock.patch("sys.frozen", False, create=True):
+            self.assertIsNone(disk_imports.install())
+            self.assertFalse(disk_imports.is_active())
+
+    def test_finder_only_claims_project_modules(self):
+        import disk_imports
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent
+        f = disk_imports._DiskProjectFinder(base)
+        self.assertIn("common", f.names)
+        self.assertIn("dashboard", f.names)
+        # 标准库 / 第三方包绝不能被接管
+        self.assertIsNone(f.find_spec("json"))
+        self.assertIsNone(f.find_spec("requests"))
+        self.assertIsNone(f.find_spec("common.sub"))     # 子模块交给正常机制
+
+    def test_install_is_idempotent(self):
+        import disk_imports
+        # install() 会把已导入的项目模块从 sys.modules 里摘掉换成磁盘版。
+        # 测试里必须原样还原，否则后面的用例拿到的是另一个 common/dashboard 实例，
+        # 表现为「台账写到别处去了」这类莫名其妙的失败（已经踩过一次）。
+        before = dict(sys.modules)
+        path_before = list(sys.path)
+        try:
+            with mock.patch("sys.frozen", True, create=True):
+                with mock.patch.object(disk_imports, "_installed", None):
+                    a = disk_imports.install(Path(__file__).resolve().parent.parent)
+                    b = disk_imports.install(Path(__file__).resolve().parent.parent)
+                    self.assertIs(a, b)
+        finally:
+            for name in [n for n in sys.modules if n not in before]:
+                del sys.modules[name]
+            sys.modules.update(before)
+            sys.path[:] = path_before
+            # 查找器必须摘掉，否则后续用例 import 到的是「测试装的」那一份
+            sys.meta_path[:] = [m for m in sys.meta_path
+                                if type(m).__name__ != "_DiskProjectFinder"]
+            disk_imports._installed = None
+
+
+class TestSwallowDiagnostics(unittest.TestCase):
+    """静默捕获要留痕，否则排障只能靠猜。"""
+
+    def test_swallow_counts_and_examples(self):
+        import dashboard as D
+        D.SWALLOWED.clear()
+        try:
+            D._swallow("log.persist", ValueError("磁盘满"))
+            D._swallow("log.persist", ValueError("磁盘满"))
+            self.assertEqual(D.SWALLOWED["log.persist"]["count"], 2)
+            self.assertEqual(len(D.SWALLOWED["log.persist"]["examples"]), 1)  # 同样错误不重复记
+            self.assertTrue(D.SWALLOWED["log.persist"]["at"])
+        finally:
+            D.SWALLOWED.clear()
+
+    def test_swallow_handles_no_exception(self):
+        import dashboard as D
+        try:
+            msg = D._swallow("webbrowser.open")
+            self.assertIn("webbrowser.open", msg)
+        finally:
+            D.SWALLOWED.clear()
+
+
+class TestMailNeedUnion(unittest.TestCase):
+    """两个号先后失效，标记里的账号列表要取并集，不能后一个覆盖前一个。"""
+
+    def test_accounts_are_merged(self):
+        import run_all as R
+        import json
+        from pathlib import Path
+        tmp = Path(self.enterContext_tmp())
+        need = tmp / "mail_need.json"
+        with mock.patch.object(R, "MAIL_NEED", need):
+            R.mark_mail_needed(["3239"])
+            R.mark_mail_needed(["4167"])
+            data = json.loads(need.read_text(encoding="utf-8"))
+        self.assertTrue(data["needed"])
+        self.assertEqual(data["accounts"], ["3239", "4167"])
+
+    def enterContext_tmp(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="cmcc_mailneed_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        return d
+
+
+class TestNoNewSilentCatch(unittest.TestCase):
+    """守住「不许再多一处静默失败」。
+
+    项目里有几十处 `except: pass`，都是计划任务探测、可选依赖、窗口回退这类
+    确实不该炸的地方，一次性改完风险太大。这里只做一件事：**不许再增加**。
+    需要新的静默捕获时，请先问一句「失败了会丢数据吗」，会丢就调 dashboard._swallow。
+    修掉一处后，把 BASELINE 调小即可（这一步要人工确认）。
+    """
+
+    BASELINE = 42
+
+    def test_no_new_silent_catch(self):
+        import re
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent
+        hits = []
+        for p in sorted(base.glob("*.py")):
+            text = p.read_text(encoding="utf-8", errors="replace")
+            for m in re.finditer(r"except[^\n]*:\s*\n\s+pass\b", text):
+                hits.append(f"{p.name}:{text[:m.start()].count(chr(10)) + 1}")
+        self.assertLessEqual(
+            len(hits), self.BASELINE,
+            "又多了静默吞异常：%s\n（会丢数据的路径请改用 dashboard._swallow，"
+            "并去掉这处 pass）" % ", ".join(hits[self.BASELINE:]))

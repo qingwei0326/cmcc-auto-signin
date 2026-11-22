@@ -197,11 +197,13 @@ class TestSchedPlan(unittest.TestCase):
 
     def test_each_kind_builds_valid_script(self):
         pyw, launcher = r"C:\py\pythonw.exe", r"D:\x\run_hidden.py"
-        for kind in dashboard.SCHED_DEF:
-            name, ps = dashboard._sched_ps(kind, "07:15", pyw, launcher)
+        for kind, (name, _bat, trig, _note) in dashboard.SCHED_DEF.items():
+            _, ps = dashboard._sched_ps(kind, "07:15", pyw, launcher)
             self.assertIn("Register-ScheduledTask", ps)
             self.assertIn(f"-TaskName '{name}'", ps)
-            self.assertIn("07:15", ps)
+            if trig == "daily":
+                # 每天定时的任务必须原样用给定时刻；重复型的起点会被推到未来
+                self.assertIn("07:15", ps)
             self.assertIn("run_hidden.py", ps)
             # PS 5.1 上 Repetition 不可写，绝不能出现这行
             self.assertNotIn("$tr.Repetition=", ps)
@@ -212,9 +214,12 @@ class TestSchedPlan(unittest.TestCase):
         self.assertIn("Minutes 2", probe)
         _, daily = dashboard._sched_ps("daily", "06:00", pyw, launcher)
         self.assertIn("Hours 1", daily)
-        self.assertIn("Hours 17", daily)
+        # 17 小时窗口的旧写法 = 只跑注册当天，第二天静默停摆（11-22 就这样丢了一天）
+        self.assertNotIn("Hours 17", daily)
+        self.assertIn("Days 3650", daily)
         _, keep = dashboard._sched_ps("keepalive", "00:00", pyw, launcher)
         self.assertIn("Minutes 90", keep)
+        self.assertIn("Days 3650", keep)
 
     def test_apply_all_rejects_bad_input(self):
         r = dashboard.do_action({"action": "sched_apply_all", "plan": [["nope", "08:30"]]})

@@ -57,7 +57,7 @@
 命令行等价物：
 
 ```bash
-python run_all.py --luck       # 签到领福利，优惠专区使用已有转盘次数
+python run_all.py --luck       # 签到领福利，优惠专区刷任务 + 把转盘次数抽完
 ```
 
 **配置凭证（命令行方式）**
@@ -138,13 +138,20 @@ dist\签到控制台.exe → 复制到项目根目录
 
 | 任务 | 时间 | 脚本 | 作用 |
 |---|---|---|---|
-| `MobileSignIn` | 每天 **08:30** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐 |
+| `MobileSignIn` | 每天 **11:45** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐。放在秒杀前 10 分钟，是为了让一张票据同时覆盖 签到→会话刷新→秒杀→拓展 |
 | `MobileDailyReward` | 每天 **06:03 起每小时**，共 17 次 | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 |
 | `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**，全天覆盖 | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，只续期 qwhdhub 的 jwt，不签到 |
 | `MobileSessionRefresh` | 每天 **11:54** | `run_session_refresh.bat` | 只跑 qwhdhub 签到，建立新会话，为秒杀做准备 |
 | `MobileSeckill` | 每天 **11:55** | `run_seckill.bat` | `cmcc_seckill.py --at 11:59:50`，等到 12:00 抢 1 元话费券；会话未就绪会每 15 秒重试 |
 | `MobileGames` | 每天 **12:05** | `run_games.bat` | 拓展活动三个：周六游戏中心 / 追剧领福利 / 玩游戏抽话费 |
 | `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**，全天覆盖 | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
+
+> **每天只需要抓一次包**：qwhdhub 的 `app_token` 存活只有 1~2 小时（实测 22:52 导入的票
+> 23:58 仍有效、00:21 还能签到，01:05 已失效）。所以签到挪到 11:45，与 11:54 会话刷新、
+> 11:55 秒杀、12:05 拓展活动共用同一张票。**11:30~11:40 抓包 → 立刻发到监控邮箱**，
+> `MobileMailWatch` 每 10 分钟扫一次并自动导入，导入成功后还会自动补跑一次签到。
+> 票据寿命从你在 App 里抓的那一刻算，攒着不发等于白抓。
+> BASS（福建）用的是 bearer，按天算，不需要每天抓。
 
 > **为什么任务不弹黑窗口**：所有计划任务都用 `pythonw.exe` + `run_hidden.py` 启动 bat，
 > 子进程带 `CREATE_NO_WINDOW`，桌面上不会出现任何控制台窗口。
@@ -324,7 +331,8 @@ App 首页那个图标点进去就是它）。每天一次，完成给 **500 饲
 | `on_stage_full` | `stop` 停手 / `claim` 领本阶奖品后继续喂 / `continue` 放弃奖品直接升阶 |
 | `prize` | 领奖档位：`fee` 话费 / `flow` 流量 / `discount` 折扣 |
 | `tasks` / `fb_tasks` | 空报浏览类，默认 `false` |
-| `luck` | `true` = 每天顺带把「优惠专区 · 天天大转盘」的免费次数抽完（只花已有次数，不替人做加次数任务），默认 `true` |
+| `luck` | `true` = 每天顺带把「优惠专区 · 天天大转盘」的次数抽完，默认 `true` |
+| `luck_tasks` | `true` = 抽之前先做「请好友帮忙 / 逛移动爱购商城 / APP 中参与 / 浏览调研」这 4 个加次数任务（实测 0 → 2 次），默认 `true`；关掉就只花已有次数 |
 | `xunbao` / `xunbao_tasks` | `true` = 每天顺带把「环闽寻宝记」的骰子投完、到终点开宝箱；`xunbao_tasks` 控制是否顺手报「参与天天大转盘」换骰子（好友助力永不代报），默认都 `true` |
 | `coupon_world` | `true` = 每天做一次「券来世界」访问任务（App 首页访问活动，500 饲料）。脚本会**先把券来世界页面真的打开一次**再上报，默认 `true` |
 
@@ -421,6 +429,20 @@ GET /bass-preferentialAreaServer/luck/join               → 抽奖
 
 **关键**：`preferentialAreaServer` 与养成游戏共用同一套 bass 鉴权，所以
 `configs_fj/*.json` 里的 `bearer_token` 可直接用于抽奖，**不需要抓包**。
+
+**加次数任务**（`taskList` → `doTask`，2026-11-22 实测）：
+
+| 任务 | taskType | 有无落地页 | 结果 |
+|---|---|---|---|
+| 请好友帮忙 | 3 | 无 | `0000` |
+| 中国移动APP中参与 | 2 | 无 | `0000` |
+| 浏览调研页面 | 5 | 有 `taskUrl` | `0000` |
+| 逛移动爱购商城 | 5 | 有 `taskUrl` | `0000` |
+
+四个任务一次刷完，剩余次数从 **0 → 2**（3239 当场抽到一张 9.9 折券）。
+带 `taskUrl` 的会先真的 GET 一次页面再上报，路径尽量贴近真人；
+`complete:true` 的任务直接跳过——服务端已经记过账，再报一次也不会多给。
+这些任务一天只算一次，重跑不会重复薅。
 
 ### 环闽寻宝记（`cmcc_xunbao.py`）
 
@@ -531,7 +553,7 @@ python pull_token_phone.py --save     # Termux
 ├── cmcc_extra.py           qwhdhub 拓展活动模块
 ├── cmcc_fj.py              BASS 签到 + 喂养 + 每日奖励 + 流量银行 + 福袋
 ├── cmcc_xiaoxiaole.py      消消乐
-├── cmcc_luck.py            优惠专区转盘抽奖
+├── cmcc_luck.py            优惠专区转盘抽奖（加次数任务 + 抽完次数）
 ├── cmcc_seckill.py         签到有礼每周秒杀（12:00 抢话费券）
 ├── cmcc_wed.py             周三充值日（拼图任务、抽奖、集齐领券）
 ├── cmcc_guandan.py         咪咕掼蛋：抓包还原牌谱、协议组帧、级牌推断
@@ -566,6 +588,7 @@ python cmcc_fj.py --config configs_fj/fj1.json --feed 3      # 喂养 3 次（�
 python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks    # 流量银行任务（按周期门控）
 python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks --fb-all  # 忽略周期强制尝试
 python cmcc_luck.py --key fj2 --dry-run                      # 抽奖：只看次数
+python cmcc_luck.py --key fj2 --skip-assist                  # 刷任务但跳过「请好友帮忙」
 python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 python probe_token_life.py --report                    # 看 app_token 寿命结论
 python probe_token_life.py --once                      # 手动探一轮
@@ -741,7 +764,7 @@ python probe_token_life.py --report
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests -v      # 344 个用例，约 14 秒
+python -m unittest discover -s tests -v      # 375 个用例，约 14 秒
 python tests/browser_smoke.py                # 可选：真实浏览器冒烟（需 playwright）
 ```
 

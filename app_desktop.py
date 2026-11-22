@@ -44,6 +44,40 @@ def _fail(msg):
 RUN_SCRIPT_FLAG = "--run-script"
 
 
+def _disk_first():
+    """让项目里的 .py 从磁盘加载（打包后 exe 内的副本会过期）。
+
+    见 disk_imports.py 的说明：以前是每个模块单独打补丁，漏一次就是
+    「界面文字是新的、数字是旧的」。这里统一成一处。
+
+    这个引导文件自己也从磁盘读：它一旦被冻进 exe，以后想改查找规则
+    又得重建一次，等于把同一个坑留在了修坑的工具上。
+    """
+    base = _base_dir()
+    mod = None
+    src = Path(base) / "disk_imports.py"
+    if getattr(sys, "frozen", False) and src.is_file():
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_disk_imports", str(src))
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["_disk_imports"] = mod
+            spec.loader.exec_module(mod)
+        except Exception:
+            _log("disk_imports 从磁盘加载失败：" + traceback.format_exc())
+            mod = None
+    if mod is None:
+        try:
+            import disk_imports as mod      # 冻结副本兜底
+        except Exception:
+            return None
+    try:
+        return mod.install(base)
+    except Exception:
+        _log("disk_imports 安装失败：" + traceback.format_exc())
+        return None
+
+
 def dispatch_run_script() -> bool:
     """把自己当解释器用：`签到领福利.exe --run-script cmcc_sign.py --config x`。
 
@@ -53,6 +87,10 @@ def dispatch_run_script() -> bool:
     if len(sys.argv) < 3 or sys.argv[1] != RUN_SCRIPT_FLAG:
         return False
     import runpy
+
+    # 任务脚本在磁盘上，它 import 的 common / dashboard 也必须取磁盘那份，
+    # 否则改完规则重建 exe 之前，跑的还是打包当天的逻辑。
+    _disk_first()
 
     target = Path(sys.argv[2])
     if not target.is_file():
@@ -66,6 +104,7 @@ def dispatch_run_script() -> bool:
 
 def main():
     _log("启动")
+    _disk_first()                        # 必须在 import dashboard 之前
     try:
         import dashboard  # 同目录的 Web 控制台模块
     except Exception as e:

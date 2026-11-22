@@ -90,16 +90,20 @@ def should_check() -> bool:
 
     这两个标记由 run_all.py 每次运行时写：票失效写 mail_need，
     全部跑顺写 today_done。这样没过期、或今天已经做完，就完全不连 Gmail。
+
+    **顺序很重要**：先看 mail_need。票是真失效了，就算今天早先的活儿已经
+    跑完（比如凌晨跑过一波消消乐写了 today_done），11:45 那张新票也得有人去收，
+    否则用户发了 HAR 也永远等不到导入。today_done 只用来省掉「没事干时的空扫描」。
     """
+    need = load_json(MAIL_NEED, default={}) or {}
+    if need.get("needed"):
+        return True
     done = load_json(TODAY_DONE, default={}) or {}
     if done.get("date") == datetime.date.today().isoformat():
         print("今天的任务已全部完成，不查邮箱")
         return False
-    need = load_json(MAIL_NEED, default={}) or {}
-    if not need.get("needed"):
-        print("没有凭证失效标记，不查邮箱")
-        return False
-    return True
+    print("没有凭证失效标记，不查邮箱")
+    return False
 
 
 def clear_need():

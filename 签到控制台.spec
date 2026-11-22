@@ -10,6 +10,11 @@ hiddenimports = []
 tmp_ret = collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# 消消乐要用 AES 造请求头（Crypto.Cipher.AES）。不显式收进来，exe 里跑
+# run_all --xxl 会报「缺少 pycryptodome」——源码跑正常、打包后就失效。
+tmp_ret = collect_all('Crypto')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 
 a = Analysis(
     ['app_desktop.py'],

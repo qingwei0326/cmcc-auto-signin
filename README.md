@@ -29,13 +29,13 @@
 | 一起消消乐 | 每次读取真实关卡再上报；自动做金币任务换体力 | 每天约 5 点体力 + 金币兑换 |
 | 咪咕掼蛋 | 协议已逆向；牌谱还原 + AI 出牌建议可用，自动打牌卡在登录令牌（`cat` 一次性） | 待接入 |
 
-> 日常只需要双击 `签到控制台.exe`，其余内容都是排查和进阶用。
+> 日常只需要双击 `签到领福利.exe`，其余内容都是排查和进阶用。
 
 ---
 
 ## 快速开始
 
-> **先说清楚一件事**：`签到控制台.exe` 只是界面外壳，**签到任务仍由系统 Python 执行**。
+> **先说清楚一件事**：`签到领福利.exe` 只是界面外壳，**签到任务仍由系统 Python 执行**。
 > 电脑上必须装着 Python 3.9+ 与 `requests` 等依赖，exe 必须与 `cmcc_*.py` 放在同一目录。
 > 缺 Python 或缺依赖时，程序启动就会弹窗说明该装什么，不会再让你点了按钮才看到一串系统错误码。
 
@@ -43,7 +43,7 @@
 
 1. 装 Python 3.9+（64 位），安装时勾选 `Add Python to PATH`
 2. 在项目目录地址栏输入 `cmd`，执行 `pip install -r requirements.txt`
-3. 双击 `签到控制台.exe`（或双击 `run_gui.bat` 用浏览器打开）
+3. 双击 `签到领福利.exe`（或双击 `run_gui.bat` 用浏览器打开）
 
 **第一次用，全程点界面就够（不用命令行）**
 
@@ -109,18 +109,18 @@ python run_all.py --dry-run
 
 ```
 双击 build_exe.bat          # 首次 2~5 分钟
-dist\签到控制台.exe → 复制到项目根目录
+dist\签到领福利.exe → 复制到项目根目录
 ```
 
 打包要求：64 位 Python + `pywebview` + `pyinstaller`。失败排查：
 
 - bat 换行必须是 CRLF（被存成 LF 会解析错乱）
 - 依赖源用默认 PyPI，清华源曾缺 pywebview
-- `static/index.html` 必须在位：前端已拆成独立文件，由 `签到控制台.spec` 的 `datas` 打进 exe，
+- `static/index.html` 必须在位：前端已拆成独立文件，由 `签到领福利.spec` 的 `datas` 打进 exe，
   缺了它程序会直接报「缺少 static/index.html」而不是开一个空白窗口
 - 打包配置以 **spec 为唯一来源**：`build_exe.bat` 直接构建 spec。若改回用命令行参数构建，
   PyInstaller 会按参数重新生成 spec，把手工维护的 `datas`/图标等配置覆盖掉
-- 成功标志是日志末尾出现 `Build complete!`，exe 约 33MB，产物在 `dist\签到控制台.exe`
+- 成功标志是日志末尾出现 `Build complete!`，exe 约 33MB，产物在 `dist\签到领福利.exe`
 
 窗口起不来时程序会自动回退浏览器模式，启动过程记录在 `gui_data/startup.log`。
 
@@ -538,7 +538,7 @@ python pull_token_phone.py --save     # Termux
 
 ```
 .
-├── 签到控制台.exe          桌面版入口（用 build_exe.bat 构建，不入库）
+├── 签到领福利.exe          桌面版入口（用 build_exe.bat 构建，不入库）
 ├── run_gui.bat             无 exe 时用浏览器打开控制台（跑 python dashboard.py）
 ├── run_scheduled.bat       定时签到用
 ├── run_daily_reward.bat    定时领每日奖励用

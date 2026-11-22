@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title 签到控制台 · 桌面版打包
+title 签到领福利 · 桌面版打包
 
 echo ============================================
 echo   签到控制台 · Windows 桌面版一键打包
@@ -40,7 +40,7 @@ echo.
 echo [2/3] 开始打包（首次约 2-5 分钟，请耐心等待）...
 rem Build from the spec: it is the single source of truth for packaging.
 rem Building from script args would regenerate the spec and drop hand-edited config.
-python -m PyInstaller --noconfirm --clean 签到控制台.spec
+python -m PyInstaller --noconfirm --clean 签到领福利.spec
 if errorlevel 1 (
     echo [错误] 打包失败，请把上方报错信息发给助手
     pause
@@ -50,9 +50,9 @@ if errorlevel 1 (
 echo.
 echo [3/3] 打包完成！
 echo.
-echo   exe 位置: %~dp0dist\签到控制台.exe
+echo   exe 位置: %~dp0dist\签到领福利.exe
 echo.
-echo   ★ 使用方法：把 dist\签到控制台.exe 复制到项目根目录
+echo   ★ 使用方法：把 dist\签到领福利.exe 复制到项目根目录
 echo     （与 cmcc_sign.py、dashboard.py 同一层级），双击运行即可。
 echo   ★ 注意：签到任务仍由系统 Python 执行，电脑上需保留 Python
 echo     和已安装的 requests 等依赖（你平时能跑脚本就没问题）。

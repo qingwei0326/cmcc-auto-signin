@@ -850,11 +850,11 @@ class TestFrontendSplit(unittest.TestCase):
                 self.assertEqual(dashboard._load_frontend(), "<html>frozen</html>")
 
     def test_build_config_bundles_static(self):
-        spec = (ROOT / "签到控制台.spec").read_text(encoding="utf-8")
+        spec = (ROOT / "签到领福利.spec").read_text(encoding="utf-8")
         bat = (ROOT / "build_exe.bat").read_text(encoding="utf-8")
         self.assertIn("('static', 'static')", spec)
         # bat 必须从 spec 构建：用命令行参数会让 PyInstaller 重新生成 spec、覆盖手工配置
-        self.assertIn("签到控制台.spec", bat)
+        self.assertIn("签到领福利.spec", bat)
 
 
 # ======================================================================

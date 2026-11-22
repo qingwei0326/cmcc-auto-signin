@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# 与「签到控制台.spec」同源，只是产物名不同（界面里那个按钮叫「签到领福利」，
-# 用户认这个名字，就按这个名出包）。改打包参数请两处一起改。
+# 唯一的打包配置：build_exe.bat 直接构建本 spec，产物即「签到领福利.exe」
+# （界面按钮叫「签到领福利」，用户认这个名字）。改打包参数只改这一处。
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('static', 'static')]

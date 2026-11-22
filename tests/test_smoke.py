@@ -341,9 +341,10 @@ class TestSeckill(unittest.TestCase):
 
     def test_section_table_has_seckill(self):
         import dashboard
-        self.assertIn("cmcc_seckill.py", dashboard.INDEX_HTML)
-        self.assertIn("seckill_run", dashboard.INDEX_HTML)
-        self.assertIn("runSeckill", dashboard.INDEX_HTML)
+        bundle = dashboard.load_frontend_bundle()
+        self.assertIn("cmcc_seckill.py", bundle)
+        self.assertIn("seckill_run", bundle)
+        self.assertIn("runSeckill", bundle)
 
 
 class TestTokenLifeProbe(unittest.TestCase):

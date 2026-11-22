@@ -892,6 +892,42 @@ def _sched_ps(kind: str, t: str, pyw: str, launcher: str):
     return name, ps
 
 
+def _valid_hhmm(t: str) -> bool:
+    """校验 HH:MM 时刻：不仅格式为数字:数字，且小时 0~23、分钟 0~59。"""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(t or "").strip())
+    if not m:
+        return False
+    hh, mm = int(m.group(1)), int(m.group(2))
+    return 0 <= hh <= 23 and 0 <= mm <= 59
+
+
+def _finish_har_import(HI, rep: list, used: int) -> dict:
+    for line in rep:
+        RUNNER.push("  " + line)
+    RUNNER.push("■ HAR 导入结束")
+    success, failed = HI.report_outcome(rep)
+    if failed or not success:
+        HI.notify_import_problem(rep)
+    if not success:
+        return {"ok": False, "err": "HAR 未导入任何凭证", "report": rep}
+    label = "HAR 部分导入成功" if failed else "HAR 导入完成"
+    return {"ok": True, "report": rep, "msg": f"{label}（处理 {used} 份）"}
+
+
+def _import_har_text(har_text: str, key=None) -> dict:
+    """解析并导入一份 HAR 原文文本，供 JSON / 二进制流上传共用。"""
+    try:
+        import har_import as HI
+    except Exception as e:
+        return {"ok": False, "err": f"har_import 模块不可用：{e}"}
+    try:
+        rep = HI.apply(har_text, key=(key or None))
+        used = 1
+    except Exception:
+        rep, used = ["✗ HAR 读取或导入失败"], 0
+    return _finish_har_import(HI, rep, used)
+
+
 def do_action(body: dict):
     act = body.get("action", "")
     accts = scan_accounts()
@@ -1069,46 +1105,35 @@ def do_action(body: dict):
 
     # ---- token 管理 ----
     if act == "har_import":
+        har = body.get("har")
+        if har:
+            return _import_har_text(har, key=body.get("key"))
         try:
             import har_import as HI
         except Exception as e:
             return {"ok": False, "err": f"har_import 模块不可用：{e}"}
-        har = body.get("har")
         try:
-            if har:
-                rep = HI.apply(har, key=(body.get("key") or None))
+            d = body.get("dir") or None
+            if d is not None:
+                dp = Path(str(d)).resolve()
+                root = BASE.resolve()
+                if dp != root and root not in dp.parents:
+                    return {"ok": False, "err": "扫描目录必须在项目内"}
+            if body.get("latest"):
+                # 只处理最新的一份，避免旧 HAR 里的过期票据覆盖新的
+                from common import find_har_files
+                cands = find_har_files()
+                if not cands:
+                    return {"ok": False, "err": "没找到 HAR 文件（已查：项目目录 / 下载 / 微信接收目录）"}
+                newest = cands[0]
+                text = newest.read_text(encoding="utf-8", errors="ignore")
+                rep = [f"—— {newest.name}（{newest.stat().st_size // 1048576}MB）——"] + HI.apply(text, key=(body.get("key") or None))
                 used = 1
             else:
-                d = body.get("dir") or None
-                if d is not None:
-                    dp = Path(str(d)).resolve()
-                    root = BASE.resolve()
-                    if dp != root and root not in dp.parents:
-                        return {"ok": False, "err": "扫描目录必须在项目内"}
-                if body.get("latest"):
-                    # 只处理最新的一份，避免旧 HAR 里的过期票据覆盖新的
-                    from common import find_har_files
-                    cands = find_har_files()
-                    if not cands:
-                        return {"ok": False, "err": "没找到 HAR 文件（已查：项目目录 / 下载 / 微信接收目录）"}
-                    newest = cands[0]
-                    text = newest.read_text(encoding="utf-8", errors="ignore")
-                    rep = [f"—— {newest.name}（{newest.stat().st_size // 1048576}MB）——"] + HI.apply(text, key=(body.get("key") or None))
-                    used = 1
-                else:
-                    rep, used = HI.scan_dir(d)
+                rep, used = HI.scan_dir(d)
         except Exception:
             rep, used = ["✗ HAR 读取或导入失败"], 0
-        for line in rep:
-            RUNNER.push("  " + line)
-        RUNNER.push("■ HAR 导入结束")
-        success, failed = HI.report_outcome(rep)
-        if failed or not success:
-            HI.notify_import_problem(rep)
-        if not success:
-            return {"ok": False, "err": "HAR 未导入任何凭证", "report": rep}
-        label = "HAR 部分导入成功" if failed else "HAR 导入完成"
-        return {"ok": True, "report": rep, "msg": f"{label}（处理 {used} 份）"}
+        return _finish_har_import(HI, rep, used)
 
     if act == "bass_token_save":
         f = safe_conf_path(body.get("file"))
@@ -1274,9 +1299,11 @@ def do_action(body: dict):
         xxl = body.get("xxl")
         if isinstance(xxl, dict):
             try:
+                star_raw = xxl.get("star")
+                star_val = 3 if star_raw is None or str(star_raw).strip() == "" else int(star_raw)
                 patch["xxl"] = {
                     "level": max(1, int(xxl.get("level") or 49)),
-                    "star": min(3, max(0, int(xxl.get("star") or 3))),
+                    "star": min(3, max(0, star_val)),
                     "times": min(20, max(1, int(xxl.get("times") or 5))),
                     "gap": min(120, max(5, int(xxl.get("gap") or 12))),
                     # 做金币任务 → 200 金币换 1 点体力，避免卡在「没体力」不动关卡
@@ -1311,16 +1338,16 @@ def do_action(body: dict):
         kind = body.get("kind", "sign")
         t = str(body.get("time") or "11:45").strip()
         # t 会插进单引号 PowerShell 字符串，不校验就能闭合引号注入任意命令
-        if not re.fullmatch(r"\d{1,2}:\d{2}", t):
-            return {"ok": False, "err": "时间格式应为 HH:MM"}
+        if not _valid_hhmm(t):
+            return {"ok": False, "err": "时间格式应为 HH:MM（00:00~23:59）"}
         if kind not in SCHED_DEF:
             return {"ok": False, "err": "未知任务类型"}
         name, ps = _sched_ps(kind, t, pyw, launcher)
         return _start(f"注册计划任务 {name}", ["powershell", "-NoProfile", "-Command", ps], need_py=False)
 
     if act == "sched_apply_all":
-        # 一次调用注册全部任务：7 个 Register-ScheduledTask 塞进同一个 PowerShell 会话，
-        # 比在界面上点七次快，也不用逐个等状态刷新。
+        # 一次调用注册全部任务：8 个 Register-ScheduledTask 塞进同一个 PowerShell 会话，
+        # 比在界面上点多次快，也不用逐个等状态刷新。
         pyw = _pythonw()
         if not pyw:
             return {"ok": False, "err": _NO_PYW_ERR}
@@ -1336,8 +1363,8 @@ def do_action(body: dict):
                 return {"ok": False, "err": "方案格式应为 [[类型, 时刻], ...]"}
             if kind not in SCHED_DEF:
                 return {"ok": False, "err": f"未知任务类型 {kind}"}
-            if not re.fullmatch(r"\d{1,2}:\d{2}", t):
-                return {"ok": False, "err": f"{kind} 的时刻格式应为 HH:MM"}
+            if not _valid_hhmm(t):
+                return {"ok": False, "err": f"{kind} 的时刻格式应为 HH:MM（00:00~23:59）"}
             name, ps = _sched_ps(kind, t, pyw, launcher)
             parts.append(ps)
             names.append(f"{SCHED_CN.get(kind, name)} {t}")
@@ -1482,12 +1509,14 @@ def _awards_view(limit=40) -> dict:
     try:
         C = _common_for_awards()
     except Exception:
-        return {"recent": [], "today": {}, "month": {}, "by_account": {}}
+        return {"recent": [], "recent_total": 0, "recent_limit": limit,
+                "today": {}, "month": {}, "by_account": {}}
 
     today = TODAY()
     month = today[:7]
     recs = C.load_awards()          # 新的在前
     recent = []
+    recent_total = 0
     for r in recs:
         if r.get("ignored"):
             continue                 # 话费型手气红包：用户要求直接不显示
@@ -1497,9 +1526,9 @@ def _awards_view(limit=40) -> dict:
             # 打车券、AI豆兑换券这类既不折流量也不抵话费，列出来两栏全是「—」，
             # 用户要的是「今天到手多少流量、几张话费券」，所以不进明细。
             continue
-        recent.append(r)
-        if len(recent) >= limit:
-            break
+        recent_total += 1
+        if len(recent) < limit:
+            recent.append(r)
 
     def agg(prefix):
         flow, fee, recharge, yuan, th_yuan = 0.0, 0, 0, 0.0, 0.0
@@ -1560,7 +1589,8 @@ def _awards_view(limit=40) -> dict:
     usable_fee = [r for r in recs
                   if r.get("kind") == "fee" and not r.get("need_recharge")
                   and not r.get("ignored")]
-    return {"recent": recent, "today": agg(today), "month": agg(month),
+    return {"recent": recent, "recent_total": recent_total, "recent_limit": limit,
+            "today": agg(today), "month": agg(month),
             "by_account": by, "by_day": by_day, "fee_day": fee_day,
             "by_plat": by_plat, "by_day_plat": by_day_plat,
             # 历史累计：话费券张数 + 合计面额（只算无门槛可直接兑换的）
@@ -1831,7 +1861,17 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
-            self._send(200, "text/html; charset=utf-8", INDEX_HTML.encode())
+            p = _static_path("index.html")
+            data = p.read_bytes() if p is not None else INDEX_HTML.encode()
+            self._send(200, "text/html; charset=utf-8", data)
+        elif u.path.startswith("/static/"):
+            fname = u.path[len("/static/"):]
+            ctype = STATIC_FILES.get(fname)
+            p = _static_path(fname) if ctype else None
+            if p is None:
+                self._json({"err": "not found"}, 404)
+            else:
+                self._send(200, ctype, p.read_bytes())
         elif u.path == "/favicon.ico":
             ico = BASE / "app.ico"
             if ico.is_file():
@@ -1860,16 +1900,35 @@ class Handler(BaseHTTPRequestHandler):
         if not self._local_only():
             self._json({"err": "forbidden"}, 403)
             return
-        # 要求 application/json：跨站「简单请求」发不出这个类型，会被预检挡住
-        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if ctype != "application/json":
-            self._json({"err": "需要 application/json"}, 415)
-            return
         u = urlparse(self.path)
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = 0
+        if u.path == "/api/har_upload":
+            # 要求 application/octet-stream：跨站「简单请求」发不出这个类型，会被预检挡住
+            if ctype != "application/octet-stream":
+                self._json({"err": "需要 application/octet-stream"}, 415)
+                return
+            if n > MAX_BODY:
+                self._json({"err": "请求体过大"}, 413)
+                return
+            if n <= 0:
+                self._json({"ok": False, "err": "空文件或缺少 Content-Length"}, 400)
+                return
+            q = parse_qs(u.query)
+            key = (q.get("key") or [""])[0].strip() or None
+            try:
+                text = self.rfile.read(n).decode("utf-8", errors="ignore")
+                self._json(_import_har_text(text, key=key))
+            except Exception as e:
+                self._json({"ok": False, "err": str(e)}, 500)
+            return
+        # 要求 application/json：跨站「简单请求」发不出这个类型，会被预检挡住
+        if ctype != "application/json":
+            self._json({"err": "需要 application/json"}, 415)
+            return
         if n > MAX_BODY:
             self._json({"err": "请求体过大"}, 413)
             return
@@ -1889,11 +1948,31 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ======================================================================
-# 前端页面（单文件，深色仪表盘风格）
+# 前端页面（拆分 static/index.html + app.css + app.js，热读取）
 # ======================================================================
 
+STATIC_FILES = {
+    "index.html": "text/html; charset=utf-8",
+    "app.css": "text/css; charset=utf-8",
+    "app.js": "application/javascript; charset=utf-8",
+}
+
+
+def _static_path(name: str):
+    """返回白名单内 static/ 文件路径（磁盘优先，冻结态回退 _MEIPASS）。"""
+    if name not in STATIC_FILES:
+        return None
+    candidates = [BASE / "static" / name]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(getattr(sys, "_MEIPASS", str(BASE))) / "static" / name)
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
 def _load_frontend() -> str:
-    """读取前端页面（单独放 static/index.html，便于格式化与 lint）。
+    """读取前端主页面（单独放 static/index.html，便于格式化与 lint）。
 
     冻结成 exe 后页面在 PyInstaller 的解包目录里（_MEIPASS），源码运行时在项目根目录。
     两处都找不到就直接报错退出，而不是启动一个空白控制台。
@@ -1902,14 +1981,21 @@ def _load_frontend() -> str:
     只有把 exe 单独拷到别处（旁边没有 static/）时才回退到打包进去的那份。
     早先是 _MEIPASS 优先，结果「改了 index.html、exe 里还是老界面」。
     """
-    candidates = [BASE / "static" / "index.html"]
-    if getattr(sys, "frozen", False):
-        candidates.append(Path(getattr(sys, "_MEIPASS", str(BASE))) / "static" / "index.html")
-    for path in candidates:
-        if path.is_file():
-            return path.read_text(encoding="utf-8")
+    path = _static_path("index.html")
+    if path is not None:
+        return path.read_text(encoding="utf-8")
     raise SystemExit("缺少 static/index.html：请把它与程序放在同一目录"
                      "（打包时由 spec 的 datas 带上）")
+
+
+def load_frontend_bundle() -> str:
+    """拼接前端静态文件（index.html + app.css + app.js），供单测扫描。"""
+    parts = []
+    for name in ("index.html", "app.css", "app.js"):
+        p = _static_path(name)
+        if p is not None:
+            parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 INDEX_HTML = _load_frontend()

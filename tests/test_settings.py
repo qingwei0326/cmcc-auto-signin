@@ -197,8 +197,7 @@ class TestSettingsPage(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.html = Path(__file__).resolve().parent.parent / "static" / "index.html"
-        cls.html = cls.html.read_text(encoding="utf-8")
+        cls.html = D.load_frontend_bundle()
 
     def test_sidebar_has_settings(self):
         self.assertIn('data-p="settings"', self.html)

@@ -116,7 +116,7 @@ class TestSchedState(unittest.TestCase):
 
 class TestPageContent(unittest.TestCase):
     def setUp(self):
-        self.html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.html = dashboard.load_frontend_bundle()
 
     def test_every_page_has_title(self):
         """TITLES 少一个键，页面标题就只剩「签到控制台 / 」。"""
@@ -189,7 +189,7 @@ class TestSchedPlan(unittest.TestCase):
 
     def test_frontend_plan_matches_backend(self):
         """前后端各写一份时刻表，跑偏了就会「点了按钮但时间不对」。"""
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        html = dashboard.load_frontend_bundle()
         m = re.search(r"const SCHED_PLAN=\[(.*?)\];", html, re.S)
         self.assertIsNotNone(m)
         pairs = re.findall(r'\["(\w+)","([\d:]+)"\]', m.group(1))
@@ -381,7 +381,7 @@ class TestHumanFacing(unittest.TestCase):
     """界面要面向「人」而不是面向命令行：术语、反馈、忙态、手机布局。"""
 
     def setUp(self):
-        self.html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.html = dashboard.load_frontend_bundle()
 
     def test_no_cli_flags_in_visible_labels(self):
         for flag in ("--claim", "--roll", "--dry-run", "--tasks", "--fb-tasks",
@@ -644,6 +644,185 @@ class TestFeedOncePerDay(unittest.TestCase):
 
     def test_bad_hour_never_due(self):
         self.assertFalse(run_all.feed_due({}))
+
+
+class TestFrontendOptimization(unittest.TestCase):
+    """前端拆分、热重载、HAR 直传与交互优化回归守护。"""
+
+    def _fake_handler(self, path, headers=None, body=b""):
+        h = dashboard.Handler.__new__(dashboard.Handler)
+        h.path = path
+        h.headers = dict({"Host": "127.0.0.1:8789"}, **(headers or {}))
+        h.rfile = io.BytesIO(body)
+        h.wfile = io.BytesIO()
+        sent = {}
+
+        def fake_send(code, ctype, data):
+            sent["code"] = code
+            sent["ctype"] = ctype
+            sent["data"] = data
+
+        h._send = fake_send
+        h._json = lambda obj, code=200: fake_send(
+            code, "application/json; charset=utf-8", json.dumps(obj, ensure_ascii=False).encode()
+        )
+        return h, sent
+
+    def test_static_path_whitelist_and_hot_reload(self):
+        self.assertIsNotNone(dashboard._static_path("index.html"))
+        self.assertIsNotNone(dashboard._static_path("app.css"))
+        self.assertIsNotNone(dashboard._static_path("app.js"))
+        self.assertIsNone(dashboard._static_path("../dashboard.py"))
+        self.assertIsNone(dashboard._static_path("secret.txt"))
+
+        with tempfile.TemporaryDirectory() as td:
+            st = Path(td) / "static"
+            st.mkdir()
+            (st / "index.html").write_text("<html>v2</html>", encoding="utf-8")
+            (st / "app.css").write_text("body{color:#fff}", encoding="utf-8")
+            (st / "app.js").write_text("console.log(2);", encoding="utf-8")
+            with mock.patch.object(dashboard, "BASE", Path(td)):
+                h1, s1 = self._fake_handler("/")
+                h1.do_GET()
+                self.assertEqual(s1["code"], 200)
+                self.assertEqual(s1["data"], b"<html>v2</html>")
+
+                h2, s2 = self._fake_handler("/static/app.css")
+                h2.do_GET()
+                self.assertEqual(s2["code"], 200)
+                self.assertIn("text/css", s2["ctype"])
+                self.assertEqual(s2["data"], b"body{color:#fff}")
+
+                h3, s3 = self._fake_handler("/static/app.js")
+                h3.do_GET()
+                self.assertEqual(s3["code"], 200)
+                self.assertIn("javascript", s3["ctype"])
+
+                h4, s4 = self._fake_handler("/static/../dashboard.py")
+                h4.do_GET()
+                self.assertEqual(s4["code"], 404)
+
+    def test_har_upload_endpoint_and_guards(self):
+        h1, s1 = self._fake_handler("/api/har_upload", {
+            "Origin": "https://evil.example",
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "4",
+        }, b"test")
+        h1.do_POST()
+        self.assertEqual(s1["code"], 403)
+
+        h2, s2 = self._fake_handler("/api/har_upload", {
+            "Content-Type": "text/plain",
+            "Content-Length": "4",
+        }, b"test")
+        h2.do_POST()
+        self.assertEqual(s2["code"], 415)
+
+        h3, s3 = self._fake_handler("/api/har_upload", {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(dashboard.MAX_BODY + 1),
+        })
+        h3.do_POST()
+        self.assertEqual(s3["code"], 413)
+
+        h4, s4 = self._fake_handler("/api/har_upload", {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "0",
+        })
+        h4.do_POST()
+        self.assertEqual(s4["code"], 400)
+
+        captured = {}
+        payload = b'{"log":{"entries":[]}}'
+        h5, s5 = self._fake_handler("/api/har_upload?key=1234", {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(len(payload)),
+        }, payload)
+        with mock.patch.object(dashboard, "_import_har_text",
+                               lambda text, key=None: captured.update(text=text, key=key) or {"ok": True, "msg": "ok"}):
+            h5.do_POST()
+        self.assertEqual(s5["code"], 200)
+        self.assertEqual(captured["key"], "1234")
+        self.assertEqual(captured["text"], payload.decode())
+
+    def test_policy_allows_zero_star_and_sched_rejects_bad_hour_min(self):
+        with tempfile.TemporaryDirectory() as td:
+            pf = Path(td) / "policy.json"
+            with mock.patch.object(common, "POLICY_FILE", pf), \
+                 mock.patch.object(dashboard, "save_policy", common.save_policy):
+                r = dashboard.do_action({"action": "policy_save", "xxl": {"star": 0, "times": 5, "gap": 12}})
+                self.assertTrue(r["ok"])
+                self.assertEqual(r["policy"]["xxl"]["star"], 0)
+
+        with mock.patch.object(dashboard, "_pythonw", return_value="pythonw.exe"):
+            for bad in ("25:00", "12:60", "24:01"):
+                r = dashboard.do_action({"action": "sched_reg", "kind": "sign", "time": bad})
+                self.assertFalse(r["ok"], bad)
+            r2 = dashboard.do_action({"action": "sched_apply_all", "plan": [["sign", "24:01"]]})
+            self.assertFalse(r2["ok"])
+
+    def test_awards_view_reports_recent_total(self):
+        today = datetime.now().date().isoformat()
+        recs = [{
+            "at": f"{today} 10:0{i}:00", "account": "13800001234", "source": "每日签到",
+            "name": "100MB流量包", "kind": "flow", "size_mb": 100.0, "yuan": 0.0,
+            "need_recharge": False, "ignored": False, "url": "",
+        } for i in range(5)]
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "awards.json"
+            p.write_text(json.dumps({"records": recs}, ensure_ascii=False), encoding="utf-8")
+            with mock.patch.object(common, "AWARDS_FILE", p):
+                v = dashboard._awards_view(limit=2)
+        self.assertEqual(len(v["recent"]), 2)
+        self.assertEqual(v["recent_total"], 5)
+        self.assertEqual(v["recent_limit"], 2)
+
+    def test_manual_bass_options_not_restored_and_prize_scoped(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        for i in ("bAuto", "bCont", "bFeedAll", "bPrize"):
+            m = re.search(r'<(?:input|select)[^>]*id="%s"[^>]*>' % i, html)
+            self.assertIsNotNone(m, i)
+            self.assertIn('autocomplete="off"', m.group(0), i)
+        for marker in ("function resetManualBass", "function syncStageUi", "正在执行中"):
+            self.assertIn(marker, js)
+        # 「领奖档位」紧跟在「领本阶奖品」后，位于「放弃奖品」之前
+        self.assertLess(html.find('id="bAuto"'), html.find('id="bPrize"'))
+        self.assertLess(html.find('id="bPrize"'), html.find('id="bCont"'))
+
+    def test_continue_stage_skips_stage_full_guard(self):
+        src = (ROOT / "cmcc_fj.py").read_text(encoding="utf-8")
+        self.assertIn("if not (args.auto_claim or args.continue_stage):", src)
+
+    def test_frontend_optimization_markers(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "app.css").read_text(encoding="utf-8")
+        js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        bundle = dashboard.load_frontend_bundle()
+
+        self.assertIn('/static/app.css', html)
+        self.assertIn('/static/app.js', html)
+        self.assertIn("max-width:1200px", css)
+        self.assertNotIn("pullState();pullLogs();", js)
+        self.assertNotIn("you@gmail.com", bundle)
+        self.assertNotIn("连 Gmail", bundle)
+        self.assertIsNone(re.search(r"(^|[^.\w])confirm\(", js, re.M), "不应再调用原生 confirm()")
+
+        for marker in ('onchange="updateBassFodder()"', 'id="bPrize"', 'id="harDrop"',
+                       'id="logFilter"', 'id="logDrawer"', 'id="cfmModal"',
+                       'data-nobusy onclick="gotoSettings()"',
+                       'data-nobusy onclick="saveSettings()"',
+                       'data-nobusy onclick="saveMail()"',
+                       'data-nobusy onclick="savePolicy()"'):
+            with self.subTest(html_marker=marker):
+                self.assertIn(marker, html)
+
+        for marker in ("function kickPoll", "_stateInFlight", "_logsInFlight",
+                       "function askConfirm", "function toggleTheme", "function zoomReset",
+                       "/api/har_upload", "function renderNavBadges", "function renderSmart",
+                       "function toggleDrawer", "function numVal", "prize:$('bPrize')"):
+            with self.subTest(js_marker=marker):
+                self.assertIn(marker, js)
 
 
 if __name__ == "__main__":

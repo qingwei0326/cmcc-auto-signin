@@ -486,7 +486,7 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
                 print(f"  -  饲料不足 250（当前 {fodder}），停止喂养")
                 break
             # 阶段将满保护：这一喂会让进度打满时，未开 --auto-claim 就停手
-            if not args.auto_claim:
+            if not (args.auto_claim or args.continue_stage):
                 stc = call(s, cfg, "stage_info")
                 sd = stc.get("data") or {}
                 prog = int(sd.get("feedFodders") or 0)

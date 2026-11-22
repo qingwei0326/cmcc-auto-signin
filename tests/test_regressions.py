@@ -833,8 +833,9 @@ class TestFrontendSplit(unittest.TestCase):
         f = ROOT / "static" / "index.html"
         self.assertTrue(f.is_file())
         self.assertEqual(dashboard.INDEX_HTML, f.read_text(encoding="utf-8"))
+        bundle = dashboard.load_frontend_bundle()
         for marker in ("runSeckill", "seckill_run", "cmcc_seckill.py"):
-            self.assertIn(marker, dashboard.INDEX_HTML)
+            self.assertIn(marker, bundle)
 
     def test_missing_frontend_fails_loudly(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1000,7 +1001,7 @@ class TestFrozenPathGuards(unittest.TestCase):
 
     def test_frontend_shows_import_error(self):
         """导入失败原因要留在页面上，不能只靠一闪而过的 toast。"""
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        html = dashboard.load_frontend_bundle()
         self.assertIn("harOut", html)
         # afterHar 里必须有 err 分支
         i = html.find("function afterHar")
@@ -1725,7 +1726,7 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
 
 
     def test_dashboard_has_games_page_and_action(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        html = dashboard.load_frontend_bundle()
         self.assertIn('id="p-games"', html)
         self.assertIn("games_run", html)
         self.assertIn('id="gmFile"', html)
@@ -3024,7 +3025,7 @@ class TestAuditFixes11To16(unittest.TestCase):
             self.assertEqual(saved["bark_url"], "https://bark.example/k")
 
     def test_frontend_audit_12_13_fixes(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        html = dashboard.load_frontend_bundle()
         self.assertNotIn("_stateFail.reloaded", html)
         self.assertIn("FAIL_RELOAD_KEY", html)
         self.assertIn("MAIL_PRESETS[prov]", html)

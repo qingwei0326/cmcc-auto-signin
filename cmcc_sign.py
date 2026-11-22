@@ -458,6 +458,12 @@ def session_expired(cfg: Config, now: datetime = None) -> bool:
 # ---------------------------------------------------------------- 通知
 
 def notify(cfg: Config, title: str, detail: str):
+    # 批量运行（run_all）时每个号都会走到这里：签到、秒杀、周三活动全复用本函数，
+    # 一次跑下来能推十几条，最后 run_all 还会再发一条汇总战报。
+    # 交给 run_all 统一发（战报 / 失败 / 凭证过期），子脚本这里一律静默；
+    # 单独运行某个脚本时 CMCC_NOTIFY_BATCH 未设，通知照常。
+    if os.environ.get("CMCC_NOTIFY_BATCH"):
+        return False
     # 通知域名与签到主站 TLS 要求不同，用独立的直连会话（不走系统代理，避免抓包工具干扰）
     s = requests.Session()
     s.trust_env = False

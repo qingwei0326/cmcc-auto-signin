@@ -36,7 +36,7 @@ import time
 from email import policy
 from pathlib import Path
 
-from common import app_base, atomic_write_json, load_json, notify, setup_utf8, update_json
+from common import app_base, atomic_write_json, load_json, notify_once, setup_utf8, update_json
 
 setup_utf8()
 
@@ -295,9 +295,11 @@ def run_once(cfg) -> int:
         line = catchup_after_import(cfg, report)
         print("  " + line)
         if "失败" in line:
-            notify("HAR 导入后的补跑异常", "新凭证已保存。请在控制台查看补跑结果。")
+            notify_once("har_catchup_failed", "HAR 导入后的补跑异常",
+                        "新凭证已保存。请在控制台查看补跑结果。", hours=12)
         elif not failed:
-            notify("HAR 自动导入完成", "\n".join([*report, line]))
+            notify_once("har_import_done", "HAR 自动导入完成",
+                        "\n".join([*report, line]), hours=12)
 
     print(f"本轮处理 {ok} 份 HAR")
     return 0

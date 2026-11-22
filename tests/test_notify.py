@@ -236,6 +236,70 @@ class TestTodayFinished(unittest.TestCase):
         self.assertFalse(self.R.today_finished(awards=[], runs=[], today=self.day))
 
 
+class TestLocalNotifyBatchQuiet(unittest.TestCase):
+    """cmcc_sign 的本地 notify 在批量模式下必须闭嘴——签到/秒杀/周三都复用它。
+
+    这是「任务做完了还推好几次」的真凶：run_all 结尾会发一条汇总战报，
+    但子脚本每个号、每类动作都各自直连 pushplus 推一条，几号叠加就刷屏。
+    """
+
+    def setUp(self):
+        import cmcc_sign
+        self.M = cmcc_sign
+        # notify 只用到这三个字段，不必真去读 config.json
+        self.cfg = type("Cfg", (), {"serverchan_sendkey": "", "bark_url": "",
+                                    "pushplus_token": "a" * 32})()
+
+    def test_batch_mode_suppresses_local_notify(self):
+        """批量运行：任何一条（含签到成功）都不许发——会话都不该被创建。"""
+        with mock.patch.dict(os.environ, {"CMCC_NOTIFY_BATCH": "1"}), \
+                mock.patch.object(self.M.requests, "Session",
+                                  side_effect=AssertionError("批量模式不该创建会话")):
+            self.assertFalse(self.M.notify(self.cfg, "移动签到通知", "签到成功"))
+
+    def test_all_shared_scripts_use_same_notify(self):
+        """静态护栏：秒杀 / 周三活动都从 cmcc_sign 导入同一个 notify。
+
+        以后谁给某个脚本换了独立推送函数，这条会提醒他同步补批量静默。
+        """
+        for name in ("cmcc_seckill", "cmcc_wed"):
+            src = Path(__file__).resolve().parent.parent.joinpath(name + ".py").read_text(
+                encoding="utf-8")
+            self.assertIn("from cmcc_sign import", src, name)
+            self.assertRegex(src, r"\bnotify\b", name)
+
+    def test_standalone_still_pushes(self):
+        """单独跑脚本时 CMCC_NOTIFY_BATCH 未设，通知要照常发。"""
+        env = dict(os.environ)
+        env.pop("CMCC_NOTIFY_BATCH", None)
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(self.M.requests, "Session") as sess:
+            sess.return_value.post.return_value = mock.Mock(status_code=200)
+            self.M.notify(self.cfg, "移动签到通知", "签到成功")
+            self.assertTrue(sess.return_value.post.called, "单独运行应该发 pushplus")
+
+
+class TestMailWatchNotifyDedup(unittest.TestCase):
+    """HAR 导入/补跑通知要走 notify_once，别每 5 分钟轮询重复推。"""
+
+    def setUp(self):
+        import mail_watch
+        self.src = Path(mail_watch.__file__).resolve().read_text(encoding="utf-8")
+
+    def test_imports_notify_once(self):
+        self.assertIn("notify_once", self.src)
+
+    def test_no_bare_notify_calls(self):
+        # 除 import 行和注释外，不应再有裸 notify(...) 调用
+        import re
+        calls = re.findall(r"(?<!once)\bnotify\(", self.src)
+        self.assertEqual(calls, [], f"仍有裸通知调用：{calls}")
+
+    def test_uses_distinct_keys(self):
+        self.assertIn('notify_once("har_import_done"', self.src)
+        self.assertIn('notify_once("har_catchup_failed"', self.src)
+
+
 class TestNotifyDecisionStatic(unittest.TestCase):
     """静态护栏：推送规则别被改回「只要有过期就发票过期通知」。"""
 

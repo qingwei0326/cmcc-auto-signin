@@ -1046,14 +1046,18 @@ def do_action(body: dict):
                     used = 1
                 else:
                     rep, used = HI.scan_dir(d)
-        except Exception as e:
-            return {"ok": False, "err": f"导入失败：{e}"}
+        except Exception:
+            rep, used = ["✗ HAR 读取或导入失败"], 0
         for line in rep:
             RUNNER.push("  " + line)
         RUNNER.push("■ HAR 导入结束")
-        if not used:
-            return {"ok": False, "err": "没有可用 token", "report": rep}
-        return {"ok": True, "report": rep, "msg": f"HAR 导入完成（{used} 份）"}
+        success, failed = HI.report_outcome(rep)
+        if failed or not success:
+            HI.notify_import_problem(rep)
+        if not success:
+            return {"ok": False, "err": "HAR 未导入任何凭证", "report": rep}
+        label = "HAR 部分导入成功" if failed else "HAR 导入完成"
+        return {"ok": True, "report": rep, "msg": f"{label}（处理 {used} 份）"}
 
     if act == "bass_token_save":
         f = safe_conf_path(body.get("file"))
@@ -1396,7 +1400,7 @@ def build_state():
 # 到账流水的「来源」属于哪张卡。全国签到那边只有签到奖品和签到有礼的每周秒杀，
 # 其余（养成、转盘、消消乐、寻宝）都走福建 bass 鉴权。认不出的新来源归福建，
 # 因为新加的活动脚本基本都是福建那套。
-QWHD_SOURCES = ("每日签到", "每周秒杀")
+QWHD_SOURCES = ("每日签到", "每周秒杀", "游戏币", "追剧领福利", "次数", "掼蛋次数")
 
 
 def award_platform(source) -> str:

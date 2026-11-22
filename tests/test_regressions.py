@@ -477,6 +477,7 @@ class TestHarImport(unittest.TestCase):
             os.utime(old, (1000000, 1000000))
             os.utime(new, (2000000, 2000000))
             with mock.patch.object(har_import, "BASE", d), \
+                 mock.patch.object(har_import, "_verify_national"), \
                  mock.patch.object(PT, "OUT_DIR", d / "life"), \
                  mock.patch.object(PT, "_accounts", lambda: []):
                 lines, used = har_import.scan_dir(d)
@@ -488,6 +489,7 @@ class TestHarImport(unittest.TestCase):
         seen = {}
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(har_import, "BASE", Path(tmp)), \
+                 mock.patch.object(har_import, "_verify_national"), \
                  mock.patch.object(PT, "mark_issued",
                                    lambda ts, phone=None: seen.update(ts=ts, phone=phone)):
                 har_import.apply(self._har("JSESSIONID=A; UID=1; ticketID=x",
@@ -519,6 +521,52 @@ def safe_temp_dir():
                 return
             except OSError:
                 time.sleep(0.05)
+
+
+class TestVerifiedHarImport(unittest.TestCase):
+    _har = TestHarImport._har
+    def test_expired_national_leaves_working_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            target = base / "configs" / "1234.json"
+            target.parent.mkdir()
+            old = {"phone": "13800001234", "app_token": "original"}
+            target.write_text(json.dumps(old), encoding="utf-8")
+            with mock.patch.object(har_import, "BASE", base), \
+                 mock.patch.object(har_import, "_verify_national", side_effect=RuntimeError("已过期")), \
+                 mock.patch.object(PT, "mark_issued") as issued:
+                lines = har_import.apply(self._har("JSESSIONID=OLD; UID=1; ticketID=x", ""))
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), old)
+            self.assertEqual(har_import.report_outcome(lines), (False, True))
+            issued.assert_not_called()
+
+    def test_bass_skips_newer_unusable_candidate(self):
+        usable = "12345678-1234-1234-1234-123456789abc"
+        rejected = "62345678-1234-1234-1234-123456789abc"
+        har = {"log": {"entries": [
+            {"startedDateTime": f"2026-11-22T04:00:0{i}Z",
+             "request": {"url": "https://wap.fj.10086.cn/bass-cultivateGameServer/sign/getSignInfo",
+                         "headers": [{"name": "Authorization", "value": f"Bearer {token}"}]}}
+            for i, token in enumerate((usable, rejected))
+        ]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            target = base / "configs_fj" / "fj2.json"
+            target.parent.mkdir()
+            target.write_text(json.dumps({"phone": "13800001234", "note": "保持"}), encoding="utf-8")
+            with mock.patch.object(har_import, "BASE", base), \
+                 mock.patch.object(har_import, "_masked_phone_of_bearer",
+                                   side_effect=lambda token: "138****1234" if token == usable else ""), \
+                 mock.patch.object(har_import, "_verify_bass"):
+                lines = har_import.apply(json.dumps(har))
+            cfg = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual((cfg["bearer_token"], cfg["note"]), (usable, "保持"))
+            self.assertEqual(har_import.report_outcome(lines), (True, False))
+
+    def test_partial_failure_notification_omits_success_details(self):
+        with mock.patch.object(har_import, "notify", return_value=True) as send:
+            har_import.notify_import_problem(["✓ 全国 1234：已更新配置", "✗ BASS：无法核实账号"])
+        send.assert_called_once_with("HAR 部分导入失败", "✗ BASS：无法核实账号")
 
 
 class TestCrossProcessState(unittest.TestCase):
@@ -986,7 +1034,9 @@ class TestFrozenPathGuards(unittest.TestCase):
                             "carrierOperator": "002", "appVersionCode": "12.5.7",
                             "userCheckId": "3368b4ed2"})},
                     }}]}}
-                har_import.apply(json.dumps(har))
+                with mock.patch.object(har_import, "_verify_national"), \
+                     mock.patch.object(PT, "mark_issued"):
+                    har_import.apply(json.dumps(har))
                 after = json.loads(target.read_text(encoding="utf-8"))
                 self.assertIn("NEWTOKEN", after["app_token"],
                               "导入没有写进 configs 目录 —— 又退回了临时目录的老问题")
@@ -1496,6 +1546,11 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             self.assertEqual(args[1], "游戏币")
             self.assertEqual(args[2], "100MB流量日包券")
 
+    def test_video_lottery_source_label(self):
+        """追剧领福利的抽奖奖品来源写成明确的活动名，不再是含糊的「次数」。"""
+        import cmcc_extra as EX
+        self.assertEqual(EX.ACTS["video"]["lottery"]["label"], "追剧领福利")
+
     def test_record_award_allow_dup(self):
         """抽奖一次中多张相同奖品时，每张都要记；默认仍按分钟去重。"""
         import common
@@ -1573,10 +1628,26 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
         self.assertIn("lottery", act, "掼蛋活动漏了抽奖配置")
         lot = act["lottery"]
         self.assertEqual(lot["component"], act["task_component"])
-        self.assertEqual(lot["wallet_key"], "remain")
+        # 实测 period/remain 返回 {winRemain:3, remain:0}，可用次数在 winRemain，
+        # remain 恒为 0。误配成 remain 会让机会一直被当成余额 0 白白浪费。
+        self.assertEqual(lot["wallet_key"], "winRemain")
         self.assertEqual(lot["cost"], 1)
         # 掼蛋是随时可抽，不该被 weekday/start_hour 卡住
         self.assertNotIn("weekday", lot)
+
+    def test_game_coin_lottery_is_all_week(self):
+        """游戏币抽奖全时段开放，不能被 weekday=6 卡住。
+
+        2026-11-22（周日）14:25 实测 4167 抽了 8 次，命中
+        prizePool=「非周六抽奖奖池」，6 中 2 空。原 weekday=6/start_hour=12
+        会让它非周六一次都不抽，白攒币到 31 天清零。
+        """
+        import cmcc_extra as EX
+        lot = EX.ACTS["saturday"]["lottery"]
+        self.assertNotIn("weekday", lot, "游戏币不该再限制周六")
+        self.assertNotIn("start_hour", lot, "游戏币不该再限制 12:00 起")
+        self.assertEqual(lot["wallet_key"], "remainGameVal")
+        self.assertEqual(lot["cost"], 10)
 
     def test_lottery_continues_after_no_win(self):
         """NO_WON 是正常「没中奖」，照样扣了币，不能中断剩余次数。
@@ -1645,6 +1716,7 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             finally:
                 common.AWARDS_FILE = real
 
+
     def test_dashboard_has_games_page_and_action(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="p-games"', html)
@@ -1665,6 +1737,111 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
             s = line.strip()
             if s.lower().startswith("rem"):
                 self.assertTrue(s.isascii(), f"rem 注释含非 ASCII：{s}")
+
+
+class TestDailyReportSavedTime(unittest.TestCase):
+    """战报里的「替你省了多少时间」：去重口径、扣脚本耗时、不为负。"""
+
+    def _report(self, awards, runs=None):
+        import common
+        with tempfile.TemporaryDirectory() as td:
+            real_aw, real_runs = common.AWARDS_FILE, common.RUNS_FILE
+            common.AWARDS_FILE = Path(td) / "awards.json"
+            common.RUNS_FILE = Path(td) / "runs.json"
+            try:
+                common.atomic_write_json(common.AWARDS_FILE, {"records": awards})
+                common.atomic_write_json(common.RUNS_FILE, runs or [])
+                return common.daily_report("2026-11-21")
+            finally:
+                common.AWARDS_FILE, common.RUNS_FILE = real_aw, real_runs
+
+    def test_same_account_same_source_counts_once(self):
+        """同一号连抽 10 次只算一次手动操作，不能按笔数把省的时间吹大。"""
+        awards = [
+            {"at": "2026-11-21 10:0%d:00" % i, "account": "13900005678",
+             "source": "天天大转盘", "name": "100MB流量日包券",
+             "kind": "flow", "size_mb": 100.0}
+            for i in range(10)
+        ]
+        _title, body = self._report(awards)
+        # 一个 (账号, 来源) = 大转盘 4 分钟，脚本 0 分钟 → 省 4 分钟
+        self.assertIn("替你省了约 4 分钟", body)
+        self.assertIn("手动做约 4 分钟", body)
+
+    def test_different_sources_count_separately(self):
+        """不同来源算不同手动操作；来源不同但同号也要分别计。"""
+        awards = [
+            {"at": "2026-11-21 10:00:00", "account": "13900005678",
+             "source": "游戏币", "name": "100MB流量日包券", "kind": "flow", "size_mb": 100.0},
+            {"at": "2026-11-21 11:00:00", "account": "13900005678",
+             "source": "追剧领福利", "name": "500MB流量日包券", "kind": "flow", "size_mb": 500.0},
+            {"at": "2026-11-21 12:00:00", "account": "13800138000",
+             "source": "游戏币", "name": "100MB流量日包券", "kind": "flow", "size_mb": 100.0},
+        ]
+        _title, body = self._report(awards)
+        # 游戏币5 + 追剧5 + 游戏币5 = 15 分钟
+        self.assertIn("手动做约 15 分钟", body)
+        self.assertIn("替你省了约 15 分钟", body)
+
+    def test_script_seconds_are_subtracted_and_readonly_ignored(self):
+        """真实执行耗时要扣掉；只读刷新/失败轮次不算脚本耗时。"""
+        awards = [
+            {"at": "2026-11-21 10:00:00", "account": "13900005678",
+             "source": "秒杀", "name": "1元话费券", "kind": "fee", "yuan": 1.0},
+        ]
+        runs = [
+            {"ts": "2026-11-21 10:00:00", "label": "秒杀", "sec": 120, "ok": True},
+            {"ts": "2026-11-21 10:01:00", "label": "刷新全部账号状态（只读检查）",
+             "sec": 600, "ok": True},
+            {"ts": "2026-11-21 10:02:00", "label": "秒杀", "sec": 999, "ok": False},
+            {"ts": "2026-11-20 10:00:00", "label": "秒杀", "sec": 999, "ok": True},
+        ]
+        _title, body = self._report(awards, runs)
+        # 秒杀手动 10 分钟 - 脚本 120 秒 = 8 分钟；只读/失败/昨天都不扣
+        self.assertIn("脚本跑了 2.0 分钟", body)
+        self.assertIn("替你省了约 8 分钟", body)
+
+    def test_saved_time_never_negative(self):
+        """脚本比手动还慢时也不能出现「省了 -X 分钟」。"""
+        awards = [
+            {"at": "2026-11-21 10:00:00", "account": "13900005678",
+             "source": "签到", "name": "100MB流量日包券", "kind": "flow", "size_mb": 100.0},
+        ]
+        runs = [{"ts": "2026-11-21 10:00:00", "label": "签到领福利",
+                 "sec": 1800, "ok": True}]
+        _title, body = self._report(awards, runs)
+        self.assertIn("替你省了约 0 分钟", body)
+        self.assertNotIn("省了约 -", body)
+
+    def test_ignored_awards_do_not_count(self):
+        """被忽略的券不算手动操作。"""
+        awards = [
+            {"at": "2026-11-21 10:00:00", "account": "13900005678",
+             "source": "签到", "name": "5元话费加赠券", "kind": "fee",
+             "yuan": 5.0, "ignored": True},
+            {"at": "2026-11-21 11:00:00", "account": "13900005678",
+             "source": "追剧领福利", "name": "100MB流量日包券", "kind": "flow", "size_mb": 100.0},
+        ]
+        _title, body = self._report(awards)
+        self.assertIn("手动做约 5 分钟", body)
+
+    def test_broken_runs_file_does_not_break_report(self):
+        """runs.json 读不了也不能让战报发不出去。"""
+        import common
+        with tempfile.TemporaryDirectory() as td:
+            real_aw, real_runs = common.AWARDS_FILE, common.RUNS_FILE
+            common.AWARDS_FILE = Path(td) / "awards.json"
+            common.RUNS_FILE = Path(td) / "runs.json"
+            try:
+                common.atomic_write_json(common.AWARDS_FILE, {"records": [
+                    {"at": "2026-11-21 10:00:00", "account": "13900005678",
+                     "source": "签到", "name": "100MB流量日包券",
+                     "kind": "flow", "size_mb": 100.0}]})
+                common.RUNS_FILE.write_text("{坏文件", encoding="utf-8")
+                _title, body = common.daily_report("2026-11-21")
+                self.assertIn("替你省了约 3 分钟", body)
+            finally:
+                common.AWARDS_FILE, common.RUNS_FILE = real_aw, real_runs
 
 
 class TestHiddenTaskLauncher(unittest.TestCase):
@@ -2093,7 +2270,9 @@ class TestUsabilityFixes(unittest.TestCase):
                                       "value": "Bearer 12345678-1234-1234-1234-123456789abc"}]}}]}}
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(har_import, "BASE", Path(tmp)), \
-                    mock.patch.object(har_import, "_verify", lambda rep: []), \
+                    mock.patch.object(har_import, "_verify_national"), \
+                    mock.patch.object(har_import, "_verify_bass"), \
+                    mock.patch.object(har_import, "_masked_phone_of_bearer", return_value="138****1234"), \
                     mock.patch.object(PT, "mark_issued", lambda *a, **k: None):
                 rep = har_import.apply(json.dumps(har))
             f = Path(tmp) / "configs_fj" / "1234.json"
@@ -2111,9 +2290,9 @@ class TestUsabilityFixes(unittest.TestCase):
                                       "value": "Bearer 12345678-1234-1234-1234-123456789abc"}]}}]}}
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(har_import, "BASE", Path(tmp)), \
-                    mock.patch.object(har_import, "_verify", lambda rep: []):
+                    mock.patch.object(har_import, "_masked_phone_of_bearer", return_value=""):
                 rep = har_import.apply(json.dumps(har))
-        line = next(l for l in rep if l.startswith("BASS 拿到 token"))
+        line = next(l for l in rep if l.startswith("✗ BASS"))
         self.assertIn("新建账号", line)
         self.assertNotIn("请在页面上选择账号后再导入", line)
 

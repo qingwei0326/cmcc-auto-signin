@@ -228,7 +228,7 @@ Register-ScheduledTask -TaskName "MobileSeckill" -Action $a5 -Trigger $t5 -Force
 
 ## 秒杀抢券（每天 12:00 抢 1 元话费券）
 
-签到页面里的「每周秒杀」，**每天 12:00 ~ 13:00 开抢**，奖品 1 元话费券，限抢 1 次。
+签到页面里的「每周秒杀」，**每天 12:00 ~ 13:00 开抢**，奖品 1 元话费券，每个账号每周限抢 1 次，领取资格每周重置。
 实现见 `cmcc_seckill.py`，接口细节见 [docs/seckill.md](docs/seckill.md)。
 
 ```bash

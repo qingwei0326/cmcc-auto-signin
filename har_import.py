@@ -6,12 +6,7 @@ har_import.py —— 从 HAR 里同时提取 qwhdhub app_token 与 BASS Bearer t
     手机号从 userCheckId（十六进制）反解，反解失败时在请求体里正则兜底。
   · BASS 的 token 来自任意 wap.fj.10086.cn / app.fmcc.com.cn 请求的 Authorization 头，
     形如 Bearer <36位UUID>。
-  · BASS 的 HAR 本身不含手机号，归属账号依次按三条线索判定：
-      1) 同一份 HAR 里的 qwhdhub 号码；
-      2) 调用方显式指定的 key（configs/<key>.json 的 phone）；
-      3) 用该 bearer 调一次 luck/index，回显的脱敏号码（184****3239）——
-         福建活动页压根不发 appTokenLogin，没有这条线索时每份福建抓包
-         都会掉进「认不出属于哪个号码」，所以这是主路径。
+  · 全国票据以新票实测登录，福建按候选逐一验证并核对归属，再写配置。
   · 只写 token 相关字段，其余配置原样保留。
 """
 
@@ -21,7 +16,8 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from common import atomic_write_json, app_base, find_har_files
+from urllib.parse import urlsplit
+from common import atomic_write_json, app_base, find_har_files, notify, update_json
 
 FJ_LUCK_INDEX = "https://wap.fj.10086.cn/bass-preferentialAreaServer/luck/index"
 BASS_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 "
@@ -105,7 +101,7 @@ def parse_har_text(text):
     entries = ((data.get("log") or {}).get("entries")) or []
 
     qwhd = {}
-    bass = None
+    bass_candidates = {}
     guandan = None
     saw_migu = False
     mobiles = set()
@@ -120,12 +116,14 @@ def parse_har_text(text):
         url = str(req.get("url") or "")
         ts = str(e.get("startedDateTime") or "")
         hdr = _headers(req)
+        origin = urlsplit(url)
+        national = origin.scheme == "https" and origin.hostname == "wx.10086.cn"
 
         for m in PHONE_RE.finditer(url):
             mobiles.add(m.group(0))
 
         # ---- qwhdhub ----
-        if QWH_MARK in url:
+        if national and QWH_MARK in origin.path:
             raw = (req.get("postData") or {}).get("text") or ""
             body = {}
             if raw.strip().startswith("{"):
@@ -146,16 +144,16 @@ def parse_har_text(text):
                     mobiles.add(phone)
 
         # ---- qwhd 响应里的脱敏号码（归属判定用） ----
-        if "qwhdhub" in url:
+        if national and "qwhdhub" in origin.path:
             rtxt = str(((e.get("response") or {}).get("content") or {}).get("text") or "")
             if rtxt:
                 m = MASKED_RE.search(rtxt)
-                if m and not masked_hint:
+                if m and (not masked_hint or origin.path.endswith("/mark/user/info")):
                     masked_hint = m.group(0)
 
         # ---- x-token 兜底 ----
         xt = hdr.get("x-token") or ""
-        if "JSESSIONID" in xt.upper() and "wx.10086.cn" in url:
+        if "JSESSIONID" in xt.upper() and national:
             if xtoken_fallback.get("token") is None or ts >= xtoken_fallback["ts"]:
                 xtoken_fallback = {"token": xt, "url": url, "ts": ts}
 
@@ -193,11 +191,12 @@ def parse_har_text(text):
 
         # ---- BASS ----
         auth = hdr.get("authorization", "")
-        if auth.lower().startswith("bearer ") and any(h in url for h in BASS_HOSTS):
+        if (origin.scheme == "https" and origin.hostname in BASS_HOSTS
+                and auth.lower().startswith("bearer ")):
             tok = auth[7:].strip()
             if UUID_RE.fullmatch(tok):
-                if bass is None or ts >= bass["ts"]:
-                    bass = {"token": tok, "url": url, "ts": ts}
+                if ts >= bass_candidates.get(tok, {}).get("ts", ""):
+                    bass_candidates[tok] = {"token": tok, "url": url, "ts": ts}
 
     # appTokenLogin 没抓到时，用 x-token 兜底。归属靠脱敏号码，
     # 脱敏号码也读不到就先归到一个占位号，让调用方用接口反查。
@@ -210,7 +209,9 @@ def parse_har_text(text):
         if phone:
             mobiles.add(phone)
 
-    return {"qwhd": qwhd, "bass": bass, "mobiles": sorted(mobiles),
+    candidates = sorted(reversed(list(bass_candidates.values())), key=lambda row: row["ts"], reverse=True)
+    return {"qwhd": qwhd, "bass": next(iter(candidates), None),
+            "bass_candidates": candidates, "mobiles": sorted(mobiles),
             "masked": masked_hint, "guandan": guandan, "saw_migu": saw_migu}
 
 
@@ -275,178 +276,205 @@ def _masked_phone_of_bearer(tok, timeout=12):
         r = s.get(FJ_LUCK_INDEX,
                   params={"appId": 26, "timestamp": int(time.time() * 1000)},
                   headers={"Authorization": "Bearer " + tok, "User-Agent": BASS_UA},
-                  timeout=timeout)
+                  timeout=timeout, allow_redirects=False)
         d = (r.json() or {}).get("data") or {}
         return str(d.get("userPhone") or "")
     except Exception:
         return ""
 
 
-def apply(text, key=None):
-    """解析并写回配置，返回人类可读的报告行列表。"""
-    try:
-        p = parse_har_text(text)
-    except Exception as e:
-        return [f"解析失败：{e}"]
+def _verify_national(candidate):
+    import cmcc_sign as CS
 
-    report = []
-    try:
-        _assert_writable()
-    except RuntimeError as e:
-        return [f"导入中止：{e}"]
+    cfg = CS.Config(None)
+    for field in ("phone", "app_token", "province_code", "city_code", "carrier_operator",
+                  "app_version_code", "activity_id", "channel_id"):
+        setattr(cfg, field, candidate[field])
+    session, referer = CS.exchange_session(cfg, use_jwt_cache=False)
+    with session:
+        CS.query_markstatus(session, referer)
 
-    # ---- qwhdhub 写 configs/<尾号>.json ----
-    for phone, a in sorted(p["qwhd"].items()):
-        # x-token 兜底时只拿到脱敏号码（173XXXX4167），按前3+后4匹配已有配置
+
+def _verify_bass(cfg):
+    import cmcc_fj as FJ
+
+    with FJ.new_session(cfg) as session:
+        if not FJ.call(session, cfg, "sign_info", retries=0).get("ok"):
+            raise RuntimeError("BASS 签到状态验证失败")
+
+
+def _write_verified(path, cfg, field, patch):
+    """保留其它字段，避免等待验票时覆盖另一进程新写入的凭证。"""
+    def merge(current):
+        if current.get(field) != cfg.get(field) or current.get("phone") != cfg.get("phone"):
+            raise RuntimeError("配置已变化，请重试")
+        current.update(patch)
+    update_json(path, merge, indent=2)
+
+
+def _mark_verified(key, field, report):
+    stamp = datetime.now().strftime("%m-%d %H:%M")
+    try:
+        def merge(stats):
+            stats.setdefault(key, {}).update({field: "ok", field + "_at": stamp})
+        update_json(BASE / "gui_data" / "stats.json", merge)
+    except (OSError, ValueError, TypeError, AttributeError):
+        report.append(f"✗ {key}：新票已保存，状态标记更新失败")
+
+
+def _same_phone(phone, observed):
+    if PHONE_RE.fullmatch(observed):
+        return phone == observed
+    return bool(MASKED_RE.fullmatch(observed)
+                and phone[:3] == observed[:3] and phone[-4:] == observed[-4:])
+
+
+def _import_national(parsed, report):
+    for phone, entry in sorted(parsed["qwhd"].items()):
         if "XXXX" in phone:
-            phone = _match_existing_phone(phone) or phone
-        out = BASE / "configs" / f"{phone[-4:]}.json"
-        cfg = _read_json(out)
-        body = a.get("body") or {}
-        cfg.update({
-            "app_token": a["token"],
-            "phone": phone,
-            "province_code": str(body.get("provinceCode") or cfg.get("province_code") or "591"),
-            "city_code": str(body.get("cityCode") or cfg.get("city_code") or "0596"),
-            "carrier_operator": str(body.get("carrierOperator") or cfg.get("carrier_operator") or "002"),
-            "app_version_code": str(body.get("appVersionCode") or cfg.get("app_version_code") or "12.5.7"),
-        })
-        cfg.setdefault("activity_id", "1021122301")
-        cfg.setdefault("channel_id", "P00000109876")
-        _write_json(out, cfg)
-        report.append(f"qwhdhub {phone} → configs/{out.name}（token {len(a['token'])} 字符）")
-
-        # 记录签发时刻，让寿命探测能算出精确分钟数
-        # HAR 的 startedDateTime 是 UTC（如 2026-11-20T04:09:25.123Z），要 +8 小时转本地时间
-        issued = _issued_local(a.get("ts"))
-        if issued:
+            phone = _match_existing_phone(phone)
+        if not PHONE_RE.fullmatch(phone):
+            report.append("✗ 全国签到：无法确认账号，请抓取包含账号信息的活动页")
+            continue
+        path = BASE / "configs" / f"{phone[-4:]}.json"
+        old = _read_json(path)
+        if old.get("phone") and old["phone"] != phone:
+            report.append(f"✗ 全国 {path.stem}：尾号对应多份配置，未更新")
+            continue
+        body = entry.get("body") or {}
+        candidate = {
+            "app_token": entry["token"], "phone": phone,
+            "province_code": str(body.get("provinceCode") or old.get("province_code") or "591"),
+            "city_code": str(body.get("cityCode") or old.get("city_code") or "0596"),
+            "carrier_operator": str(body.get("carrierOperator") or old.get("carrier_operator") or "002"),
+            "app_version_code": str(body.get("appVersionCode") or old.get("app_version_code") or "12.5.7"),
+            "activity_id": old.get("activity_id") or "1021122301",
+            "channel_id": old.get("channel_id") or "P00000109876",
+        }
+        try:
+            _verify_national(candidate)
+            _write_verified(path, old, "app_token", candidate)
+        except Exception as e:
+            reason = "App 票据已过期" if "过期" in str(e) else type(e).__name__
+            report.append(f"✗ 全国 {path.stem}：实测登录或保存失败（{reason}），保留原配置")
+            continue
+        report.append(f"✓ 全国 {path.stem}：实测登录成功，已更新配置")
+        issued = _issued_local(entry.get("ts"))
+        if old.get("app_token") != candidate["app_token"]:
             try:
                 import probe_token_life as PT
-                PT.mark_issued(issued, phone=phone)
-                report.append(f"  ↳ 票据签发时刻 {issued}，已写入寿命探测记录")
-            except Exception as e:
-                report.append(f"  ↳ 记录签发时刻失败：{e}")
+                PT.mark_issued(issued or None, phone=phone)
+            except Exception:
+                report.append(f"✗ 全国 {path.stem}：新票已导入，寿命探测记录更新失败")
+        _mark_verified(path.stem, "token_qwhd", report)
 
+
+def _import_bass(parsed, key, report):
+    targets = _fj_targets()
+    known = set(targets)
+    known.update(phone for phone in parsed["qwhd"] if PHONE_RE.fullmatch(phone))
+    if key and re.fullmatch(r"[\w-]+", str(key)):
+        for directory in ("configs", "configs_fj"):
+            phone = str(_read_json(BASE / directory / f"{key}.json").get("phone") or "")
+            if PHONE_RE.fullmatch(phone):
+                known.add(phone)
+    if len(parsed["mobiles"]) == 1:
+        known.add(parsed["mobiles"][0])
+
+    imported = set()
+    failed = set()
+    unknown = 0
+    for entry in parsed["bass_candidates"]:
+        token = entry["token"]
+        observed = _masked_phone_of_bearer(token)
+        owners = {phone for phone in known if _same_phone(phone, observed)}
+        if not owners and PHONE_RE.fullmatch(observed):
+            owners.add(observed)
+        if len(owners) != 1:
+            unknown += 1
+            continue
+        phone = owners.pop()
+        if phone in imported:
+            continue
+        path = targets.get(phone) or BASE / "configs_fj" / f"{phone[-4:]}.json"
+        old = _read_json(path)
+        if old.get("phone") and old["phone"] != phone:
+            failed.add(phone)
+            continue
+        patch = {"bearer_token": token, "phone": phone}
+        if not old:
+            patch.update(app_id="0", prize_prefer="flow",
+                         referer="https://wap.fj.10086.cn/bass-cultivateGameServer/")
+        try:
+            _verify_bass({**old, **patch})
+            _write_verified(path, old, "bearer_token", patch)
+        except Exception:
+            failed.add(phone)
+            continue
+        imported.add(phone)
+        action = "已更新" if old else "已新建"
+        report.append(f"✓ BASS {path.stem}：实测可用，{action}配置")
+        _mark_verified(path.stem, "token_bass", report)
+
+    for phone in sorted(failed - imported):
+        report.append(f"✗ 福建尾号 {phone[-4:]}：验证或保存失败，保留原配置")
+    if unknown and not imported:
+        report.append("✗ BASS：凭证失效或无法核实账号。首次导入时请先新建账号或同时抓全国签到页")
+    elif unknown:
+        report.append(f"BASS 已跳过 {unknown} 份未能核实的候选凭证")
+
+
+def report_outcome(report):
+    """返回（有导入成功项，有失败项）。缺少另一平台的可选凭证不算失败。"""
+    return (any(line.startswith("✓ ") for line in report),
+            any(line.startswith("✗ ") for line in report))
+
+
+def notify_import_problem(report):
+    """每次导入汇总推送，避免把 HAR 内容、路径或票据放进通知。"""
+    ok, failed = report_outcome(report)
+    if ok and not failed:
+        return False
+    title = "HAR 部分导入失败" if ok else "HAR 导入失败"
+    safe_lines = [line for line in report if line.startswith("✗ ")]
+    return notify(title, "\n".join(safe_lines) or "没有找到可导入的凭证。")
+
+
+def apply(text, key=None):
+    """解析并验证候选票据，再更新对应配置。"""
+    try:
+        p = parse_har_text(text)
+    except (ValueError, AttributeError, TypeError):
+        return ["✗ HAR 解析失败，请重新导出"]
+    try:
+        _assert_writable()
+    except (RuntimeError, OSError):
+        return ["✗ 项目配置目录不可写"]
+
+    report = []
+    _import_national(p, report)
+    _import_bass(p, key, report)
     if not p["qwhd"]:
-        hint = "（未找到 appTokenLogin 请求）"
-        if p["mobiles"]:
-            # 只显示前几个，否则 HAR 里几百个号码会刷屏
-            shown = "、".join(p["mobiles"][:3])
-            more = f" 等 {len(p['mobiles'])} 个" if len(p["mobiles"]) > 3 else ""
-            hint += f"，HAR 里出现的号码：{shown}{more}"
-        report.append("qwhdhub 无可用 token " + hint)
+        report.append("qwhdhub 无可用 token（未抓到 App 登录票据）")
+    if not p["bass_candidates"]:
+        report.append("BASS 无可用 token（未抓到福建 Bearer）")
 
-    # ---- BASS 写 configs_fj ----
-    if p["bass"]:
-        tok = p["bass"]["token"]
-        targets = _fj_targets()
-        phones = list(p["qwhd"].keys())
-        if not phones and key:
-            kf = BASE / "configs" / f"{key}.json"
-            ph = str(_read_json(kf).get("phone") or "")
-            if PHONE_RE.fullmatch(ph):
-                phones = [ph]
-        if not phones and len(p["mobiles"]) == 1:
-            phones = p["mobiles"]
-
-        hit = next((targets[ph] for ph in phones if ph in targets), None)
-        masked = ""
-        if hit is None:
-            # 线索 3：问接口「我是谁」。福建活动抓包没有 qwhdhub 号码，
-            # 没有这一步就永远匹配不上 fj1/fj2。
-            masked = _masked_phone_of_bearer(tok)
-            if masked:
-                tail = masked[-4:]
-                hit = next((f for ph, f in targets.items() if ph[-4:] == tail), None)
-                if hit:
-                    report.append(f"BASS 归属：接口回显 {masked} → {hit.name}")
-        if hit is None and phones:
-            # 号码已知、但还没有对应配置（全新安装就是这种情况）：直接建一份。
-            # 早先这里只报「请在页面上选择账号」，可下拉框本身就是空的，
-            # 选什么都没用 —— 首次导入永远走不通。
-            ph = phones[0]
-            hit = BASE / "configs_fj" / f"{ph[-4:]}.json"
-            if not hit.exists():
-                _write_json(hit, {
-                    "bearer_token": "", "app_id": "0", "prize_prefer": "flow",
-                    "referer": "https://wap.fj.10086.cn/bass-cultivateGameServer/",
-                    "phone": ph, "note": "", "bark_url": "", "serverchan_sendkey": "",
-                })
-                report.append(f"BASS 首次导入，已新建 configs_fj/{hit.name}（{ph}）")
-        if hit is None:
-            report.append(
-                f"BASS 拿到 token {tok[:8]}…，但认不出属于哪个号码："
-                f"接口没回显号码（token 可能已失效）。请在导入按钮旁选择账号；"
-                f"若列表是空的，先到「凭证与账号 → 新建账号」建一份福建活动配置并填上手机号。"
-            )
-        else:
-            cfg = _read_json(hit)
-            if cfg.get("bearer_token") == tok:
-                report.append(f"BASS {hit.name} 已是该 token，跳过")
-            else:
-                cfg["bearer_token"] = tok
-                if phones and not str(cfg.get("phone") or ""):
-                    cfg["phone"] = phones[0]
-                _write_json(hit, cfg)
-                report.append(f"BASS {hit.name}（{cfg.get('phone')}）→ Bearer {tok[:8]}…")
-            # 「写了」不等于「能用」，写进去之后再问一次接口
-            if not masked:
-                masked = _masked_phone_of_bearer(tok)
-            if masked:
-                report.append(f"✓ BASS 实测可用，接口显示 {masked}")
-            else:
-                report.append(f"✗ BASS 实测不可用（token 已过期），请重新抓包")
-    else:
-        report.append("BASS 无可用 token（未找到 wap.fj.10086.cn 的 Authorization: Bearer）")
-
-    # ---- 咪咕掼蛋写 gui_data/guandan_auth.json ----
+    # 掼蛋的一次性票据留给实际登录消费。
     if p.get("guandan"):
         g = p["guandan"]
         out = BASE / "gui_data" / "guandan_auth.json"
         old = _read_json(out)
-        # device/seat 是本机状态，抓包里没有，别覆盖掉
-        merged = dict(old)
-        merged.update({k: v for k, v in g.items() if k != "ts"})
+        merged = {**old, **{k: v for k, v in g.items() if k != "ts"}}
         merged.setdefault("device", "00-00-00-00")
         merged["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        _write_json(out, merged)
-        left = ((g.get("expire") or 0) / 1000.0 - time.time()) / 86400.0
-        tag = f"约 {left:.1f} 天" if g.get("expire") else "有效期未知"
-        report.append(f"掼蛋 cat {g['cat'][:16]}… → gui_data/guandan_auth.json（{tag}）")
-    elif p.get("saw_migu"):
-        report.append("掼蛋 抓包里没有 gd-api.migufun.com/api/login 请求，拿不到 cat")
-
-    report.extend(_verify(report))
-    return report
-
-
-def _verify(report):
-    """导入后实测一次，让「导入成功」不等于「票能用」。
-
-    用户反馈过「界面显示导入了，但配置没变、任务还是失败」的情况，
-    根因是 onefile exe 把配置写到了临时解包目录。
-    所以这里真登录一次：能登录才算真的导入成功。
-    """
-    out = []
-    touched = []
-    for line in report:
-        if line.startswith("qwhdhub ") and "→ configs/" in line:
-            name = line.split("→ configs/")[1].split("（")[0].strip()
-            touched.append(BASE / "configs" / name)
-
-    for path in touched:
         try:
-            import cmcc_sign as CS
-            cfg = CS.Config(str(path))
-            CS.exchange_session(cfg)
-            out.append(f"✓ {path.name} 实测登录成功，票据可用")
-        except Exception as e:
-            msg = str(e).split("——")[0].strip()[:110]
-            out.append(f"✗ {path.name} 实测登录失败：{msg}")
-
-    if touched and not out:
-        out.append("（未能实测验证，请到总览页刷新状态复核）")
-    return out
+            _write_json(out, merged)
+            report.append("✓ 掼蛋凭证已保存，待实际使用时验证")
+        except OSError:
+            report.append("✗ 掼蛋凭证保存失败")
+    elif p.get("saw_migu"):
+        report.append("掼蛋：HAR 中未找到登录票据")
+    return report
 
 
 def scan_dir(directory=None):
@@ -483,9 +511,9 @@ def scan_files(files):
             text = f.read_text(encoding="utf-8", errors="ignore")
             p = parse_har_text(text)
         except Exception as e:
-            lines.append(f"{f.name}：解析失败（{e}）")
+            lines.append("✗ HAR 解析失败，请重新导出")
             continue
-        if not p["qwhd"] and not p["bass"]:
+        if not p["qwhd"] and not p["bass"] and not p["guandan"]:
             lines.append(f"{f.name}：未含目标请求，跳过")
             continue
         used += 1
@@ -510,4 +538,5 @@ if __name__ == "__main__":
     else:
         res, n = scan_dir()
     print("\n".join(res))
-    print(f"\n共处理 {n} 个有效 HAR")
+    print(f"\n共处理 {n} 个 HAR")
+    notify_import_problem(res)

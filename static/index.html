@@ -66,7 +66,7 @@ details.guide ol{margin:8px 0 2px 20px}
 .pill{font-size:12px;padding:4px 12px;border-radius:99px;border:1px solid var(--line);color:var(--sub);display:inline-block}
 .pill.run{color:#fff;background:var(--acc);border-color:var(--acc)}
 /* ===== KPI ===== */
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
 .kpi .k{font-size:12px;color:var(--sub);margin-bottom:8px}
 .kpi .v{font-size:25px;font-weight:600;letter-spacing:-.3px}
@@ -157,6 +157,8 @@ table.runtab{width:100%;max-width:880px;border-collapse:collapse;font-size:13px;
 /* 到账台账：内容列必须给足宽度。runtab 是 table-layout:fixed，
    多列平分会把「1GB流量日包」压成一字一行。
    不设「兑换」列：兑换要短信验证码，只能本人手动点，放链接反而误导。 */
+/* 台账汇总只保留「今日」两项，与顶部 KPI 的本月口径互补 */
+#awSum{grid-template-columns:repeat(2,1fr)}
 #awTab{table-layout:auto;max-width:100%}
 #awTab th:nth-child(1){width:110px}
 #awTab th:nth-child(2){width:120px}
@@ -262,9 +264,15 @@ select.inp{cursor:pointer}
         </div>
         <div id="todoBox"></div>
         <div class="kpis" id="sumbar"></div>
+        <div id="cards"></div>
         <div class="panel">
-          <h3>到账台账 <span class="hint">真到手的流量和能直接用的话费券，领到就记</span></h3>
+          <h3>到账台账 <span class="hint">真到手的流量和能直接用的话费券，领到就记</span><span class="hint" id="awHint" style="margin-left:auto"></span></h3>
           <div class="strip" id="awSum"></div>
+          <div class="frow" style="margin-top:12px">
+            <label>号码</label><select class="inp" id="awAcct" onchange="onAwFilter()" style="min-width:140px"></select>
+            <label>来源</label><select class="inp" id="awSource" onchange="onAwFilter()" style="min-width:140px"></select>
+            <button class="btn sm" id="awMoreBtn" data-nobusy onclick="toggleAwAll()" style="margin-left:auto">展开全部</button>
+          </div>
           <table class="runtab" id="awTab"></table>
           <div class="infobox" style="margin-top:10px">
             只记<b>到手就能直接用</b>的：流量包按 1GB=1024MB 折算。要充值才生效的券（充值 9.9 折、满 30 减 5）、
@@ -272,7 +280,6 @@ select.inp{cursor:pointer}
             数据来源是脚本领到东西那一刻写的流水，所以定时任务跑的也会出现在这里。
             <br><b>兑换要短信验证码，只能你本人在手厅点</b>，所以这里不提供跳转链接，只记账。</div>
         </div>
-        <div id="cards"></div>
         <div class="panel">
           <h3>运行记录 <span class="hint" id="effHint"></span></h3>
           <div class="strip" id="effbar"></div>
@@ -306,14 +313,14 @@ select.inp{cursor:pointer}
             全国签到的票据只有约 30 分钟寿命，过期就要重抓一次；福建活动的凭证能撑 20 小时以上。
           </details>
           <div class="frow"><label>选择文件</label><input type="file" id="harFile" accept=".har,.json" style="min-width:220px">
-            <select class="inp" id="harKey" style="min-width:180px" title="认不出号码时，手动指定导入到哪个账号"></select>
+            <select class="inp" id="harKey" style="min-width:180px" title="选择供核对的账号，服务器回显的号码必须匹配"></select>
             <button class="btn pri sm" data-nobusy onclick="importHar()">导入</button></div>
           <div class="frow"><label>自动查找</label>
             <button class="btn sm" data-nobusy onclick="act({action:'har_import'},afterHar)">扫描并导入（项目 / 下载 / 微信）</button>
             <button class="btn sm" data-nobusy onclick="act({action:'har_import',latest:1},afterHar)">只导入最新一份</button></div>
           <div class="infobox">导入不走运行槽，<b>秒杀等待期间也能导入</b>——脚本每轮重读配置，新票据会被自动接上。</div>
           <div class="infobox" id="harOut" style="display:none"></div>
-          <div class="infobox">号码按抓包文件里的手机号自动归位，认不出时用上面的下拉框指定。
+          <div class="infobox">凭证通过真实验证并核对号码后才更新。可用下拉框提供账号线索。
             导入后到「总览」点「刷新状态」复核。</div>
         </div>
         <div class="panel">
@@ -638,7 +645,10 @@ function nav(b){document.querySelectorAll('nav button').forEach(x=>x.classList.r
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));$('p-'+b.dataset.p).classList.add('on');
   $('pageTitle').textContent='签到控制台 / '+(TITLES[b.dataset.p]||'');
   try{history.replaceState(null,'','#'+b.dataset.p);}catch(e){}}
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+// 内联事件里的字符串参数：先生成合法 JS 字面量，再整体做 HTML 属性转义。
+// 不能只 esc(原始值)：HTML 解析会先把 &#39; 还原成引号，仍可能截断 JS 字符串。
+function jsArg(v){return esc(JSON.stringify(v==null?'':String(v)));}
 let toastTimer=null;
 function toast(m,bad){const t=$('toast');t.textContent=m;t.classList.toggle('bad',!!bad);t.style.display='block';
   clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.style.display='none',bad?6000:2600);}
@@ -655,7 +665,7 @@ async function act(body,after){
   }catch(e){r={ok:false,err:'连不上控制台服务：'+(e&&e.message||e)};}
   if(!r.ok){const m=r.err||'操作失败';toast(m,true);showErr(m);}
   else{clearErr();if(r.msg)toast(r.msg);}
-  if(after)after(); pullState(); return r;
+  if(after)after(r); pullState(); return r;
 }
 // 有任务在跑时把动作按钮置灰，并明确告诉用户在跑什么（原来只弹「可能正忙」）
 function setBusy(running,label){
@@ -672,6 +682,9 @@ function openModal(title,html){$('mTitle').textContent=title;$('mBody').innerHTM
 function closeModal(){$('modal').classList.remove('on');$('mBody').innerHTML='';}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 function mask(p){return p.length===11?p.slice(0,3)+'****'+p.slice(7):p;}
+// 金额 / 流量格式化：顶部 KPI 与到账台账共用
+function fy(n){const v=Math.round((n||0)*100)/100;return Number.isInteger(v)?String(v):v.toFixed(2);}
+function awFmt(mb){return mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');}
 function tokenBadge(s){
   if(s==='ok')return '<span class="badge ok">凭证有效</span>';
   if(s==='expired')return '<span class="badge bad">凭证已过期</span>';
@@ -710,13 +723,15 @@ function tokState(a,s){
   s=s||(STATE.stats||{})[a.key]||{};
   if(a.token_state==='empty')return 'empty';
   // 探针最近半小时内的结论最可信（后端已把更早的一律降级成 stale）
-  const live=(STATE.token_life||[]).find(x=>x.key===a.key);
+  const live=a.plat==='qwhdhub'?(STATE.token_life||[]).find(x=>x.key===a.key):null;
   if(live&&live.state==='alive')return 'ok';
   if(live&&live.state==='expired')return 'expired';
   // 探针没在跑：回落上次跑任务时的结论。只有「有效」需要判时效——
   // 失效是终态，旧结论不会随时间变得不成立，「已过期」正好提示去重新抓包。
-  const st=(a.plat==='qwhdhub'?s.token_qwhd:s.token_bass)||'unchecked';
-  const age=minsAgo(s.last_run);
+  const field=a.plat==='qwhdhub'?'token_qwhd':'token_bass';
+  const st=s[field]||'unchecked';
+  const ages=[s[field+'_at'],s.last_run].map(minsAgo).filter(v=>v!==null);
+  const age=ages.length?Math.min(...ages):null;
   if(st==='ok'&&age!==null&&age>(TOKEN_TTL_MIN[a.plat]||TOKEN_TTL_MIN.qwhdhub))return 'stale';
   return st;}
 function render(){
@@ -747,7 +762,6 @@ function render(){
   // 「本月已得话费」= 到账台账里本月拿到的**无门槛话费券**（张数 + 面额合计）
   // 有门槛的不计入（手气红包 / 满减 / 充值券），只在台账里单独计数
   const awMonth=((STATE.awards||{}).month||{});
-  const fy=n=>{const v=Math.round((n||0)*100)/100;return Number.isInteger(v)?String(v):v.toFixed(2);};
   const feeM=awMonth.fee_count||0;
   const feeYuan=awMonth.fee_yuan||0;
   const feeAll=((STATE.awards||{}).fee_total)||0;
@@ -759,9 +773,15 @@ function render(){
     (()=>{const vals=fdk.map(d=>feeDay[d]||0);const mx=Math.max(...vals),n=vals.length;
      const pts=vals.map((v,i)=>`${(i*100/(n-1)).toFixed(1)},${(25-23*v/mx).toFixed(1)}`).join(' ');
      return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;})();
+  // 本日已得：单独做成和「本月已得」一样的卡片，放在隔壁一一对应
+  const awToday=((STATE.awards||{}).today)||{};
+  const dayFlow=awToday.flow_mb||0;
+  const dayFee=awToday.fee_yuan||0, dayFeeCnt=awToday.fee_count||0;
   $('sumbar').innerHTML=`
     <div class="kpi"><div class="k">本月已得流量</div><div class="v">${flowMShow>=1024?(flowMShow/1024).toFixed(2)+'<small>GB</small>':flowMShow.toFixed(0)+'<small>MB</small>'}</div><div class="c">签到 / 领奖 / 转盘合计（付费流量包不计入）</div>${spF}</div>
+    <div class="kpi"><div class="k">本日已得流量</div><div class="v">${dayFlow>=1024?(dayFlow/1024).toFixed(2)+'<small>GB</small>':dayFlow.toFixed(0)+'<small>MB</small>'}</div><div class="c">今天到手的流量，含签到 / 领奖 / 转盘</div></div>
     <div class="kpi"><div class="k">本月已得话费</div><div class="v">${fy(feeYuan)}<small>元</small></div><div class="c">共 ${feeM} 张无门槛券（话费手气红包不计入）· 历史 ${feeAll} 张 / ¥${fy(feeYuanAll)}</div>${spFee}</div>
+    <div class="kpi"><div class="k">本日已得话费</div><div class="v">${fy(dayFee)}<small>元</small></div><div class="c">共 ${dayFeeCnt} 张无门槛券（话费手气红包不计入）</div></div>
     <div class="kpi"><div class="k">凭证可用</div><div class="v">${okTok}<small>/ ${accts.length} 份</small></div><div class="c">一个号码两份（全国 + 福建）</div></div>
     <div class="kpi"><div class="k">账号数</div><div class="v">${STATE.accounts.length}<small>个号码</small></div><div class="c">过期需重新抓包导入</div></div>`;
   // 运行记录统计条
@@ -776,29 +796,18 @@ function render(){
   const runs=e.recent||[];
   $('runtab').innerHTML= runs.length
     ? '<tr><th>时间</th><th>任务</th><th class="num">耗时</th><th>结果</th></tr>'+runs.map(r=>`<tr>
-        <td style="color:var(--sub)">${r.ts}</td><td>${r.label}</td>
-        <td class="num">${r.sec>=60?Math.floor(r.sec/60)+'分'+Math.round(r.sec%60)+'秒':r.sec+'秒'}</td>
+        <td style="color:var(--sub)">${esc(r.ts)}</td><td>${esc(r.label)}</td>
+        <td class="num">${esc(r.sec>=60?Math.floor(r.sec/60)+'分'+Math.round(r.sec%60)+'秒':r.sec+'秒')}</td>
         <td class="${r.ok?'ok':'bad'}">${r.ok?'成功':'失败'}</td></tr>`).join('')
     : '<tr><td style="color:var(--sub);padding:14px">暂无运行记录 — 跑一次签到或刷新状态后自动记录</td></tr>';
   // 到账台账（用户只关心「今天到手多少流量 / 几张能用的券」）
-  const aw=STATE.awards||{}, awM=aw.month||{}, awT=aw.today||{};
-  const awFmt=mb=>mb>=1024?(mb/1024).toFixed(2)+'GB':((mb||0)?Math.round(mb)+'MB':'0MB');
+  const aw=STATE.awards||{}, awT=aw.today||{};
+  // 本月口径已在顶部 KPI；这里只留今日，避免同一屏重复两遍
   if($('awSum'))$('awSum').innerHTML=`
     <div class="cell"><div class="k">今日已得流量</div><div class="v">${awFmt(awT.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">今日已得话费</div><div class="v">¥${fy(awT.fee_yuan)}<small> · ${awT.fee_count||0} 张</small></div></div>
-    <div class="cell"><div class="k">本月已得流量</div><div class="v">${awFmt(awM.flow_mb||0)}</div></div>
-    <div class="cell"><div class="k">本月已得话费</div><div class="v">¥${fy(awM.fee_yuan)}<small> · ${awM.fee_count||0} 张</small></div></div>`;
-  const awRows=aw.recent||[];
-  if($('awTab'))$('awTab').innerHTML= awRows.length
-    ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">面额</th><th class="num">折合流量</th></tr>'+
-      awRows.map(r=>`<tr>
-        <td style="color:var(--sub)">${esc((r.at||'').slice(5,16))}</td>
-        <td>${esc(r.account?mask(r.account):'—')}</td>
-        <td>${esc(r.source||'')}</td>
-        <td style="min-width:170px">${esc(r.name||'')}${r.kind==='fee'?' <span class="tag">话费券</span>':''}</td>
-        <td class="num">${(r.yuan||0)>0?'¥'+fy(r.yuan):'—'}</td>
-        <td class="num">${(r.size_mb||0)>0?awFmt(r.size_mb):'—'}</td></tr>`).join('')
-    : '<tr><td colspan="6" style="color:var(--sub);padding:14px">还没有到账记录 —— 领到流量或券会自动出现在这里</td></tr>';
+    <div class="cell"><div class="k">今日已得话费</div><div class="v">¥${fy(awT.fee_yuan)}<small> · ${awT.fee_count||0} 张</small></div></div>`;
+  renderAwFilters();
+  renderAwTable();
   // 账号卡
   $('cards').innerHTML=STATE.accounts.map(g=>{
     const plats=Object.entries(g.plats).map(([plat,a])=>{
@@ -827,9 +836,9 @@ function render(){
         if(tk)parts.push(tk+'任务');
         const tip=`${h.date.slice(5)} · ${parts.length?parts.join(' · '):'无记录'}`;
         const cls=(f>0||tk>0)?'bar':'bar off';
-        return `<div class="${cls}" style="height:${hgt}%"><span class="tip">${tip}</span></div>`;
+        return `<div class="${cls}" style="height:${hgt}%"><span class="tip">${esc(tip)}</span></div>`;
       }).join('');
-      const dates=hist.map(h=>`<span>${h.date.slice(8)}</span>`).join('');
+      const dates=hist.map(h=>`<span>${esc(h.date.slice(8))}</span>`).join('');
       return `<div class="plat">
         <div class="pt">${isQ?'全国签到':'福建活动'} ${tokenBadge(tkState)}
           ${signedBadge(isQ?s.today_signed_qwhd:s.today_signed_bass)}
@@ -839,25 +848,25 @@ function render(){
           <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt(Math.max(s.flow_mb_month||0,awP.flow_mb||0))}<small class="sum">${awP.fee_count?`¥${fy(awP.fee_yuan)} · ${awP.fee_count} 张券`:'签到 / 秒杀'}</small></div></div>
           <div class="stat"><div class="k">连签天数</div><div class="v">${fmtNum(s.sign_days)}</div></div>
           <div class="stat"><div class="k">本月任务</div><div class="v">${s.tasks_month||0}<small class="sum">累计 ${s.tasks_done_total||0}</small></div></div>
-          <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${s.last_reward||'—'}</div></div>`
+          <div class="stat"><div class="k">最近奖品</div><div class="v wrap">${esc(s.last_reward||'—')}</div></div>`
           :`
           <div class="stat"><div class="k">本月已得</div><div class="v">${awFmt(awP.flow_mb||0)}<small class="sum">${awP.fee_count?`¥${fy(awP.fee_yuan)} · ${awP.fee_count} 张券`:'养成 / 转盘 / 寻宝'}</small></div></div>
           <div class="stat"><div class="k">饲料余额</div><div class="v y">${fmtNum(s.fodder)}</div></div>
-          <div class="stat"><div class="k">流量可兑</div><div class="v">${s.fb_exchange||'—'}</div></div>
-          <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${s.stage||'—'}</div></div>`}
+          <div class="stat"><div class="k">流量可兑</div><div class="v">${esc(s.fb_exchange||'—')}</div></div>
+          <div class="stat"><div class="k">阶段进度</div><div class="v wrap">${esc(s.stage||'—')}</div></div>`}
         </div>
         <div class="acts">
-          ${isQ?`<button class="btn sm pri" onclick="act({action:'qwhd_run',key:'${a.key}'})">签到</button>
-            <button class="btn sm" onclick="act({action:'qwhd_run',key:'${a.key}',dry:1})">只读检查</button>
-            <button class="btn sm" onclick="act({action:'qwhd_run',key:'${a.key}',claim:1})">签到+领奖</button>`
-           :`<button class="btn sm pri" onclick="act({action:'bass_run',key:'${a.key}'})">签到</button>
-            <button class="btn sm" onclick="act({action:'bass_run',key:'${a.key}',dry:1})">只读检查</button>
-            <button class="btn sm" onclick="act({action:'bass_run',key:'${a.key}',claim:1,roll:1})">领奖+骰子</button>`}
+          ${isQ?`<button class="btn sm pri" onclick="act({action:'qwhd_run',key:${jsArg(a.key)}})">签到</button>
+            <button class="btn sm" onclick="act({action:'qwhd_run',key:${jsArg(a.key)},dry:1})">只读检查</button>
+            <button class="btn sm" onclick="act({action:'qwhd_run',key:${jsArg(a.key)},claim:1})">签到+领奖</button>`
+           :`<button class="btn sm pri" onclick="act({action:'bass_run',key:${jsArg(a.key)}})">签到</button>
+            <button class="btn sm" onclick="act({action:'bass_run',key:${jsArg(a.key)},dry:1})">只读检查</button>
+            <button class="btn sm" onclick="act({action:'bass_run',key:${jsArg(a.key)},claim:1,roll:1})">领奖+骰子</button>`}
         </div>
         ${hist.length&&hasData?`<div class="hist"><div class="t">近 7 天记录（流量 / 任务）</div><div class="bars">${bars}</div><div class="bardates">${dates}</div></div>`:`<div class="hist"><div class="t">近 7 天</div><div class="empty">暂无记录</div></div>`}
       </div>`;}).join('');
     return `<div class="acct">
-      <div class="acct-head"><span class="phone" title="${g.phone}">${mask(g.phone)}</span></div>
+      <div class="acct-head"><span class="phone" title="${esc(g.phone)}">${esc(mask(g.phone))}</span></div>
       <div class="acct-body">${plats||'<div class="plat">未配置任何平台</div>'}</div>
     </div>`;
   }).join('');
@@ -890,7 +899,7 @@ function render(){
           else if(x.left_min<60) tail=`<span style="color:var(--warn)">剩 ${x.left_min} 分钟</span>`;
           else tail=`<span style="color:var(--ok)">剩 ${Math.round(x.left_min/60)} 小时</span>`;
         }
-        return `<span class="pill" style="margin-right:6px">${x.phone?mask(x.phone):x.file} · ${t} · ${tail}</span>`;
+        return `<span class="pill" style="margin-right:6px">${esc(x.phone?mask(x.phone):x.file)} · ${esc(t)} · ${tail}</span>`;
       }).join('');
     }
   }
@@ -909,7 +918,7 @@ function render(){
         const age=tokenAge(x);
         const ageTxt=age==null?'':` · 已用 <b style="color:${age>=25?'var(--warn)':'inherit'}">${age} 分钟</b>`;
         return `<div class="pill" style="display:block;margin-bottom:6px;padding:8px 10px">
-          <b>${x.phone?mask(x.phone):esc(x.key)}</b> · ${tag}${ageTxt}
+          <b>${esc(x.phone?mask(x.phone):x.key)}</b> · ${tag}${ageTxt}
           <span style="color:var(--sub)">签发 ${esc(iss)} · ${esc(x.conclusion||'')}</span>
         </div>`;
       }).join('');
@@ -921,7 +930,7 @@ function render(){
   if(hk){
     const cur=hk.value, seen=new Set();
     const opts=accts.filter(a=>{if(!a.phone||seen.has(a.phone))return false;seen.add(a.phone);return true;})
-      .map(a=>`<option value="${esc(a.key)}">${esc(a.key)} · ${mask(a.phone)}</option>`).join('');
+      .map(a=>`<option value="${esc(a.key)}">${esc(a.key)} · ${esc(mask(a.phone))}</option>`).join('');
     hk.innerHTML='<option value="">自动识别（按文件里的号码）</option>'+opts;
     if(Array.from(hk.options).some(o=>o.value===cur))hk.value=cur;
   }
@@ -951,10 +960,10 @@ function renderAccounts(){
       const notify=(a.has_bark||a.has_sendkey||a.has_pushplus)
         ? '<span class="badge ok">已配置</span>' : '<span class="badge na">未配置</span>';
       const tok=tokenBadge(tokState(a));
-      return `<tr><td>${a.phone?mask(a.phone):'（未填手机号）'}</td>
+      return `<tr><td>${esc(a.phone?mask(a.phone):'（未填手机号）')}</td>
         <td>${PLAT_CN[a.plat]||esc(a.plat)}</td>
         <td><code>${esc(a.file)}</code></td><td>${tok}</td><td>${notify}</td>
-        <td><button class="btn sm" data-nobusy onclick="editAccount('${esc(a.file)}')">编辑</button></td></tr>`;
+        <td><button class="btn sm" data-nobusy onclick="editAccount(${jsArg(a.file)})">编辑</button></td></tr>`;
     }).join('')+'</tbody></table></div>';
 }
 function openNewAccount(){
@@ -987,9 +996,9 @@ function editAccount(file){
       placeholder="${a.has_sendkey?'已配置（留空则不修改）':'SendKey'}"></div>
     <div class="frow"><label>PushPlus</label><input class="inp" id="eaPushplus" style="min-width:280px"
       placeholder="${a.has_pushplus?'已配置（留空则不修改）':'32 位十六进制令牌'}"></div>
-    <div class="frow"><button class="btn pri" onclick="saveAccount('${esc(file)}')">保存</button>
+    <div class="frow"><button class="btn pri" onclick="saveAccount(${jsArg(file)})">保存</button>
       <button class="btn" onclick="closeModal()">取消</button>
-      ${(a.has_bark||a.has_sendkey||a.has_pushplus)?`<button class="btn danger" onclick="cf('清除该账号的推送配置？',()=>clearNotify('${esc(file)}'))">清除推送配置</button>`:''}</div>`);
+      ${(a.has_bark||a.has_sendkey||a.has_pushplus)?`<button class="btn danger" onclick="cf('清除该账号的推送配置？',()=>clearNotify(${jsArg(file)}))">清除推送配置</button>`:''}</div>`);
 }
 async function saveAccount(file){
   const body={action:'account_save',file:file,phone:V('eaPhone')};
@@ -1043,17 +1052,17 @@ function renderLuck(){
     const ps=a.last_prizes||[];
     const rows=ps.map(p=>{
       const isWin=p.name&&p.name.indexOf('谢谢')<0;
-      return `<tr><td>${p.at?p.at.slice(11):''}</td>
-        <td style="color:${isWin?'var(--ok)':'var(--sub)'}">${isWin?'★ ':''}${p.name||'—'}</td>
-        <td>${p.life?p.life+' 天':''}</td></tr>`;
+      return `<tr><td>${esc(p.at?p.at.slice(11):'')}</td>
+        <td style="color:${isWin?'var(--ok)':'var(--sub)'}">${isWin?'★ ':''}${esc(p.name||'—')}</td>
+        <td>${esc(p.life?p.life+' 天':'')}</td></tr>`;
     }).join('');
-    const summary=(a.last_draws!=null)?`　上次抽 ${a.last_draws} 次，中 ${a.last_wins||0} 次`:'';
+    const summary=(a.last_draws!=null)?`　上次抽 ${esc(a.last_draws)} 次，中 ${esc(a.last_wins||0)} 次`:'';
     const today=todayLocal();
     // 只数「本程序发出的抽奖请求」：手厅里还有你自己手点的次数，
     // 服务端没有查记录接口，拿不到包含手动的总数，所以这里不说「今日共抽」。
-    const daySum=(a.day===today&&a.day_draws)?`　<b>本程序今日抽 ${a.day_draws} 次，中 ${a.day_wins||0} 次</b>`:'';
+    const daySum=(a.day===today&&a.day_draws)?`　<b>本程序今日抽 ${esc(a.day_draws)} 次，中 ${esc(a.day_wins||0)} 次</b>`:'';
     return `<div style="margin-top:14px">
-      <div class="fbhead">${esc(k)} · ${a.phone?mask(a.phone):''}　剩余次数 <b>${a.surplus!=null?a.surplus:'—'}</b>${daySum}${summary}　<code>${esc(a.updated||'')}</code></div>
+      <div class="fbhead">${esc(k)} · ${esc(a.phone?mask(a.phone):'')}　剩余次数 <b>${esc(a.surplus!=null?a.surplus:'—')}</b>${daySum}${summary}　<code>${esc(a.updated||'')}</code></div>
       ${ps.length?`<table class="fbtab"><thead><tr><th style="width:110px">时间</th><th>奖品</th><th style="width:90px">有效期</th></tr></thead><tbody>${rows}</tbody></table>`:''}
     </div>`;
   }).join('');
@@ -1071,12 +1080,12 @@ function renderXunbao(){
     const a=xb[k]||{};
     const seq=a.seq||0, total=a.total||29;
     const pct=total?Math.min(100,Math.round(seq/total*100)):0;
-    const daySum=(a.day===today&&a.day_rolls)?`　<b>本程序今日投 ${a.day_rolls} 次，中 ${a.day_prizes||0} 个</b>`:'';
+    const daySum=(a.day===today&&a.day_rolls)?`　<b>本程序今日投 ${esc(a.day_rolls)} 次，中 ${esc(a.day_prizes||0)} 个</b>`:'';
     const ps=(a.last_prizes||[]);
     const tasks=(a.tasks||[]);
-    const taskTxt=tasks.length?`　任务：${tasks.filter(t=>!t.done).map(t=>t.name).join('、')||'全完成'}`:'';
+    const taskTxt=tasks.length?`　任务：${esc(tasks.filter(t=>!t.done).map(t=>t.name).join('、')||'全完成')}`:'';
     return `<div style="margin-top:14px">
-      <div class="fbhead">${esc(k)} · ${a.phone?mask(a.phone):''}　进度 <b>第 ${seq}/${total} 格</b>　骰子 <b>${a.dice!=null?a.dice:'—'}</b>${a.treasure_claim_required?'　★ 宝箱待开':''}${daySum}　<code>${esc(a.updated||'')}</code></div>
+      <div class="fbhead">${esc(k)} · ${esc(a.phone?mask(a.phone):'')}　进度 <b>第 ${esc(seq)}/${esc(total)} 格</b>　骰子 <b>${esc(a.dice!=null?a.dice:'—')}</b>${a.treasure_claim_required?'　★ 宝箱待开':''}${daySum}　<code>${esc(a.updated||'')}</code></div>
       <div style="height:6px;border-radius:3px;background:var(--line);margin:8px 0 4px">
         <div style="height:6px;border-radius:3px;width:${pct}%;background:var(--ok)"></div></div>
       <div style="color:var(--sub);font-size:12px">${taskTxt}</div>
@@ -1114,7 +1123,7 @@ function renderDaily(){
       const ok=t.status==='RECEIVED', cur=t.current&&!ok;
       const color=ok?'var(--ok)':(cur?'var(--warn)':'var(--sub)');
       const mark=ok?'✓':(cur?'●':'○');
-      return `<span style="display:inline-block;margin-right:16px;color:${color}">${mark} ${t.name} ${t.fodder}饲料${t.at?` <code>${t.at.slice(11)}</code>`:''}</span>`;
+      return `<span style="display:inline-block;margin-right:16px;color:${color}">${mark} ${esc(t.name)} ${esc(t.fodder)}饲料${t.at?` <code>${esc(t.at.slice(11))}</code>`:''}</span>`;
     }).join('');
     const lk=a.lucky||{};
     const sg=a.sign||{};
@@ -1125,14 +1134,14 @@ function renderDaily(){
         <div style="height:6px;width:${pct}%;background:${lk.triggered?'var(--ok)':'var(--acc)'};border-radius:3px"></div></div>`:'';
     const signLine=sg.cycle!=null?`<div style="font-size:12.5px;margin-bottom:7px">
         <span style="color:${sg.today?'var(--ok)':(sg.open?'var(--warn)':'var(--sub)')}">${sg.today?'✓ 今日已签':(sg.open?'● 待签':'○ 未到签到时间')}</span>
-        　连签第 <b>${sg.cycle}</b> 天${sg.today_fodder?`　今日 ${sg.today_fodder}g`:''}${sg.next_fodder?` · 明日 ${sg.next_fodder}g`:''}${sg.begin_hour?`　<code>${sg.begin_hour}:00</code> 开放`:''}
+        　连签第 <b>${esc(sg.cycle)}</b> 天${sg.today_fodder?`　今日 ${esc(sg.today_fodder)}g`:''}${sg.next_fodder?` · 明日 ${esc(sg.next_fodder)}g`:''}${sg.begin_hour?`　<code>${esc(sg.begin_hour)}:00</code> 开放`:''}
       </div>`:'';
     return `<div style="margin-bottom:16px">
-      <div class="fbhead">${k} · 已领 ${got}/${tiers.length} 档${nt?`　下一档 <b style="color:var(--warn)">${nt}</b>`:'　今日已领完'}</div>
+      <div class="fbhead">${esc(k)} · 已领 ${got}/${tiers.length} 档${nt?`　下一档 <b style="color:var(--warn)">${esc(nt)}</b>`:'　今日已领完'}</div>
       ${frLine}
       ${signLine}
       <div style="font-size:12.5px">${chips}</div>
-      <div style="font-size:12px;color:var(--sub);margin-top:8px">福袋 ${lk.current||0}/${lk.need||0}${lk.more!=null?`　还差 ${lk.more} 次喂食`:''}${lk.triggered?'　<b style="color:var(--ok)">已触发！</b>':''}</div>
+      <div style="font-size:12px;color:var(--sub);margin-top:8px">福袋 ${esc(lk.current||0)}/${esc(lk.need||0)}${lk.more!=null?`　还差 ${esc(lk.more)} 次喂食`:''}${lk.triggered?'　<b style="color:var(--ok)">已触发！</b>':''}</div>
       ${bar}
     </div>`;
   }).join('');
@@ -1170,12 +1179,12 @@ function renderFlowbank(){
     const rows=ids.map(id=>{
       const t=tasks[id];
       const cyc=t.cycle===1?'每月一次':(t.cycle===2?'每周一次':'不限');
-      const flow=t.flow?(`+${t.flow}${t.unit==='M'?'MB':t.unit}`):'—';
-      return `<tr><td>${t.title||('#'+id)}</td><td>${cyc}</td><td>${flow}</td>
-        <td>${badge(t.status)}</td><td><code>${t.last_done||'—'}</code></td><td>${nextRun(t.cycle,t.last_done)}</td></tr>`;
+      const flow=t.flow?(`+${esc(t.flow)}${t.unit==='M'?'MB':esc(t.unit)}`):'—';
+      return `<tr><td>${esc(t.title||('#'+id))}</td><td>${cyc}</td><td>${flow}</td>
+        <td>${badge(t.status)}</td><td><code>${esc(t.last_done||'—')}</code></td><td>${nextRun(t.cycle,t.last_done)}</td></tr>`;
     }).join('');
     return `<div style="margin-bottom:16px">
-      <div class="fbhead">${k} · 最后更新 ${acc.updated||'—'}</div>
+      <div class="fbhead">${esc(k)} · 最后更新 ${esc(acc.updated||'—')}</div>
       <table class="fbtab"><thead><tr><th>任务</th><th>周期</th><th>奖励</th><th>状态</th><th>上次完成</th><th>下次可做</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }).join('');
@@ -1319,8 +1328,45 @@ function gotoSettings(){
 // 下拉框：显示「尾号 · 手机号」，值仍是后端要的配置标识（各页原来一个显示路径、一个显示 fj1，容易看糊涂）
 function fillSelKV(id,items){
   const s=$(id);if(!s)return;const cur=s.value;
-  s.innerHTML=items.map(it=>`<option value="${it.v}">${it.t}</option>`).join('');
+  s.innerHTML=items.map(it=>`<option value="${esc(it.v)}">${esc(it.t)}</option>`).join('');
   if(items.some(it=>it.v===cur))s.value=cur;
+}
+
+// ---------------- 总览：到账台账折叠 / 筛选 ----------------
+const AW_PAGE=8;          // 默认只显示最近 8 条，避免台账占满首屏
+let awExpanded=false;     // 6 秒轮询重绘时保留「已展开 / 筛选」状态
+function onAwFilter(){awExpanded=false;renderAwTable();}
+function toggleAwAll(){awExpanded=!awExpanded;renderAwTable();}
+function renderAwFilters(){
+  const rows=((STATE.awards||{}).recent)||[];
+  const phones=[...new Set(rows.map(r=>r.account).filter(Boolean))];
+  const sources=[...new Set(rows.map(r=>r.source).filter(Boolean))];
+  fillSelKV('awAcct',[{v:'',t:'全部号码'}].concat(phones.map(a=>({v:a,t:mask(a)}))));
+  fillSelKV('awSource',[{v:'',t:'全部来源'}].concat(sources.map(s=>({v:s,t:s}))));
+}
+function renderAwTable(){
+  const tb=$('awTab');if(!tb)return;
+  const ac=$('awAcct'), sc=$('awSource');
+  const af=ac?ac.value:'', sf=sc?sc.value:'';
+  let rows=(((STATE.awards||{}).recent)||[]).slice();
+  if(af)rows=rows.filter(r=>(r.account||'')===af);
+  if(sf)rows=rows.filter(r=>(r.source||'')===sf);
+  const total=rows.length;
+  const shown=awExpanded?rows:rows.slice(0,AW_PAGE);
+  tb.innerHTML=shown.length
+    ? '<tr><th>到手时间</th><th>号码</th><th>来源</th><th>到手内容</th><th class="num">面额</th><th class="num">折合流量</th></tr>'+
+      shown.map(r=>`<tr>
+        <td style="color:var(--sub)">${esc((r.at||'').slice(5,16))}</td>
+        <td>${esc(r.account?mask(r.account):'—')}</td>
+        <td>${esc(r.source||'')}</td>
+        <td style="min-width:170px">${esc(r.name||'')}${r.kind==='fee'?' <span class="tag">话费券</span>':''}</td>
+        <td class="num">${(r.yuan||0)>0?'¥'+fy(r.yuan):'—'}</td>
+        <td class="num">${(r.size_mb||0)>0?awFmt(r.size_mb):'—'}</td></tr>`).join('')
+    : `<tr><td colspan="6" style="color:var(--sub);padding:14px">${total?'当前筛选没有记录':'还没有到账记录 —— 领到流量或券会自动出现在这里'}</td></tr>`;
+  const btn=$('awMoreBtn');
+  if(btn){btn.textContent=awExpanded?'收起':'展开全部';btn.style.display=total>AW_PAGE?'':'none';}
+  const hint=$('awHint');
+  if(hint)hint.textContent=total>AW_PAGE?`最近 ${shown.length} / ${total} 条`:`共 ${total} 条`;
 }
 
 // ---------------- 总览：现在需要你做什么 ----------------
@@ -1333,7 +1379,7 @@ function tokenAge(x){
 }
 function renderTodo(){
   const box=$('todoBox'); if(!box)return;
-  const items=[], nm=x=>mask(x.phone||'')||x.key;
+  const items=[], nm=x=>esc(mask(x.phone||'')||x.key);
   if(!(STATE.raw_accounts||[]).length)
     items.push(['bad','<b>还没有账号</b> → 去「凭证与账号」点「新建账号」填手机号，再导入一次抓包文件']);
   const tl=STATE.token_life||[];
@@ -1348,14 +1394,14 @@ function renderTodo(){
   if(!tl.length&&(STATE.raw_accounts||[]).length)items.push(['warn','还没有票据寿命数据 —— 导入一次抓包文件后，探测任务会自动开始计时']);
   const ss=STATE.seckill_sessions||[];
   const dead=ss.filter(x=>x.left_min!=null&&x.left_min<=0);
-  if(dead.length)items.push(['warn',`秒杀会话已过期（${dead.map(x=>mask(x.phone||'')||x.file).join('、')}）—— 11:54 的刷新任务会重建，前提是那一刻票据还活着`]);
+  if(dead.length)items.push(['warn',`秒杀会话已过期（${dead.map(x=>esc(mask(x.phone||'')||x.file)).join('、')}）—— 11:54 的刷新任务会重建，前提是那一刻票据还活着`]);
   const frs=Object.entries(STATE.daily||{}).filter(([k,v])=>v&&v.feed_reward);
   if(frs.length)items.push(['warn',`<b>投喂累计奖励可领未领</b>：${frs.map(([k,v])=>`${esc(k)} ${esc(v.feed_reward.fodder)} 饲料（${esc(v.feed_reward.expire)} 过期）`).join('、')} —— 当晚作废，可运行福建活动领取`]);
   let noSign=[];
   (STATE.accounts||[]).forEach(g=>Object.entries(g.plats||{}).forEach(([plat,a])=>{
     const st=a.stats||{};
     const signed=plat==='qwhdhub'?st.today_signed_qwhd:st.today_signed_bass;
-    if(signed!==todayLocal())noSign.push(mask(g.phone)+'（'+(PLAT_CN[plat]||plat)+'）');
+    if(signed!==todayLocal())noSign.push(esc(mask(g.phone))+'（'+esc(PLAT_CN[plat]||plat)+'）');
   }));
   if(noSign.length)items.push(['sub',`今日还没签到：${noSign.join('、')} —— 11:45 的任务会自动补，也可在下方卡片手动点`]);
   // 下一个「你会在意」的自动任务：探测任务每 2 分钟一次，放进来只会刷屏
@@ -1635,7 +1681,7 @@ async function pullLogs(){
     const atBottom=cons.scrollHeight-cons.scrollTop-cons.clientHeight<40;
     r.lines.forEach(l=>{logSeq=l.seq;capPush(l.line);
       const d=document.createElement('div');
-      d.innerHTML=`<span class="t">${l.t}</span><span${colorize(l.line)}></span>`;
+      d.innerHTML=`<span class="t">${esc(l.t)}</span><span${colorize(l.line)}></span>`;
       d.lastChild.textContent=l.line;
       if(/✓|OK |成功|已签/.test(l.line))d.lastChild.className='ok';
       else if(/✗|!!|ERROR|失败|过期|异常/.test(l.line))d.lastChild.className='err';

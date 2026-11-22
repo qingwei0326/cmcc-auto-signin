@@ -180,3 +180,74 @@ class TestRunAllDetectsTokenDead(unittest.TestCase):
             conf.write_text('{"phone": "13800001234"}', encoding="utf-8")
             self.R.run_script(fake, conf, [], 60)
         self.assertEqual(self.R.TOKEN_DEAD_ACCOUNTS, [])
+
+
+class TestTodayFinished(unittest.TestCase):
+    """「今天做完了」的判据：决定 token 过期要不要发通知。
+
+    用户的规则：做完了就发总结，当天 token 过期也别再发通知。
+    判据必须看真实收益/真实执行，不能拿只读刷新蒙混过关。
+    """
+
+    def setUp(self):
+        import run_all
+        self.R = run_all
+        self.day = "2026-11-22"
+
+    def test_award_today_means_finished(self):
+        awards = [{"at": f"{self.day} 14:25:00", "name": "100MB", "ignored": False}]
+        self.assertTrue(self.R.today_finished(awards=awards, runs=[], today=self.day))
+
+    def test_ignored_award_does_not_count(self):
+        awards = [{"at": f"{self.day} 10:00:00", "name": "手气红包", "ignored": True}]
+        self.assertFalse(self.R.today_finished(awards=awards, runs=[], today=self.day))
+
+    def test_award_from_other_day_does_not_count(self):
+        awards = [{"at": "2026-11-21 10:00:00", "name": "1元话费券", "ignored": False}]
+        self.assertFalse(self.R.today_finished(awards=awards, runs=[], today=self.day))
+
+    def test_successful_real_run_this_round_counts(self):
+        results = [("qwhd", "...3239", True, 12.3)]
+        self.assertTrue(self.R.today_finished(
+            awards=[], runs=[], today=self.day, results=results))
+
+    def test_failed_run_does_not_count(self):
+        results = [("qwhd", "...3239", False, 1.4)]  # 票过期导致的失败
+        self.assertFalse(self.R.today_finished(
+            awards=[], runs=[], today=self.day, results=results))
+
+    def test_dryrun_success_does_not_count(self):
+        """只读检查票过期也能 ok，不能拿它证明今天干完活。"""
+        results = [("qwhd", "...3239", True, 1.4)]
+        self.assertFalse(self.R.today_finished(
+            awards=[], runs=[], today=self.day, results=results, dry_run=True))
+
+    def test_readonly_refresh_in_runs_does_not_count(self):
+        """今天 11:55 那条「刷新全部账号状态（只读检查）」ok，但票其实已过期。"""
+        runs = [{"ts": f"{self.day} 11:55:50", "label": "刷新全部账号状态（只读检查）",
+                 "ok": True}]
+        self.assertFalse(self.R.today_finished(awards=[], runs=runs, today=self.day))
+
+    def test_real_run_in_runs_counts(self):
+        runs = [{"ts": f"{self.day} 14:22:04", "label": "拓展活动 · 4167", "ok": True}]
+        self.assertTrue(self.R.today_finished(awards=[], runs=runs, today=self.day))
+
+    def test_nothing_done(self):
+        self.assertFalse(self.R.today_finished(awards=[], runs=[], today=self.day))
+
+
+class TestNotifyDecisionStatic(unittest.TestCase):
+    """静态护栏：推送规则别被改回「只要有过期就发票过期通知」。"""
+
+    def setUp(self):
+        import run_all
+        self.src = (Path(run_all.__file__).resolve()).read_text(encoding="utf-8")
+
+    def test_token_dead_suppressed_when_done(self):
+        self.assertIn("TOKEN_DEAD_ACCOUNTS and not done", self.src)
+
+    def test_daily_report_sent_when_done(self):
+        self.assertIn("if not args.no_notify and done:", self.src)
+
+    def test_done_passes_current_results_and_dryrun(self):
+        self.assertIn("today_finished(results=results, dry_run=args.dry_run)", self.src)

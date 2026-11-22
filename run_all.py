@@ -26,10 +26,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from common import (atomic_write_json, child_cmd, collect_notify_settings,
-                    is_token_dead, load_json, load_policy, notify,
+                    is_token_dead, load_awards, load_json, load_policy, notify,
                     notify_once)   # 导入即固定 UTF-8 输出
 
 BASE = Path(__file__).parent
+RUNS_FILE = BASE / "gui_data" / "runs.json"
 
 # 这一轮里「凭证过期」的账号。它们不是真的执行失败，只是票过期了，
 # 汇总成一条通知就行；每小时一轮的每日奖励任务不该一小时骂一次。
@@ -49,6 +50,46 @@ def token_dead_notice(accounts) -> tuple:
             "\n\n处理：手机抓包 → App 里打开「签到领流量」和「优惠专区」各停留几秒"
             " → 导出 HAR → 控制台「凭证与账号」导入。\n"
             "（凭证寿命实测约 1 小时，抓完请尽快导入）")
+
+
+def today_finished(awards=None, runs=None, today=None, results=None, dry_run=False) -> bool:
+    """今天是否已经干完活了——用来决定凭证过期要不要打扰用户。
+
+    用户的规则：**做完了就直接发总结，当天 token 过期也别再发通知**。
+    所以判据要看真实收益/真实执行，而不是「有没有失败」：
+
+      · 本轮或今天有到账收益（哪怕只是追剧领的一张券）→ 算做完；
+      · 有「非只读」的成功执行（签到/抽奖/寻宝/拓展等）→ 也算做完；
+      · 只有「刷新状态」「只读检查」「dry-run」「查询/配置」成功 → **不算**，
+        这类动作票过期照样 ok，拿它当判据会把「一大早就全军覆没」误判成做完。
+
+    results 是本轮 [(key, name, ok, sec)]：run_all 自己不写 runs.json（那是
+    dashboard 在子进程结束后记的），所以刚跑完的成功必须直接传进来才算数。
+    awards/runs/today/results 都可注入，便于测试；不传就读真实数据。
+    """
+    today = today or datetime.date.today().isoformat()
+    awards = load_awards() if awards is None else awards
+    for r in awards or []:
+        if str(r.get("at", "")).startswith(today) and not r.get("ignored"):
+            return True
+
+    # 本轮刚跑成功的真实任务（排除只读/查询/配置类 action）
+    # dry-run 只读检查即便 ok 也不算——票过期时它照样能过，不能拿来证明干完活。
+    if not dry_run:
+        for key, _name, ok, _sec in results or []:
+            if ok and str(key) not in ("check", "dryrun", "query", "config"):
+                return True
+
+    runs = load_json(RUNS_FILE, default=[]) if runs is None else runs
+    readonly_marks = ("只读", "dry-run", "查询", "配置", "刷新全部账号状态")
+    for r in runs or []:
+        if not str(r.get("ts", "")).startswith(today) or not r.get("ok"):
+            continue
+        label = str(r.get("label", ""))
+        if any(m in label for m in readonly_marks):
+            continue
+        return True
+    return False
 
 
 # 每日自动喂养的「今天已喂过」标记，防止计划任务补跑时重复消耗饲料
@@ -301,7 +342,13 @@ def run_script(script: Path, conf: Path, args: list, timeout: int,
         if head:
             buf.append(head)
         if out:
-            buf.append(out[-1500:])
+            tail = out[-1500:]
+            for line in out.splitlines():
+                if "追剧领福利" in line and "抽奖" in line and line not in tail:
+                    buf.append(line)
+            buf.append(tail)
+        if "本周已领，达到每周限领一次" in err:
+            buf.append("  本周已领，达到每周限领一次")
         if not ok:
             msg = brief_error(err) or brief_error(out)
             if msg:
@@ -766,9 +813,14 @@ def main():
             cfgs.append(load_json(f, {}))
     ch = collect_notify_settings(*cfgs)
 
-    # 跑完且没出错 → 推一条「今日战报」：当天到手的东西按账号分组。
+    # 今天是否真的干完活了：本轮成功 / 当天到账 / 当天有非只读的成功执行。
+    # 本轮 results 直接传进去——run_all 自己不写 runs.json，不能等 dashboard 记。
+    done = today_finished(results=results, dry_run=args.dry_run)
+
+    # 做完就推「今日战报」：当天到手的东西按账号分组。
+    # 不再要求「全部成功且无过期」——只要今天真有收获就发总结。
     # notify_once 按天去重，每小时轮询也只会推一条。
-    if not args.no_notify and good == len(results) and not TOKEN_DEAD_ACCOUNTS:
+    if not args.no_notify and done:
         try:
             from common import daily_report
             title, detail = daily_report()
@@ -781,8 +833,10 @@ def main():
     # 失败才推送，避免每天正常签到都打扰；同类事当天只推一条
     if not args.no_notify and (good != len(results) or TOKEN_DEAD_ACCOUNTS):
 
-        if TOKEN_DEAD_ACCOUNTS:
-            # 票过期不是「脚本坏了」，用户只需要知道「该重抓哪几个号」，一条就够
+        if TOKEN_DEAD_ACCOUNTS and not done:
+            # 票过期且今天啥也没干成 → 提醒重抓。
+            # 今天已经做完（有到账/有成功执行）就不再打扰：用户明确说过
+            # 「做完了当天 token 过期也别发通知」。
             title, detail = token_dead_notice(TOKEN_DEAD_ACCOUNTS)
             notify_once("token_dead", title, detail, ch["bark_url"],
                         ch["serverchan_sendkey"], hours=12,

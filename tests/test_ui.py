@@ -522,6 +522,54 @@ class TestHumanFacing(unittest.TestCase):
         self.assertIn("cmcc_zoom", self.html)
         self.assertIn('aria-label="放大字号"', self.html)
 
+    def test_dynamic_text_is_escaped_before_html_render(self):
+        """奖品名、运行记录等接口文本必须按文本渲染，不能拼成 HTML。"""
+        for marker in ("function jsArg(", "esc(r.label)", "esc(s.last_reward||'—')",
+                       "esc(p.name||'—')", "esc(t.title||('#'+id))", "esc(l.t)"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.html)
+
+    def test_dash_hierarchy_puts_accounts_before_long_ledger(self):
+        """总览首屏顺序：待办 → 指标 → 账号状态 → 到账台账 → 运行记录。"""
+        dash = self.html[self.html.find('<div class="page on" id="p-dash"'):
+                         self.html.find('<!-- 凭证与账号 -->')]
+        ids = ["todoBox", "sumbar", "cards", "awTab", "runtab"]
+        positions = [dash.find('id="%s"' % i) for i in ids]
+        self.assertNotIn(-1, positions, "总览缺少区块")
+        self.assertEqual(positions, sorted(positions), "总览区块顺序不对：%s" % positions)
+
+    def test_ledger_summary_does_not_repeat_monthly_kpi(self):
+        """顶部 KPI 已有「本月流量/话费」，台账汇总只留今日，别同一屏说两遍。"""
+        seg = self.html[self.html.find("if($('awSum'))"):self.html.find('renderAwFilters();')]
+        self.assertIn("今日已得流量", seg)
+        self.assertIn("今日已得话费", seg)
+        self.assertNotIn("本月已得流量", seg)
+        self.assertNotIn("本月已得话费", seg)
+
+    def test_today_kpi_cards_sit_next_to_monthly(self):
+        """本日已得要做成和本月一样的独立卡片，成对挨着放，不是标题小字。"""
+        seg = self.html[self.html.find("// 本日已得："):
+                        self.html.find("// 运行记录统计条")]
+        titles = re.findall(r'<div class="k">([^<]+)</div>', seg)
+        self.assertEqual(titles[:4], ["本月已得流量", "本日已得流量",
+                                      "本月已得话费", "本日已得话费"])
+        # 本日卡片和本月卡片结构一致：都有 .v 数值 + .c 说明
+        self.assertIn('<div class="k">本日已得流量</div><div class="v">${dayFlow>=1024?', seg)
+        self.assertIn('<div class="k">本日已得话费</div><div class="v">${fy(dayFee)}', seg)
+        self.assertIn("const awToday=((STATE.awards||{}).today)||{}", seg)
+        # 宽屏 6 列排成一行，窄屏 @media 仍会把每对折成一行
+        self.assertIn(".kpis{display:grid;grid-template-columns:repeat(6,1fr)", self.html)
+        self.assertNotIn("daytag", self.html)   # 不再用标题小字
+
+    def test_ledger_can_fold_and_filter(self):
+        """到账台账默认折叠、可展开、可按号码/来源筛选。"""
+        for marker in ("id=\"awHint\"", "id=\"awAcct\"", "id=\"awSource\"",
+                       "id=\"awMoreBtn\"", "const AW_PAGE=8", "function onAwFilter",
+                       "function toggleAwAll", "function renderAwFilters",
+                       "function renderAwTable", "renderAwFilters();", "renderAwTable();"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.html)
+
 
 class TestFeedOncePerDay(unittest.TestCase):
     def setUp(self):

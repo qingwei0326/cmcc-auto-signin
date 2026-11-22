@@ -278,17 +278,26 @@ def run_once(cfg) -> int:
         mark_seen(uid_s)
         imap.store(uid, "+FLAGS", "\\Seen")
         ok += 1
-        clear_need()          # 先清标记，免得补跑期间又触发一次查收
         pending.append(report)
 
     imap.logout()
 
     # 换完凭证顺手把当天签到补上，否则「票修好了、任务还是没跑」
     for report in pending:
+        success, failed = HI.report_outcome(report)
+        if failed or not success:
+            HI.notify_import_problem(report)
+        if not success:
+            continue
+        verified = any("实测登录成功" in line or "实测可用" in line for line in report)
+        if verified and not failed:
+            clear_need()
         line = catchup_after_import(cfg, report)
         print("  " + line)
-        report.append(line)
-        notify("HAR 自动导入完成", "\n".join(report))
+        if "失败" in line:
+            notify("HAR 导入后的补跑异常", "新凭证已保存。请在控制台查看补跑结果。")
+        elif not failed:
+            notify("HAR 自动导入完成", "\n".join([*report, line]))
 
     print(f"本轮处理 {ok} 份 HAR")
     return 0

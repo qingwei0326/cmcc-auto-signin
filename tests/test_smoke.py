@@ -229,6 +229,15 @@ class TestSeckill(unittest.TestCase):
         self.assertNotIn("NOT_TIME_IN", STOP_STATUSES)
         self.assertNotIn("SUCCESS", STOP_STATUSES)
 
+    def test_weekly_limit_requires_explicit_already_claimed_message(self):
+        from cmcc_seckill import weekly_limit_reached
+
+        status = "WORK_ORDER_RESTRIC_LIMIT"
+        self.assertTrue(weekly_limit_reached({"status": status, "msg": "您已领取奖励，限领一次哦"}))
+        self.assertFalse(weekly_limit_reached({"status": status, "msg": "操作过于频繁"}))
+        self.assertFalse(weekly_limit_reached({"status": "TRAFFIC_LIMITED"}))
+
+
     def test_session_file_is_per_account(self):
         """会话必须按账号隔离，否则另一个号会误用本号的会话抢券、券记错人头。"""
         import cmcc_sign
@@ -490,7 +499,7 @@ class TestMailWatch(unittest.TestCase):
              mock.patch.object(mw, "connect", return_value=fake), \
              mock.patch.object(mw, "mark_seen"), \
              mock.patch.object(mw, "clear_need"), \
-             mock.patch("har_import.apply", return_value=["BASS 导入成功"]), \
+             mock.patch("har_import.apply", return_value=["✓ BASS 实测可用，已更新配置"]), \
              mock.patch.object(mw, "catchup_after_import", return_value="已自动补跑签到：成功"), \
              mock.patch.object(mw, "notify", return_value=True) as n:
             mw.run_once(cfg)

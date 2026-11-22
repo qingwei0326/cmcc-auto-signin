@@ -219,6 +219,56 @@ def find_har_files(extra_dirs=None):
 
 AWARDS_FILE = BASE / "gui_data" / "awards.json"
 AWARDS_KEEP = 600       # 只留最近 600 条，文件不会无限长
+RUNS_FILE = BASE / "gui_data" / "runs.json"   # 战报里算「脚本实际跑了多久」用
+
+# 手动做一次「某账号的某类活儿」大概要几分钟。按来源关键词匹配，第一个命中的生效。
+# 这是**估算**，不是秒表：只用来在战报里给个「省了多少事」的直观感受，越具体的活给越多。
+# 想调就改这张表，不影响任何业务逻辑。
+MANUAL_MINUTES = (
+    ("秒杀", 10),      # 要盯整点窗口、抢券，手动最费神
+    ("寻宝", 5),
+    ("游戏", 5),
+    ("追剧", 5),
+    ("大转盘", 4),
+    ("消消乐", 4),
+    ("签到", 3),
+    ("领福利", 3),
+)
+MANUAL_MINUTES_DEFAULT = 4
+
+
+def manual_minutes(source) -> int:
+    """一个来源算成手动几分钟。"""
+    s = str(source or "")
+    for kw, minutes in MANUAL_MINUTES:
+        if kw in s:
+            return minutes
+    return MANUAL_MINUTES_DEFAULT
+
+
+def script_seconds_today(day) -> float:
+    """当天脚本实际跑了多少秒（只算成功的真实执行）。
+
+    读 runs.json 失败 / 格式异常都当 0，绝不让战报因为统计失败而发不出去。
+    """
+    try:
+        recs = load_json(RUNS_FILE, default=[]) or []
+    except Exception:
+        return 0.0
+    if isinstance(recs, dict):
+        recs = recs.get("recent") or recs.get("runs") or []
+    readonly = ("只读", "dry-run", "查询", "配置", "刷新全部账号状态")
+    total = 0.0
+    for r in recs or []:
+        if not isinstance(r, dict) or not str(r.get("ts", "")).startswith(day):
+            continue
+        if not r.get("ok") or any(m in str(r.get("label", "")) for m in readonly):
+            continue
+        try:
+            total += float(r.get("sec") or 0)
+        except (TypeError, ValueError):
+            pass
+    return total
 
 # 名字里出现这些词 = 有门槛才能用（要充值 / 满额 / 指定场景抵扣），不算「到手可用」。
 # 「手气红包」是转盘抽到的话费券，实测**满额才能抵扣**（2026-11-21 用户确认），
@@ -494,6 +544,16 @@ def daily_report(day_prefix=None):
         foot.append(f"合计话费 {total_fee:.0f} 元")
     foot.append(f"共 {sum(len(v) for v in by_acc.values())} 项")
     lines.append("—— " + "，".join(foot))
+
+    # 省了多少时间：同一账号 + 同一来源的连续抽奖算「一次手动操作」，
+    # 否则一次抽 10 次会按 10 笔算，把省的时间吹大。
+    tasks = {(acc, r.get("source") or "其它")
+             for acc, items in by_acc.items() for r in items}
+    manual_min = sum(manual_minutes(src) for _acc, src in tasks)
+    script_min = script_seconds_today(day) / 60.0
+    saved = max(0, int(round(manual_min - script_min)))
+    lines.append(f"—— 今天替你省了约 {saved} 分钟"
+                 f"（这些活手动做约 {manual_min} 分钟，脚本跑了 {script_min:.1f} 分钟）")
     return f"{day} 今日战报", "\n".join(lines)
 
 

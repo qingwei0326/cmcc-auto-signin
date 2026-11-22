@@ -214,7 +214,7 @@ def save_jwt_cache(cfg: Config, jwt: str | None):
         pass
 
 
-def exchange_session(cfg: Config) -> tuple[requests.Session, str]:
+def exchange_session(cfg: Config, *, use_jwt_cache=True) -> tuple[requests.Session, str]:
     """走 SSO 换取活动会话（QWHD_SESSION_TOKEN 落在 session cookie 里）。
 
     返回 (session, referer)。referer 是带 token 的活动页地址，后续 API 都要带。
@@ -261,7 +261,7 @@ def exchange_session(cfg: Config) -> tuple[requests.Session, str]:
 
     # ② 尝试用缓存 jwt 免票据续期（实测当前不成立，仅作兜底：万一服务端放开策略）
     resp = None
-    cached = load_jwt_cache(cfg)
+    cached = load_jwt_cache(cfg) if use_jwt_cache else None
     if cached:
         jwt_str, jwt_first_seen = cached
         r = s.post(login_url, json={**base_body, "jwtToken": jwt_str, "token": ""}, timeout=30)
@@ -288,7 +288,8 @@ def exchange_session(cfg: Config) -> tuple[requests.Session, str]:
             )
 
     data = resp["data"]
-    save_jwt_cache(cfg, data.get("jwt"))
+    if use_jwt_cache:
+        save_jwt_cache(cfg, data.get("jwt"))
 
     # ③ 访问带 token 的活动页，服务器 Set-Cookie: QWHD_SESSION_TOKEN
     # URL 来自服务端响应，按 SSRF 防护约束在 wx.10086.cn 域内，且不跟随重定向
@@ -300,7 +301,7 @@ def exchange_session(cfg: Config) -> tuple[requests.Session, str]:
     if not any(n.endswith("SESSION_TOKEN") for n in s.cookies.keys()):
         raise RuntimeError("未取得活动会话令牌，会话兑换失败")
     token_name = next(n for n in s.cookies.keys() if n.endswith("SESSION_TOKEN"))
-    log.info("活动会话建立成功（%s=%.12s...）", token_name, s.cookies[token_name])
+    log.info("活动会话建立成功（%s）", token_name)
     return s, data["url"]
 
 

@@ -74,10 +74,43 @@ with sync_playwright() as p:
     else:
         check("空状态给出下一步", "新建账号" in page.inner_text("#todoBox"))
     # 到账台账：用户只看「到手多少流量」，这里必须真渲染出数字而不是空白
-    check("到账台账汇总", page.eval_on_selector_all("#awSum .cell", "e=>e.length") == 4)
-    aw_txt = page.inner_text("#awSum") + page.inner_text("#awTab")
-    check("台账有今日/本月口径", "今日已得流量" in aw_txt and "本月已得流量" in aw_txt)
+    check("到账台账汇总只留今日两项", page.eval_on_selector_all("#awSum .cell", "e=>e.length") == 2)
+    check("顶部 KPI 保留本月口径",
+          "本月已得流量" in page.inner_text("#sumbar") and "本月已得话费" in page.inner_text("#sumbar"))
+    check("台账不再重复本月口径",
+          "本月已得流量" not in page.inner_text("#awSum") and "本月已得话费" not in page.inner_text("#awSum"))
+    check("台账有今日口径", "今日已得流量" in page.inner_text("#awSum"))
     check("台账未出现充值类券", "充值9.9折" not in page.inner_text("#awTab"))
+    # 信息层级：账号状态排在到账台账前面
+    order = page.evaluate("""()=>['cards','awTab','runtab'].map(id=>{
+        const e=document.getElementById(id);return e?e.getBoundingClientRect().top:-1;})""")
+    check("总览区块顺序正确", order[0] <= order[1] < order[2], order)
+    # 台账折叠 / 筛选：只改前端状态，不触发任何任务
+    total = page.evaluate("()=>((STATE.awards||{}).recent||[]).length")
+    shown = page.eval_on_selector_all("#awTab tr", "e=>e.length")
+    check("台账默认折叠为 8 条", shown <= 9, "rows=%d total=%d" % (shown - 1, total))
+    btn_shown = page.eval_on_selector("#awMoreBtn", "e=>getComputedStyle(e).display!=='none'")
+    check("展开按钮按数据量显隐", btn_shown == (total > 8), "total=%d" % total)
+    if total > 8:
+        page.evaluate("()=>{awExpanded=true;renderAwTable();}")
+        check("展开后显示全部", page.eval_on_selector_all("#awTab tr", "e=>e.length") == total + 1)
+        check("按钮变为收起", "收起" in page.inner_text("#awMoreBtn"))
+        page.evaluate("()=>{awExpanded=false;renderAwTable();}")
+        check("收起后恢复 8 条", page.eval_on_selector_all("#awTab tr", "e=>e.length") == 9)
+    acct_opts = page.eval_on_selector_all("#awAcct option", "es=>es.map(e=>e.value)")
+    src_opts = page.eval_on_selector_all("#awSource option", "es=>es.map(e=>e.value)")
+    check("号码/来源筛选含全部项", acct_opts[:1] == [""] and src_opts[:1] == [""],
+          (acct_opts[:3], src_opts[:3]))
+    if total > 0:
+        picked = page.evaluate("""()=>{const r=((STATE.awards||{}).recent||[])[0];
+            const a=r&&r.account;if(!a)return '';
+            const s=document.getElementById('awAcct');s.value=a;onAwFilter();
+            return a;}""")
+        if picked:
+            expect = page.evaluate("a=>((STATE.awards||{}).recent||[]).filter(r=>r.account===a).length", picked)
+            got = page.eval_on_selector_all("#awTab tr", "e=>e.length")
+            check("按号码筛选生效", min(got - 1, 8) == min(expect, 8), "got=%d expect=%d" % (got - 1, expect))
+            page.evaluate("()=>{document.getElementById('awAcct').value='';onAwFilter();}")
     page.screenshot(path=str(OUT / "shot_dash.png"), full_page=True)
 
     for key, title in [("token", "凭证与账号"), ("bass", "福建活动"), ("xxl", "消消乐"),
@@ -172,6 +205,46 @@ with sync_playwright() as p:
     page.click('button[aria-label="缩小字号"]')
     page.wait_for_timeout(200)
     check("字号可缩回", str(page.evaluate("()=>document.documentElement.style.zoom")) == "1")
+
+    # 动态内容转义：伪造一份带 HTML 的 STATE，只重绘，不触发任何任务。
+    # 注入的 img 若被当成元素插入，onerror 会置 window.__xss。
+    page.evaluate("""() => {
+        window.__origState = JSON.parse(JSON.stringify(STATE));
+        const bad = '<img id="xss-probe" src="x" onerror="window.__xss=1">';
+        const S = JSON.parse(JSON.stringify(STATE));
+        const k = (S.raw_accounts && S.raw_accounts[0] && S.raw_accounts[0].key) || 'probe';
+        S.eff = S.eff || {};
+        S.eff.recent = [{ts: bad, label: bad, sec: 1, ok: true}];
+        S.stats = S.stats || {};
+        S.stats[k] = Object.assign({}, S.stats[k] || {},
+            {last_reward: bad, fb_exchange: bad, stage: bad});
+        S.luck = {probe: {last_prizes: [{at: '2026-11-22 15:00:00', name: bad, life: bad}]}};
+        S.flowbank = {probe: {updated: bad, tasks: {1: {title: bad, cycle: 0, flow: 1,
+            unit: 'MB', status: '0', last_done: bad}}}};
+        S.daily = {probe: {tiers: [{name: bad, fodder: bad, at: '2026-11-22 15:00:00',
+            status: 'PENDING', current: true, limit_at: bad}],
+            feed_reward: {fodder: bad, expire: bad}}};
+        S.seckill_sessions = [{phone: '', file: bad, at: bad, left_min: 1}];
+        S.token_life = [{key: 'probe', phone: '', issued_at: bad,
+            conclusion: bad, state: 'alive'}];
+        S.raw_accounts = [{key: 'probe', file: bad, plat: 'qwhdhub',
+            phone: '13800001234', token_state: 'filled'}];
+        S.accounts = [{phone: '13800001234', plats: {qwhdhub: {
+            key: 'probe', file: 'configs/probe.json', plat: 'qwhdhub',
+            phone: '13800001234', stats: S.stats[k]}}}];
+        STATE = S;
+        render();
+    }""")
+    check("动态文本不会注入 HTML",
+          page.evaluate("()=>!document.getElementById('xss-probe') && !window.__xss"))
+    check("转义后原文仍完整可见",
+          '<img id="xss-probe"' in page.inner_text("#runtab"),
+          page.inner_text("#runtab")[:100])
+    check("编辑按钮的内联参数未被截断",
+          page.evaluate("()=>[...document.querySelectorAll('#acctBox button')].every("
+                        "b=>{try{new Function(b.getAttribute('onclick'));return true}"
+                        "catch(e){return false}})"))
+    page.evaluate("()=>{STATE=window.__origState;render();}")
 
     # 手机端
     m = ctx.new_page()

@@ -414,6 +414,20 @@ def fire_redeem(s, referer: str, zone: dict, interval: float,
     return None, f"连续 {max_attempts} 发未中（剩余库存 {stock:g}）"
 
 
+def weekly_limit_reached(response):
+    if not response or response.get("status") != "WORK_ORDER_RESTRIC_LIMIT":
+        return False
+    message = str(response.get("msg") or "")
+    return "已领取奖励" in message and "限领一次" in message
+
+
+def report_weekly_limit():
+    log.info("本周已领，达到每周限领一次")
+    emit_result({"plat": "seckill", "token": "ok", "success": False,
+                 "status": "weekly_limit", "flow_mb": 0.0})
+    return 0
+
+
 def run(cfg: Config, dry_run: bool, once: bool, at: str,
         interval: float, lead: float, max_attempts: int,
         pre_window_s: float = 60.0) -> int:
@@ -509,6 +523,8 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         resp = api_post(s, referer, REDEEM_URL,
                         {"secId": str(zone["id"]), "prizeId": str(zone["prize"]["id"])})
         log.info("单发响应: %s", json.dumps(resp, ensure_ascii=False))
+        if weekly_limit_reached(resp):
+            return report_weekly_limit()
         ok = resp.get("code") == "SUCCESS"
         if ok:
             name = record_seckill_prize(resp, cfg, zone)
@@ -537,6 +553,9 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         emit_result({"plat": "seckill", "token": "ok", "success": True,
                      "last_reward": zone["prize"]["name"], "flow_mb": 0.0})
         return 0
+
+    if weekly_limit_reached(resp):
+        return report_weekly_limit()
 
     if resp is not None and resp.get("status") == "ZONE_TODAY_COMPLETE":
         detail = (f"{zone['prize']['name']}\n场次 {st.strftime('%m-%d %H:%M')}，"

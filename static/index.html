@@ -323,6 +323,13 @@ select.inp{cursor:pointer}
           <div class="infobox">凭证通过真实验证并核对号码后才更新。可用下拉框提供账号线索。
             导入后到「总览」点「刷新状态」复核。</div>
         </div>
+      </div>
+
+      <!-- 福建活动 -->
+      <div class="page" id="p-bass">
+        <div class="phead"><div><h2 title="cmcc_fj.py">福建活动</h2><div class="desc">养成游戏：签到、领阶段奖励、喂养、天天大抽奖</div></div>
+          <div class="ops"><button class="btn sm" onclick="gotoSettings()" title="喂养时段、抽奖开关、推送等长期策略都在设置页">自动设置</button></div>
+        </div>
         <div class="panel">
           <h3>优惠专区抽奖 <span class="hint">自动从最新 HAR 取 token，刷任务 + 抽奖</span></h3>
           <div class="infobox">先打开一次「优惠专区抽奖」页面，让抓包工具记录，然后在下面点执行——
@@ -334,19 +341,6 @@ select.inp{cursor:pointer}
             <button class="btn" onclick="act({action:'luck_run',no_tasks:1},()=>setTimeout(pullState,2500))">只抽不刷任务</button>
           </div>
           <div id="luckBox"></div>
-        </div>
-      </div>
-
-      <!-- 福建活动 -->
-      <div class="page" id="p-bass">
-        <div class="phead"><div><h2 title="cmcc_fj.py">福建活动</h2><div class="desc">养成游戏：签到、领阶段奖励、喂养、只读检查</div></div></div>
-        <div class="panel">
-          <h3>自动策略 <span class="hint">已挪到「设置」页</span></h3>
-          <div class="infobox">「自动策略」和「推送设置」都是<b>设置一次、长期生效</b>的东西，
-            统一放在 <b>设置</b> 页面了：养成喂养的轮数与时段、阶段满时怎么处理、
-            天天大转盘 / 寻宝 / 券来世界要不要自动跑、消消乐参数、秒杀开抢时刻，
-            以及 Bark / Server酱 / PushPlus 推送。</div>
-          <div class="frow"><button class="btn pri" onclick="gotoSettings()">去设置</button></div>
         </div>
         <div class="panel">
           <h3>手动执行一次 <span class="hint">日常交给计划任务，这里用于补做或验证</span></h3>
@@ -1660,7 +1654,8 @@ function importHar(){
 }
 function runAll(platform){
   return act({action:'run_all',platform:platform,
-    dry:$('dashDry').checked, luck:platform==='all'});
+    dry:$('dashDry').checked, luck:platform==='all', games:platform==='all',
+    xxl:platform==='all'});
 }
 // 刷新状态本身就是只读检查，不该顺手改掉用户勾的选项
 function refreshStatus(){act({action:'refresh_status'});}

@@ -87,7 +87,9 @@ ACTS = {
         "task_component": "4EC96l0-9btuobajC9Yu",
         # 每日「看精彩视频」任务：+1 抽奖机会。视频页在 cmlive 域，鉴权/上报单独处理。
         "video_day": True,
-        # 抽奖次数 1 次/抽；服务端 consumeRestrictionType=1，仅周日开放
+        # 抽奖次数 1 次/抽；服务端 consumeRestrictionType=1，仅周日开放。
+        # 用户 2026-11-23 确认：追剧确实有此限制，不要放开 weekday=7。
+        # （游戏币那个 weekday=6 是真误读，已删；两者不是一回事。）
         "lottery": {"component": "4EC96l0-9btuobajC9Yu", "wallet_key": "remain",
                     "cost": 1, "count_key": None, "weekday": 7,
                     "label": "追剧领福利"},
@@ -173,7 +175,8 @@ def run_lottery(s: requests.Session, referer: str, cfg: dict, dry_run: bool,
     """抽奖消耗：只读预检余额 → 到窗口才真扣。
 
     幂等由服务端余额保证（余额为 0 时无事可做），重复运行不会多扣资产。
-    非窗口日只报余额不消耗：游戏币攒到周六拓展池、追剧次数仅周日开放。
+    非窗口日只报余额不消耗：游戏币全周可抽；追剧受服务端限制仅周日开放
+    （weekday=7），窗口外只报余额不扣次数，等周日再抽。
     """
     comp = cfg["component"]
     rem = api_call(s, referer, "POST", f"/qwhdhub/diyLottery/period/remain/{comp}", {})

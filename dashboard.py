@@ -262,8 +262,14 @@ def _pythonw() -> str:
 
 
 def scan_accounts():
-    """返回 [{key, plat, file, phone, token_state}]"""
+    """返回 [{key, plat, file, phone, token_state}]
+
+    推送状态按实际生效口径显示：设置页的全局配置对所有账号生效
+    （common.collect_notify_settings：全局 > 单账号），所以全局配了 PushPlus，
+    每个账号都该显示「已配置」，不能逼用户一个账号一个账号重复填。
+    """
     out = []
+    gs = load_global_settings() or {}
     for plat, d, field in (("qwhdhub", BASE / "configs", "app_token"),
                            ("BASS", BASE / "configs_fj", "bearer_token")):
         if not d.exists():
@@ -275,9 +281,11 @@ def scan_accounts():
             # 只报「有没有配推送」，不把 Bark 地址 / SendKey 本身吐给页面
             out.append({"key": f.stem, "plat": plat, "file": str(f.relative_to(BASE)),
                         "phone": str(cfg.get("phone") or ""), "token_state": state,
-                        "has_bark": bool(str(cfg.get("bark_url") or "").strip()),
-                        "has_sendkey": bool(str(cfg.get("serverchan_sendkey") or "").strip()),
-                        "has_pushplus": bool(str(cfg.get("pushplus_token") or "").strip())})
+                        "has_bark": bool(str(gs.get("bark_url") or cfg.get("bark_url") or "").strip()),
+                        "has_sendkey": bool(str(gs.get("serverchan_sendkey") or
+                                                cfg.get("serverchan_sendkey") or "").strip()),
+                        "has_pushplus": bool(str(gs.get("pushplus_token") or
+                                                 cfg.get("pushplus_token") or "").strip())})
     return out
 
 
@@ -387,6 +395,24 @@ def _parse_qwhd_legacy(key: str, text: str):
         update_stats(key, **upd)
     if flow > 0 and upd.get("today_signed_qwhd") == TODAY():
         bump_daily(key, flow_mb=flow)
+
+
+def parse_luck_output(_key: str, text: str):
+    """抽奖失败（尤其 401 未登陆）在页面上说清原因，别让用户以为点了没反应。
+
+    抽奖面板只展示 luck_state.json 里的成功记录，失败时那个文件不更新，
+    页面看起来就是「什么都没发生」。这里从脚本 stdout 里捞出失败行，
+    直接推到控制台；用户点在「日志」页就能看到，不必猜。
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    fails = [ln for ln in lines if "code=401" in ln or "未登陆" in ln or "token 失效" in ln]
+    if not fails:
+        return
+    RUNNER.push("⚠ 抽奖未执行：福建 bearer 未登陆/已失效（401）。")
+    RUNNER.push("  注意这跟全国签到的 token 是两套票——HAR 有效只说明全国那边能用。")
+    RUNNER.push("  要重新抓一次：手机打开「福建移动 App → 优惠专区/签到有礼」活动页让它加载完，再导出 HAR 导入。")
+    for ln in fails[:6]:
+        RUNNER.push("  " + ln)
 
 
 def parse_bass_output(key: str, text: str):
@@ -864,13 +890,21 @@ def do_action(body: dict):
         if body.get("dry"):
             cmd.append("--dry-run")
         luck = plat == "all" and bool(body.get("luck"))
-        xxl = not luck and bool(body.get("xxl"))
+        # 消消乐跟大转盘不互斥：run_all 里两者本就是独立判断（770-774），
+        # 寻宝还会按本轮真做过的事同时上报「参与转盘」「参与消消乐」两个加骰任务。
+        xxl = plat == "all" and bool(body.get("xxl"))
         if luck:
             cmd.append("--luck")
-        elif xxl:
+        if xxl:
             cmd.append("--xxl")
-            if body.get("xxl_times"):
-                cmd += ["--xxl-times", str(body["xxl_times"])]
+            times = body.get("xxl_times") or (load_policy().get("xxl") or {}).get("times", 5)
+            cmd += ["--xxl-times", str(times)]
+        # 拓展活动（游戏中心 / 追剧 / 抽话费）每天都能打卡做任务，抽奖窗口由脚本
+        # 自己拦（游戏币周六、追剧周日），非窗口只报余额不消耗。一键理应带上，
+        # 否则写好的代码只能等 12:05 定时任务或单独进「拓展活动」页点。
+        games = plat == "all" and bool(body.get("games"))
+        if games:
+            cmd.append("--games")
         if body.get("seckill"):
             cmd.append("--seckill")
             if body.get("seckill_at"):
@@ -885,9 +919,10 @@ def do_action(body: dict):
         pname = {"all": "全部平台", "qwhd": "全国签到", "bass": "福建活动",
                  "none": "不跑签到"}.get(plat, plat)
         title = "签到领福利" if luck else "一键签到"
-        label = "%s（%s%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
+        label = "%s（%s%s%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
                                   "，含消消乐" if xxl else "",
                                   "，含寻宝" if xunbao else "",
+                                  "，含游戏中心" if games else "",
                                   "，含秒杀" if body.get("seckill") else "")
         return _start(label, cmd)
 
@@ -940,7 +975,8 @@ def do_action(body: dict):
             cmd.append("--no-tasks")
         if body.get("max"):
             cmd += ["--max", str(body["max"])]
-        return _start("优惠专区抽奖", cmd)
+        return _start("优惠专区抽奖", cmd,
+                      parser=(parse_luck_output, ""))
 
     if act == "xunbao_run":
         cmd = py("cmcc_xunbao.py")

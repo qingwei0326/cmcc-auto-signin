@@ -2764,3 +2764,66 @@ class TestNoNewSilentCatch(unittest.TestCase):
             len(hits), self.BASELINE,
             "又多了静默吞异常：%s\n（会丢数据的路径请改用 dashboard._swallow，"
             "并去掉这处 pass）" % ", ".join(hits[self.BASELINE:]))
+
+
+class TestClaimableAwardIds(unittest.TestCase):
+    """累计签到门槛奖必须能被扫到——抓包 2026-11-23 实测漏领 21签200MB。"""
+
+    def test_task_award_chance_empty_but_accumulate_ready(self):
+        """taskAwardChance 恒为空，已达标未领的奖在 accumulateTaskInfo 里。"""
+        status = {
+            "taskAwardChance": [],
+            "accumulateTaskInfo": [
+                {"id": "272891", "num": "3", "lackDay": None, "status": "1"},
+                {"id": "272903", "num": "21", "lackDay": None, "status": None,
+                 "lotteryText": "抽20元话费券", "lottery": True},
+                {"id": "272905", "num": "30", "lackDay": 9, "status": None,
+                 "lotteryText": "满签抽50元话费"},
+            ],
+            "myTaskInfo": [{"id": "302217", "taskType": "continue", "lackDay": 6, "status": None}],
+            "fullmarkTask": {"id": "full001", "lackDay": 9, "status": None},
+        }
+        ids = [tid for tid, _ in cmcc_sign.claimable_award_ids(status)]
+        self.assertEqual(ids, ["272903"], "只应领已达标未领的 21 签奖")
+
+    def test_dedup_across_pools(self):
+        """同一任务在多个池出现时只领一次，避免重复请求。"""
+        task = {"id": "272903", "lackDay": None, "status": None}
+        status = {"taskAwardChance": [dict(task)],
+                  "accumulateTaskInfo": [dict(task)],
+                  "myTaskInfo": [dict(task)]}
+        self.assertEqual(len(cmcc_sign.claimable_award_ids(status)), 1)
+
+    def test_success_records_award(self):
+        """真领到（code=SUCCESS 且返回 prizeName）才写台账，失败不写。"""
+        status = {"accumulateTaskInfo": [
+            {"id": "272903", "lackDay": None, "status": None, "lotteryText": "抽20元话费券"}]}
+        resp = {"code": "SUCCESS", "msg": "成功",
+                "data": {"prizeName": "21签200MB日包"}}
+
+        class FakeResp:
+            def json(self):
+                return resp
+
+        s = mock.Mock()
+        s.post.return_value = FakeResp()
+        tmp = tempfile.mkdtemp(prefix="cmcc_claim_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        awards = Path(tmp) / "awards.json"
+        with mock.patch.object(common, "AWARDS_FILE", awards), \
+             mock.patch.object(cmcc_sign, "record_award",
+                               side_effect=lambda *a, **k: common.record_award(*a, **k)), \
+             mock.patch.object(cmcc_sign.time, "sleep"):
+            lines = cmcc_sign.claim_task_awards(s, "https://wx.10086.cn/", status,
+                                                account="13800001234")
+        self.assertTrue(any("21签200MB日包" in line for line in lines))
+        recs = json.loads(awards.read_text(encoding="utf-8"))["records"]
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["name"], "21签200MB日包")
+        self.assertEqual(recs[0]["source"], "累计签到")
+
+    def test_failed_claim_not_recorded(self):
+        """重复领取返回「任务状态异常」时不写台账。"""
+        status = {"accumulateTaskInfo": [
+            {"id": "272903", "lackDay": None, "status": "1"}]}
+        self.assertEqual(cmcc_sign.claimable_award_ids(status), [])

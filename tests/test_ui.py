@@ -399,18 +399,42 @@ class TestHumanFacing(unittest.TestCase):
         i = self.html.find("function runAll")
         handler = self.html[i:self.html.index("function refreshStatus", i)]
         self.assertIn("luck:platform==='all'", handler)
-        self.assertNotIn("xxl", handler)
+        self.assertIn("games:platform==='all'", handler)
+        self.assertIn("xxl:platform==='all'", handler)
 
     def test_benefits_action_passes_lottery_and_dry_run_to_batch(self):
         with mock.patch.object(dashboard, "scan_accounts", return_value=[]), \
                 mock.patch.object(dashboard, "_start", return_value={"ok": True}) as start:
             dashboard.do_action({"action": "run_all", "platform": "all", "luck": True,
-                                 "dry": True, "xxl": True})
+                                 "games": True, "dry": True, "xxl": True})
             label, command = start.call_args.args
         self.assertIn("签到领福利", label)
         self.assertIn("--luck", command)
+        self.assertIn("--games", command)
+        self.assertIn("含游戏中心", label)
+        self.assertIn("--xxl", command)
+        self.assertIn("含消消乐", label)
         self.assertIn("--dry-run", command)
-        self.assertNotIn("--xxl", command)
+
+    def test_one_click_games_only_on_all_platforms(self):
+        """一键接上拓展活动：全部平台带 --games，单平台不带。
+
+        2026-11-23 前一键命令拼装漏了 games 分支，游戏中心写好了却只能靠
+        12:05 定时任务或单独按钮触发。窗口由脚本自己拦，带上不会浪费次数。
+        """
+        with mock.patch.object(dashboard, "scan_accounts", return_value=[]), \
+                mock.patch.object(dashboard, "_start", return_value={"ok": True}) as start:
+            dashboard.do_action({"action": "run_all", "platform": "all",
+                                 "luck": True, "games": True})
+            label, command = start.call_args.args
+        self.assertIn("--games", command)
+        self.assertIn("含游戏中心", label)
+
+        with mock.patch.object(dashboard, "scan_accounts", return_value=[]), \
+                mock.patch.object(dashboard, "_start", return_value={"ok": True}) as start:
+            dashboard.do_action({"action": "run_all", "platform": "bass", "games": True})
+            _label, command = start.call_args.args
+        self.assertNotIn("--games", command)
 
     def test_errors_stay_on_page(self):
         self.assertIn('id="errBox"', self.html)

@@ -322,13 +322,53 @@ def do_mark(s: requests.Session, referer: str, date: str) -> dict:
     return r.json()
 
 
-def claim_task_awards(s: requests.Session, referer: str, status_data: dict) -> list[str]:
-    """尝试领取 taskAwardChance 里的连签奖励（热门奖品库存紧张，领不到属正常）。
+def claimable_award_ids(status_data: dict) -> list[tuple[str, str]]:
+    """从 markstatus 各池挑出「已达标但未领」的累计/连签/满签任务 ID。
 
-    结果行附带奖品名称（从活动数据中按任务 ID 反查），便于推送里直接识别领到了什么。
+    抓包 2026-11-23 实测：21 签奖励（id=272903）领奖前在 accumulateTaskInfo 里
+    status=null、lackDay=null，并不在 taskAwardChance（恒为空数组）；
+    点领奖后才变 status="1"。所以只扫 taskAwardChance 会漏掉绝大多数门槛奖。
+
+    判定规则（与服务端一致）：
+      - lackDay 非空 → 还差几天，未达标，不领（如满签 30 天差 9 天）
+      - status == "1"  → 已领过，跳过（重复领返回「任务状态异常」）
+      - 其余（status 为 null/0、lackDay 为 null/0）→ 可领
+    同一 ID 可能同时出现在多个池，按首次出现去重。
     """
-    # 任务ID -> 奖品名（taskAwardChance 条目自身或 accumulateTaskInfo/myTaskInfo 中同名任务；
-    # 各池信息详略不一，只有取到非空名称才登记，避免空值抢先占位）
+    out: list[tuple[str, str]] = []
+    seen = set()
+    pools = (("taskAwardChance", "连签机会"),
+             ("accumulateTaskInfo", "累计签到"),
+             ("myTaskInfo", "签到任务"),
+             ("fullmarkTask", "满签"))
+    for key, label in pools:
+        pool = status_data.get(key) or []
+        if isinstance(pool, dict):   # fullmarkTask 实测返回单个对象而非数组
+            pool = [pool]
+        for task in pool:
+            if not isinstance(task, dict):
+                continue
+            tid = str(task.get("id") or "").strip()
+            if not tid or tid in seen:
+                continue
+            lack = task.get("lackDay")
+            if lack not in (None, "", 0, "0"):
+                continue
+            if str(task.get("status") or "").strip() == "1":
+                continue
+            seen.add(tid)
+            out.append((tid, label))
+    return out
+
+
+def claim_task_awards(s: requests.Session, referer: str, status_data: dict,
+                      account: str = "") -> list[str]:
+    """领取所有已达标的连签/累计签到奖励（库存紧张领不到属正常）。
+
+    结果行附带奖品名：优先用服务端返回的 prizeName，其次按任务 ID 从活动数据反查。
+    真正领到（code=SUCCESS）的写进到账台账；失败/已领不记，避免污染战报。
+    """
+    # 任务ID -> 奖品名（各池信息详略不一，只登记非空名称，避免空值抢先占位）
     names = {}
     pools = [status_data.get("taskAwardChance") or [],
              status_data.get("accumulateTaskInfo") or [],
@@ -343,16 +383,20 @@ def claim_task_awards(s: requests.Session, referer: str, status_data: dict) -> l
                 names[tid] = name
 
     results = []
-    for task in status_data.get("taskAwardChance") or []:
-        tid = task.get("id")
-        if not tid:
-            continue
+    for tid, label in claimable_award_ids(status_data):
         r = s.post(f"{API_MARK}/mark31/taskAward/{tid}", json={}, headers=api_headers(referer), timeout=30)
         resp = r.json()
         # status 为 None 时回落到 code（实测领奖成功响应 status 可能为空）
         status_text = resp.get("status") or resp.get("code") or "?"
-        label = f"任务{tid}" + (f"（{names[tid]}）" if names.get(tid) else "")
-        results.append(f"{label}: {status_text} {resp.get('msg')}")
+        won = ((resp.get("data") or {}).get("prizeName")
+               if isinstance(resp.get("data"), dict) else None)
+        name = won or names.get(tid) or ""
+        results.append(f"{label}任务{tid}" + (f"（{name}）" if name else "") + f": {status_text} {resp.get('msg')}")
+        if resp.get("code") == "SUCCESS" and won:
+            try:
+                record_award(account, "累计签到", won)
+            except Exception as e:
+                log.debug("领奖台账写入失败: %s", e)
         time.sleep(random.uniform(1, 2))
     return results
 
@@ -583,10 +627,10 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
     if claim and not dry_run:
         try:
             latest = query_markstatus(s, referer)
-            chances = latest.get("taskAwardChance") or []
-            if not chances:
+            if not claimable_award_ids(latest):
                 log.info("[领奖] 当前无可领取的连签任务")
-            for line in claim_task_awards(s, referer, latest):
+            for line in claim_task_awards(s, referer, latest,
+                                          account=getattr(cfg, "phone", "") or ""):
                 log.info("[领奖] %s", line)
                 lines.append(f"[领奖] {line}")
         except Exception as e:

@@ -456,7 +456,8 @@ def run_wed(dry_run: bool) -> list:
 
 
 def run_xunbao(dry_run: bool, tasks: bool = False,
-               did_xxl: bool = False, did_luck: bool = False) -> list:
+               did_xxl: bool = False, did_luck: bool = False,
+               mutual: bool = False) -> list:
     """环闽寻宝记：投掉现有骰子、开宝箱，中奖写进到账台账。
 
     `did_xxl` / `did_luck` 表示本轮已经玩过消消乐 / 抽过大转盘：
@@ -472,6 +473,13 @@ def run_xunbao(dry_run: bool, tasks: bool = False,
         return [("xunbao", "环闽寻宝", False, 0)]
 
     print(f"\n环闽寻宝记 · {len(confs)} 个福建账号")
+    if mutual:
+        # 多号互助力换骰子（按号对每天一次），必须在投骰前跑，否则当天骰子没处投
+        try:
+            import cmcc_xunbao as XB
+            XB.mutual_assist(dry_run=dry_run)
+        except Exception as e:
+            print(f"  [xunbao] 互助力异常：{e}")
     args = []
     if tasks:
         # 只报这一轮真做过的任务；好友助力永远不报
@@ -549,6 +557,8 @@ def main():
     ap.add_argument("--xunbao", action="store_true", help="环闽寻宝记：投掉现有骰子")
     ap.add_argument("--xunbao-tasks", action="store_true",
                     help="寻宝顺手上报「参与天天大转盘」任务换骰子")
+    ap.add_argument("--xunbao-mutual", action="store_true",
+                    help="寻宝投骰前先多号互助力换骰子（按号对每天一次）")
     ap.add_argument("--daily-only", action="store_true",
                     help="只补签到 + 领 BASS 每日奖励三档，用于每小时轮询")
     ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
@@ -621,6 +631,7 @@ def main():
         # 寻宝的骰子当天不用就作废，跟着每日奖励一起投掉
         args.xunbao = args.xunbao or bool(policy.get("xunbao", True))
         args.xunbao_tasks = args.xunbao_tasks or bool(policy.get("xunbao_tasks", True))
+        args.xunbao_mutual = args.xunbao_mutual or bool(policy.get("xunbao_mutual", True))
         if pol.get("fb_tasks"):
             extra_map["bass"].append("--fb-tasks")
 
@@ -706,7 +717,8 @@ def main():
         did_xxl = any(k == "xxl" and ok for k, _n, ok, _s in results)
         did_luck = any(k == "luck" and ok for k, _n, ok, _s in results)
         results.extend(run_xunbao(args.dry_run, tasks=args.xunbao_tasks,
-                                  did_xxl=did_xxl, did_luck=did_luck))
+                                  did_xxl=did_xxl, did_luck=did_luck,
+                                  mutual=args.xunbao_mutual))
 
     if args.seckill:
         results.extend(run_seckill(args.dry_run, args.seckill_at))

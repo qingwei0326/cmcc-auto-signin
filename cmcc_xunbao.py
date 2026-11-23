@@ -38,14 +38,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from common import (api_post, app_base, make_session, mask_phone, record_award,
-                    setup_utf8, update_json)
+from common import (api_post, app_base, atomic_write_json, file_lock, load_json,
+                    make_session, mask_phone, record_award, setup_utf8, update_json)
 
 setup_utf8()
 
 BASE = app_base()
 CFG_DIR = BASE / "configs_fj"
 STATE_FILE = BASE / "gui_data" / "xunbao_state.json"
+ASSIST_STATE = BASE / "gui_data" / "xunbao_assist_state.json"
 
 API = "https://wap.fj.10086.cn/bass-commonAreaServer/H5Api/hmxb/"
 REFERER = "https://wap.fj.10086.cn/bass-activityH5/pages/nationalDay2026/index"
@@ -108,6 +109,64 @@ def collect_targets(key=None):
         if tok:
             out.append((f.stem, str(cfg.get("phone") or ""), tok))
     return out
+
+
+def mutual_assist(dry_run=False):
+    """用 configs_fj 下的多个号互相点「好友助力」加骰子。
+
+    实测（2026-11-23）：owner 调 assist/create 拿 inviteToken → helper 调
+    assist/do {inviteToken} → owner 骰子 +1。服务端限制的是**每个号每天只能当
+    一次 helper**（第三个号再帮就回「您今日助力次数已用尽」），所以按
+    「日期 + 助力者」记进 xunbao_assist_state.json：每个号每天只帮一个别的号，
+    当天不再重复；服务端次数用尽也写状态，避免白跑接口。三个号一天约多 3 骰。
+    """
+    targets = collect_targets()
+    if len(targets) < 2:
+        print("多号互助力：至少需要两个福建账号，跳过。")
+        return {"tried": 0, "success": 0}
+    sessions = [(tag, phone, Xunbao(tok)) for tag, phone, tok in targets]
+    day = time.strftime("%Y-%m-%d")
+
+    tried = success = 0
+    with file_lock(ASSIST_STATE):
+        state = load_json(ASSIST_STATE, default={}) or {}
+        changed = False
+        print(f"\n环闽寻宝 · 多号互助力（{len(sessions)} 个号）")
+        for hi, (helper, _hp, hapi) in enumerate(sessions):
+            if state.get(helper) == day:
+                print(f"  - {helper} 今天已帮过，跳过")
+                continue
+            # 轮着挑被助力方，避免每次都帮同一个号
+            owners = [s for j, s in enumerate(sessions) if j != hi]
+            owners = owners[hi % len(owners):] + owners[:hi % len(owners)]
+            for owner, _op, oapi in owners:
+                tried += 1
+                if dry_run:
+                    print(f"  [dry-run] {helper} 帮 {owner}")
+                    break
+                cr = oapi.call("assist/create")
+                tk = (cr.get("data") or {}).get("inviteToken") or ""
+                if not tk:
+                    print(f"  - {owner} 生成助力码失败 code={cr.get('code')}，换下一个")
+                    continue
+                hr = hapi.call("assist/do", {"inviteToken": tk})
+                msg = str(hr.get("msg") or "")
+                if hr.get("ok"):
+                    print(f"  ✓ {helper} 帮 {owner}（{owner} +1 骰）")
+                    state[helper] = day
+                    changed = True
+                    success += 1
+                    break
+                if "次数已用尽" in msg or "已助力" in msg:
+                    print(f"  - {helper} 今日助力次数已用尽")
+                    state[helper] = day
+                    changed = True
+                    break
+                print(f"  ✗ {helper} 帮 {owner}: code={hr.get('code')} {msg[:30]}")
+                time.sleep(random.uniform(0.6, 1.1))
+        if changed:
+            atomic_write_json(ASSIST_STATE, state)
+    return {"tried": tried, "success": success}
 
 
 def save_state(phone, info, rolls=0, prizes=0):
@@ -394,7 +453,15 @@ def main():
                     help="本轮真抽过天天大转盘，允许上报「参与天天大转盘」任务")
     ap.add_argument("--max", type=int, default=20, help="每号本次最多投几次，默认 20")
     ap.add_argument("--invite", action="store_true", help="只生成好友助力链接，不投骰子")
+    ap.add_argument("--mutual-assist", action="store_true",
+                    help="多号互相点好友助力换骰子（按号对每天一次）")
     args = ap.parse_args()
+
+    if args.mutual_assist:
+        mutual_assist(dry_run=args.dry_run)
+        if args.dry_run:
+            print("\n（--dry-run，未真点助力）")
+        return 0
 
     targets = collect_targets(args.key)
     if not targets:

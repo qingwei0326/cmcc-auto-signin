@@ -1003,6 +1003,8 @@ def do_action(body: dict):
             cmd.append("--xunbao")
             if load_policy().get("xunbao_tasks", True):
                 cmd.append("--xunbao-tasks")
+            if load_policy().get("xunbao_mutual", True):
+                cmd.append("--xunbao-mutual")
         pname = {"all": "全部平台", "qwhd": "全国签到", "bass": "福建活动",
                  "none": "不跑签到"}.get(plat, plat)
         title = "签到领福利" if luck else "一键签到"
@@ -1324,6 +1326,7 @@ def do_action(body: dict):
         patch["xunbao"] = bool(body.get("xunbao", True))
         patch["coupon_world"] = bool(body.get("coupon_world", True))
         patch["xunbao_tasks"] = bool(body.get("xunbao_tasks", old_pol.get("xunbao_tasks", True)))
+        patch["xunbao_mutual"] = bool(body.get("xunbao_mutual", old_pol.get("xunbao_mutual", True)))
         xxl = body.get("xxl")
         if isinstance(xxl, dict):
             try:

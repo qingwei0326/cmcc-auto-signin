@@ -674,6 +674,18 @@ def run_fb_tasks(s, cfg, args, res, key) -> bool:
                 _note_token(res, r)
                 if not r["ok"] and str(r.get("code")) == "1006":
                     print("     -  频控未过，跳过该轮")
+        if todo:
+            # 做完立刻回查一次：completeStatus 落到 1 才会进状态文件。
+            # 只在开工前记一次快照的话，控制台会一直显示「可做」
+            # （2026-11-23 实测：任务其实做完了，界面全标未做，误判成漏跑）。
+            time.sleep(random.uniform(1.2, 2.0))
+            tl2 = call(s, cfg, "fb_tasks")
+            if tl2["ok"] and isinstance(tl2["data"], list):
+                track_fb_tasks(key, tl2["data"])
+                left = [t for t in tl2["data"]
+                        if str(t.get("completeStatus")) != "1"]
+                print(f"     任务状态已刷新：{len(tl2['data']) - len(left)}"
+                      f"/{len(tl2['data'])} 已完成")
     else:
         all_ok = False
         show("流量银行任务列表", tl)
@@ -853,8 +865,13 @@ def main():
     if fb["ok"] and isinstance(fb["data"], dict):
         d = fb["data"]
         res["fb_exchange"] = f"{d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"
+        # 服务端 hasTaskToDo 恒为 True（2026-11-23 实测 7 个任务全完成时仍返回 True），
+        # 不能当判断依据；改按本地记到的任务状态数未完成的个数。
+        recs = (load_json(FB_STATE, {}).get(key) or {}).get("tasks") or {}
+        pending = sum(1 for r in recs.values() if str(r.get("status")) != "1")
+        tail = f"  未完成任务={pending} 个" if recs else "  任务状态未知"
         print(f"  流量银行：可兑 {d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"
-              f"（{d.get('exchangeFlowValue')} 点）  有待做任务={d.get('hasTaskToDo')}")
+              f"（{d.get('exchangeFlowValue')} 点）{tail}")
 
     if args.dry_run:
         if args.feed_all and res.get("fodder") is not None:

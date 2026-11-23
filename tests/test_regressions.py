@@ -2007,6 +2007,49 @@ class TestFlowbankCycleGate(unittest.TestCase):
         self.assertIn('"--fb-all"', src)
         self.assertIn("fb_due_tasks(", src)
 
+    def test_run_fb_tasks_refreshes_state_after_doing(self):
+        """做完任务必须回查一次刷新状态。
+
+        2026-11-23 实测：任务其实全部完成、奖励已到账，但状态文件停在开工前的
+        快照（completeStatus=0），控制台一直显示「可做」，被误判成漏跑。
+        """
+        import argparse
+        import cmcc_fj as FJ
+
+        calls = {"fb_tasks": 0}
+
+        def fake_call(s, cfg, key, retries=1, extra=None):
+            if key == "fb_tasks":
+                calls["fb_tasks"] += 1
+                # 第一次：开工前未做；第二次：做完后回查应为已完成
+                st = "0" if calls["fb_tasks"] == 1 else "1"
+                return {"ok": True, "data": [
+                    {"id": 12, "taskCycle": 2, "taskTitle": "浏览领券中心",
+                     "taskFlow": "50", "taskFlowUnit": "M", "completeStatus": st}]}
+            if key == "fb_index":
+                return {"ok": True, "data": {"exchangeFlow": 1600, "exchangeFlowUnit": "MB",
+                                             "exchangeFlowValue": 170, "hasTaskToDo": True}}
+            return {"ok": True, "data": {}}
+
+        tracked = []
+        with mock.patch.object(FJ, "pause", lambda *a, **k: None), \
+             mock.patch.object(FJ, "call", fake_call), \
+             mock.patch.object(FJ, "call_post",
+                               lambda *a, **k: {"ok": True, "code": "0000"}), \
+             mock.patch.object(FJ, "load_json", lambda *a, **k: {}), \
+             mock.patch.object(FJ, "track_fb_tasks",
+                               lambda key, tasks: tracked.append([t["completeStatus"] for t in tasks])), \
+             mock.patch.object(FJ, "show", lambda *a, **k: True), \
+             mock.patch.object(FJ, "_note_token", lambda *a, **k: None), \
+             mock.patch.object(FJ.time, "sleep", lambda *a, **k: None):
+            ok = FJ.run_fb_tasks(None, {}, argparse.Namespace(fb_all=False),
+                                 {"tasks": 0, "token": "ok"}, "fj1")
+
+        self.assertTrue(ok)
+        self.assertEqual(len(tracked), 2, "开工前记一次 + 做完回查再记一次")
+        self.assertEqual(tracked[0], ["0"])
+        self.assertEqual(tracked[1], ["1"], "回查必须落成已完成，否则界面一直显示可做")
+
 
 # ======================================================================
 # 可用性审查（2026-11-20）：修掉「人用不了」的那一批

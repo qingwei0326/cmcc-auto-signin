@@ -332,13 +332,16 @@ def _apply_daily(acc, daily_list, lucky, sign, now,
     acc["updated"] = stamp
 
 
-def daily_nothing_to_do(key):
+def daily_nothing_to_do(key, *, need_feed=False, need_tasks=False, need_fb_tasks=False):
     """签到、三档奖励和昨日投喂奖励都有当天的完成记录时跳过轮询。
 
     每小时的轮询一天要跑 17 次，而三档通常早上 8 点前就领完了，
     后面十几次全是空转（每次还要调 4 个接口）。这里直接短路，
     只看本地状态文件，不再发任何请求。
+    若有喂养（need_feed）或当天未完成的浏览/流量银行任务，不能短路。
     """
+    if need_feed:
+        return False
     acc = (load_json(DAILY_STATE, {}) or {}).get(key) or {}
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     if (acc.get("tiers_date") != today or acc.get("feed_reward_date") != today
@@ -347,7 +350,28 @@ def daily_nothing_to_do(key):
     tiers = acc.get("tiers") or []
     if not tiers or any(str(t.get("status")).upper() != "RECEIVED" for t in tiers):
         return False
-    return bool((acc.get("sign") or {}).get("today"))
+    if not (acc.get("sign") or {}).get("today"):
+        return False
+    if need_tasks and acc.get("tasks_date") != today:
+        return False
+    if need_fb_tasks and acc.get("fb_tasks_date") != today:
+        return False
+    return True
+
+
+def _daily_flag_done(key, field) -> bool:
+    """今天是否已成功执行过指定分支（如 tasks_date / fb_tasks_date）。"""
+    acc = (load_json(DAILY_STATE, {}) or {}).get(key) or {}
+    return acc.get(field) == datetime.date.today().isoformat()
+
+
+def _mark_daily_flag(key, field) -> None:
+    """记录当天已完成某分支，避免每小时轮询重复打接口。"""
+    today = datetime.date.today().isoformat()
+    try:
+        update_json(DAILY_STATE, lambda st: st.setdefault(key, {}).__setitem__(field, today))
+    except Exception as e:
+        print(f"  [警告] 每日标记写入失败（{field}）：{e}")
 
 
 def track_fb_tasks(key, tasks):
@@ -560,6 +584,84 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
     return res.get("feeds", 0)
 
 
+def run_visit_tasks(s, cfg, res) -> bool:
+    """完成 UN_DO 的 VISIT/APP_VISIT 任务；无待做或全部成功返回 True。"""
+    # 抓包证实：任务完成只需 POST /task/doTask/{id}，body={appId,timestamp}，
+    # 无停留时长/页面 token 等校验。等价于跳过真实浏览空报完成，故默认关闭。
+    pause()
+    tl = call(s, cfg, "task_list")
+    if not (tl["ok"] and isinstance(tl["data"], list)):
+        show("任务列表", tl)
+        _note_token(res, tl)
+        return False
+    targets = [t for t in tl["data"]
+               if str(t.get("taskStatus")) == "UN_DO"
+               and t.get("completeType") in ("VISIT", "APP_VISIT")]
+    if not targets:
+        print("  -  没有 UN_DO 的 VISIT 类任务")
+        return True
+    all_ok = True
+    for t in targets:
+        tid = t.get("id")
+        pause(1.2, 1.0)
+        r = call_post(s, cfg, f"/bass-cultivateGameServer/task/doTask/{tid}")
+        if show(f"doTask/{tid} {t.get('taskName')}", r):
+            res["tasks"] += 1
+        else:
+            all_ok = False
+        _note_token(res, r)
+    return all_ok and res.get("token") == "ok"
+
+
+def run_fb_tasks(s, cfg, args, res, key) -> bool:
+    """完成流量银行浏览任务；列表失败或任一请求失败/限流返回 False。"""
+    # 抓包证实：POST /flowBank/doTask body={appId,timestamp,taskId}，无签名无停留校验。
+    # completeStatus: 0=未做 2=进行中 1=已完成。每个任务要点两次（0→2→1）。
+    # 有 1006 频控，需间隔。等价于空报浏览，默认关闭。
+    pause()
+    tl = call(s, cfg, "fb_tasks")
+    all_ok = True
+    if tl["ok"] and isinstance(tl["data"], list):
+        track_fb_tasks(key, tl["data"])
+        # 周任务只在周一之后、月任务只在 1 号之后才尝试；没到周期直接跳过，
+        # 少打无意义的请求（这个接口有 1006 频控）。
+        recs = (load_json(FB_STATE, {}).get(key) or {}).get("tasks") or {}
+        todo, skipped = fb_due_tasks(tl["data"], recs, force=getattr(args, "fb_all", False))
+        if skipped:
+            print(f"  -  {len(skipped)} 个周/月任务未到周初/月初，跳过"
+                  f"（--fb-all 可强制）")
+        # completeStatus: 0=未做（要点两次 0→2→1）  2=进行中（再点一次即完成）  1=已完成
+        if not todo:
+            print("  -  流量银行没有到周期的待做任务")
+        for t in todo:
+            tid, title = t.get("id"), t.get("taskTitle")
+            rounds = (1, 2) if str(t.get("completeStatus")) == "0" else (1,)
+            for round_no in rounds:
+                time.sleep(random.uniform(3.5, 5.5))  # 避开 1006 频控
+                r = call_post(s, cfg, EP["fb_do_task"], retries=3,
+                              extra={"taskId": tid})
+                if show(f"fb任务 {tid} {title} ({round_no}/{len(rounds)})", r):
+                    res["tasks"] += 1
+                else:
+                    all_ok = False
+                _note_token(res, r)
+                if not r["ok"] and str(r.get("code")) == "1006":
+                    print("     -  频控未过，跳过该轮")
+    else:
+        all_ok = False
+        show("流量银行任务列表", tl)
+        _note_token(res, tl)
+    # 重新查可兑流量
+    time.sleep(1)
+    fb2 = call(s, cfg, "fb_index")
+    if fb2["ok"] and isinstance(fb2["data"], dict):
+        d2 = fb2["data"]
+        res["fb_exchange"] = f"{d2.get('exchangeFlow')}{d2.get('exchangeFlowUnit')}"
+        print(f"     流量银行现可兑 {d2.get('exchangeFlow')}{d2.get('exchangeFlowUnit')}"
+              f"（{d2.get('exchangeFlowValue')} 点）")
+    return all_ok and res.get("token") == "ok"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只查状态，不做改动")
@@ -624,7 +726,11 @@ def main():
             print("  -  券来世界访问任务待完成（500 饲料）")
 
     # 轮询短路：今天该领的都领完了，就不必再调接口
-    if args.daily_only and not args.dry_run and not cw_task and daily_nothing_to_do(key):
+    want_feed = args.feed > 0 or args.feed_all
+    if (args.daily_only and not args.dry_run and not cw_task
+            and daily_nothing_to_do(key, need_feed=want_feed,
+                                    need_tasks=bool(args.tasks),
+                                    need_fb_tasks=bool(args.fb_tasks))):
         print("  今日签到和奖励已处理，本轮无事可做（1 秒退出）。")
         res["today_signed"] = True
         res["idle"] = True
@@ -792,79 +898,32 @@ def main():
         # 补签成功后要回写一次，否则面板上仍显示"未签"
         if sign_data is not None:
             track_daily(key, None, None, sign_data)
+        # 浏览任务放在喂养前，刚赚到的饲料能在本轮一起喂掉
+        if args.tasks and not _daily_flag_done(key, "tasks_date"):
+            if run_visit_tasks(s, cfg, res):
+                _mark_daily_flag(key, "tasks_date")
+        if args.fb_tasks and not _daily_flag_done(key, "fb_tasks_date"):
+            if run_fb_tasks(s, cfg, args, res, key):
+                _mark_daily_flag(key, "fb_tasks_date")
         # 自动策略里开了每日喂养时，就在这一轮顺带喂（run_all 只在 feed_hour 那一轮注入）
-        if args.feed > 0 or args.feed_all:
+        if want_feed:
             run_feed(s, cfg, args, res, prize_kind, key, track_daily)
         print("\n[daily-only] 结束。")
         emit_result(res)
         return 0
 
     # ---------- 可选：完成 VISIT 任务 ----------
-    # 抓包证实：任务完成只需 POST /task/doTask/{id}，body={appId,timestamp}，
-    # 无停留时长/页面 token 等校验。等价于跳过真实浏览空报完成，故默认关闭。
     if args.tasks:
-        pause()
-        tl = call(s, cfg, "task_list")
-        if tl["ok"] and isinstance(tl["data"], list):
-            targets = [t for t in tl["data"]
-                       if str(t.get("taskStatus")) == "UN_DO"
-                       and t.get("completeType") in ("VISIT", "APP_VISIT")]
-            if not targets:
-                print("  -  没有 UN_DO 的 VISIT 类任务")
-            for t in targets:
-                tid = t.get("id")
-                pause(1.2, 1.0)
-                r = call_post(s, cfg, f"/bass-cultivateGameServer/task/doTask/{tid}")
-                if show(f"doTask/{tid} {t.get('taskName')}", r):
-                    res["tasks"] += 1
-                _note_token(res, r)
-        else:
-            show("任务列表", tl)
+        if run_visit_tasks(s, cfg, res):
+            _mark_daily_flag(key, "tasks_date")
 
-    if args.feed > 0 or args.feed_all:
+    if want_feed:
         run_feed(s, cfg, args, res, prize_kind, key, track_daily)
 
     # ---------- 可选：流量银行浏览任务 ----------
-    # 抓包证实：POST /flowBank/doTask body={appId,timestamp,taskId}，无签名无停留校验。
-    # completeStatus: 0=未做 2=进行中 1=已完成。每个任务要点两次（0→2→1）。
-    # 有 1006 频控，需间隔。等价于空报浏览，默认关闭。
     if args.fb_tasks:
-        pause()
-        tl = call(s, cfg, "fb_tasks")
-        if tl["ok"] and isinstance(tl["data"], list):
-            track_fb_tasks(Path(args.config).stem, tl["data"])
-            # 周任务只在周一之后、月任务只在 1 号之后才尝试；没到周期直接跳过，
-            # 少打无意义的请求（这个接口有 1006 频控）。
-            recs = (load_json(FB_STATE, {}).get(Path(args.config).stem) or {}).get("tasks") or {}
-            todo, skipped = fb_due_tasks(tl["data"], recs, force=args.fb_all)
-            if skipped:
-                print(f"  -  {len(skipped)} 个周/月任务未到周初/月初，跳过"
-                      f"（--fb-all 可强制）")
-            # completeStatus: 0=未做（要点两次 0→2→1）  2=进行中（再点一次即完成）  1=已完成
-            if not todo:
-                print("  -  流量银行没有到周期的待做任务")
-            for t in todo:
-                tid, title = t.get("id"), t.get("taskTitle")
-                rounds = (1, 2) if str(t.get("completeStatus")) == "0" else (1,)
-                for round_no in rounds:
-                    time.sleep(random.uniform(3.5, 5.5))  # 避开 1006 频控
-                    r = call_post(s, cfg, EP["fb_do_task"], retries=3,
-                                  extra={"taskId": tid})
-                    if show(f"fb任务 {tid} {title} ({round_no}/{len(rounds)})", r):
-                        res["tasks"] += 1
-                    _note_token(res, r)
-                    if not r["ok"] and str(r.get("code")) == "1006":
-                        print("     -  频控未过，跳过该轮")
-        else:
-            show("流量银行任务列表", tl)
-        # 重新查可兑流量
-        time.sleep(1)
-        fb2 = call(s, cfg, "fb_index")
-        if fb2["ok"] and isinstance(fb2["data"], dict):
-            d2 = fb2["data"]
-            res["fb_exchange"] = f"{d2.get('exchangeFlow')}{d2.get('exchangeFlowUnit')}"
-            print(f"     流量银行现可兑 {d2.get('exchangeFlow')}{d2.get('exchangeFlowUnit')}"
-                  f"（{d2.get('exchangeFlowValue')} 点）")
+        if run_fb_tasks(s, cfg, args, res, key):
+            _mark_daily_flag(key, "fb_tasks_date")
 
     # ---------- 可选：阶段奖励 ----------
     # 抓包/实测：GET /stage/receiveStagePrize 不带参数即领"默认档"奖励，

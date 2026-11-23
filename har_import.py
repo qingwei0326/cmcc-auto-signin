@@ -17,7 +17,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
-from common import atomic_write_json, app_base, find_har_files, notify, update_json
+from common import (atomic_write_json, app_base, find_har_files, notify,
+                    seed_platform_stats, stats_key, update_json)
 
 FJ_LUCK_INDEX = "https://wap.fj.10086.cn/bass-preferentialAreaServer/luck/index"
 BASS_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 "
@@ -282,9 +283,11 @@ def _write_verified(path, cfg, field, patch):
 
 def _mark_verified(key, field, report):
     stamp = datetime.now().strftime("%m-%d %H:%M")
+    plat = "qwhdhub" if field == "token_qwhd" else "BASS"
+    skey = stats_key(plat, key)
     try:
         def merge(stats):
-            stats.setdefault(key, {}).update({field: "ok", field + "_at": stamp})
+            seed_platform_stats(stats, skey).update({field: "ok", field + "_at": stamp})
         update_json(BASE / "gui_data" / "stats.json", merge)
     except (OSError, ValueError, TypeError, AttributeError):
         report.append(f"✗ {key}：新票已保存，状态标记更新失败")

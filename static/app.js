@@ -171,7 +171,7 @@ function minsAgo(mdhm){
 // 票据有效性以「每 2 分钟探测」为准：stats 里的 token_* 是上次跑任务时记下的，
 // 可能已经是几小时前的结论。总览卡片和「凭证与账号」表都走这一个函数，免得两页说法不一。
 function tokState(a,s){
-  s=s||(STATE.stats||{})[a.key]||{};
+  s=s||a.stats||(STATE.stats||{})[a.stats_key||(a.plat+':'+a.key)]||(STATE.stats||{})[a.key]||{};
   if(a.token_state==='empty')return 'empty';
   const live=a.plat==='qwhdhub'?(STATE.token_life||[]).find(x=>x.key===a.key):null;
   if(live&&live.state==='alive')return 'ok';
@@ -221,7 +221,8 @@ function renderSelects(){
 function updateBassFodder(){
   const bf=$('bFodder');if(!bf||!STATE)return;
   const bs=$('bassRunKey'), k=bs?bs.value:'';
-  const st=(STATE.stats||{})[k]||{};
+  const a=(STATE.raw_accounts||[]).find(x=>x.plat==='BASS'&&x.key===k);
+  const st=(a&&a.stats)||(STATE.stats||{})['BASS:'+k]||(STATE.stats||{})[k]||{};
   bf.textContent=st.fodder!=null?(`当前 ${st.fodder}g`+(st.stage?` · ${st.stage}`:'')):'';
 }
 
@@ -229,7 +230,7 @@ function renderKpiAndCards(){
   const S=STATE.stats||{}, accts=STATE.raw_accounts||[], aw=STATE.awards||{};
   let okTok=0,flowM=0;
   const days={};
-  accts.forEach(a=>{const s=S[a.key]||{};
+  accts.forEach(a=>{const s=a.stats||S[a.stats_key||(a.plat+':'+a.key)]||S[a.key]||{};
     flowM+=s.flow_mb_month||0;
     if(tokState(a,s)==='ok')okTok++;
     (s.history||[]).forEach(h=>{days[h.date]=Math.max(days[h.date]||0,h.flow_mb||0);});});

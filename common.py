@@ -11,6 +11,8 @@ common.py —— 各平台脚本共用的基础设施
 各平台脚本只保留自己的接口表和业务流程。
 """
 
+import copy
+import ipaddress
 import json
 import os
 import re
@@ -21,6 +23,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -170,6 +173,38 @@ def update_json(path, mutate, default=None, indent=1):
         mutate(obj)
         atomic_write_json(path, obj, indent=indent)
         return obj
+
+
+PLAT_STATS_FIELDS = {
+    "qwhdhub": frozenset({"sign_days", "today_signed_qwhd", "token_qwhd", "token_qwhd_at"}),
+    "BASS": frozenset({"fodder", "stage", "fb_exchange", "today_signed_bass", "token_bass", "token_bass_at"}),
+}
+
+
+def stats_key(plat: str, key: str) -> str:
+    """给 stats.json 的 key 加上平台前缀，防止同尾号双平台配置互相覆盖。"""
+    key = str(key or "")
+    prefix = f"{plat}:"
+    return key if key.startswith(prefix) else prefix + key
+
+
+def seed_platform_stats(st: dict, key: str) -> dict:
+    """初始化某平台统计条目；若存在旧版无前缀条目则平滑迁移对应字段。"""
+    if ":" in key and key not in st:
+        plat, bare = key.split(":", 1)
+        legacy = st.get(bare)
+        if plat in PLAT_STATS_FIELDS and isinstance(legacy, dict):
+            other = "BASS" if plat == "qwhdhub" else "qwhdhub"
+            if not any(k in legacy for k in PLAT_STATS_FIELDS[other]):
+                st[key] = copy.deepcopy(legacy)
+            else:
+                st[key] = {k: copy.deepcopy(v) for k, v in legacy.items()
+                           if k in PLAT_STATS_FIELDS[plat]}
+    entry = st.get(key)
+    if not isinstance(entry, dict):
+        entry = {}
+        st[key] = entry
+    return entry
 
 
 def find_har_files(extra_dirs=None):
@@ -699,6 +734,42 @@ GLOBAL_SETTINGS_FILE = BASE / "gui_data" / "settings.json"
 
 PUSHPLUS_URL = "https://www.pushplus.plus/send"
 
+# 常见内网/元数据主机名（不依赖 DNS 解析即可识别）
+LOCAL_HOSTNAMES = {
+    "localhost", "localhost.localdomain", "ip6-localhost",
+    "metadata.google.internal", "instance-data",
+}
+
+_NOTIFY_ONCE_LOCK = threading.Lock()
+
+
+def assert_safe_url(url: str, allowed_hosts=None, allow_http: bool = False):
+    """动态 URL 出网前的 SSRF 边界校验：
+
+    - 默认仅允许 https；传 allow_http=True 时放行 http/https；
+    - IP 直填必须为公网地址（阻断环回/私网/链路本地/云元数据等）；
+    - 内网/元数据主机名直接拒绝；
+    - 传入 allowed_hosts 时执行域名白名单。
+    """
+    parts = urlsplit(str(url or ""))
+    allowed_schemes = ("http", "https") if allow_http else ("https",)
+    if parts.scheme.lower() not in allowed_schemes:
+        scheme_tip = "http/https" if allow_http else "https"
+        raise ValueError(f"仅允许 {scheme_tip} 协议: {url!r}")
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not host:
+        raise ValueError(f"URL 缺少主机名: {url!r}")
+    if host in LOCAL_HOSTNAMES:
+        raise ValueError(f"拒绝访问内网主机名: {host}")
+    if allowed_hosts is not None and host not in allowed_hosts:
+        raise ValueError(f"主机 {host!r} 不在白名单 {sorted(allowed_hosts)} 内")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # 域名形式，交由 https 证书校验兜底
+    if not ip.is_global:
+        raise ValueError(f"拒绝访问非公网地址: {ip}")
+
 
 def load_global_settings() -> dict:
     """读设置页的全局配置。文件缺失或损坏都返回空字典。"""
@@ -729,6 +800,31 @@ def is_token_dead(text) -> bool:
     return bool(TOKEN_DEAD.search(str(text or "")))
 
 
+def _notify_resp_ok(resp, channel: str):
+    """检查推送响应：HTTP 非 2xx 或常见渠道 JSON 错误码均判为失败。"""
+    status = getattr(resp, "status_code", None)
+    if isinstance(status, int) and not (200 <= status < 300):
+        return False, f"HTTP {status}"
+    data = None
+    if hasattr(resp, "json") and callable(resp.json):
+        try:
+            data = resp.json()
+        except Exception as e:
+            _ = e
+            data = None
+    if isinstance(data, dict):
+        if channel == "pushplus" and "code" in data and str(data.get("code")) != "200":
+            return False, f"code={data.get('code')} {data.get('msg') or ''}".strip()
+        if channel == "serverchan":
+            if "code" in data and str(data.get("code")) != "0":
+                return False, f"code={data.get('code')} {data.get('message') or data.get('msg') or ''}".strip()
+            if "errno" in data and str(data.get("errno")) != "0":
+                return False, f"errno={data.get('errno')} {data.get('errmsg') or ''}".strip()
+        if channel == "bark" and "code" in data and str(data.get("code")) != "200":
+            return False, f"code={data.get('code')} {data.get('message') or ''}".strip()
+    return True, ""
+
+
 def notify_once(key, title, detail, bark_url="", serverchan_sendkey="",
                 hours=20, pushplus_token="") -> bool:
     """同一类事 hours 小时内只推一次。
@@ -738,25 +834,27 @@ def notify_once(key, title, detail, bark_url="", serverchan_sendkey="",
     票过期一天提醒一次就够，重抓之后自然会好。
     """
     now = datetime.now()
-    last = str((load_json(NOTIFY_STATE_FILE, {}) or {}).get(key) or "")
-    if last:
-        try:
-            spent = (now - datetime.strptime(last, "%Y-%m-%d %H:%M:%S")).total_seconds()
-            if spent < hours * 3600:
+    with _NOTIFY_ONCE_LOCK, file_lock(NOTIFY_STATE_FILE):
+        st = load_json(NOTIFY_STATE_FILE, {})
+        if not isinstance(st, dict):
+            st = {}
+        last = str(st.get(key) or "")
+        if last and hours > 0:
+            try:
+                spent = (now - datetime.strptime(last, "%Y-%m-%d %H:%M:%S")).total_seconds()
+            except ValueError as e:
+                print(f"  [通知] 去重时间戳解析异常（{key}）：{e}")
+                spent = None
+            if spent is not None and spent < hours * 3600:
                 return False
-        except Exception:
-            pass
-    if not notify(title, detail, bark_url, serverchan_sendkey, pushplus_token):
-        return False
-
-    def mutate(st):
+        if not notify(title, detail, bark_url, serverchan_sendkey, pushplus_token):
+            return False
         st[key] = now.strftime("%Y-%m-%d %H:%M:%S")
-
-    try:
-        update_json(NOTIFY_STATE_FILE, mutate, default={})
-    except Exception:
-        pass
-    return True
+        try:
+            atomic_write_json(NOTIFY_STATE_FILE, st)
+        except Exception as e:
+            print(f"  [通知] 去重状态写入失败（{key}）：{e}")
+        return True
 
 
 def collect_notify_settings(*cfgs) -> dict:
@@ -814,38 +912,59 @@ def notify(title, detail, bark_url="", serverchan_sendkey="", pushplus_token="")
     dry = os.environ.get("CMCC_NOTIFY_DRY")   # 测试期间：只走流程，不真发
     s = requests.Session()
     s.trust_env = False
-    try:
-        if key:
-            # sendkey 会拼进 URL path，严格校验防止注入
-            if not re.fullmatch(r"[0-9A-Za-z]+", key):
-                print(f"  [通知] serverchan_sendkey 含非法字符，已跳过")
-            elif dry:
+    if key:
+        # sendkey 会拼进 URL path，严格校验防止注入
+        if not re.fullmatch(r"[0-9A-Za-z]+", key):
+            print("  [通知] serverchan_sendkey 含非法字符，已跳过")
+        elif dry:
+            sent = True
+        else:
+            try:
+                r = s.post(f"https://sctapi.ftqq.com/{key}.send",
+                           data={"title": title, "desp": detail}, timeout=15)
+                ok, reason = _notify_resp_ok(r, "serverchan")
+                if ok:
+                    sent = True
+                else:
+                    print(f"  [通知] Server酱推送失败：{reason}")
+            except Exception as e:
+                print(f"  [通知] Server酱推送失败（不影响本次执行）：{e}")
+    if pp:
+        if not pushplus_token_ok(pp):
+            print("  [通知] pushplus_token 格式不对，已跳过")
+        elif dry:
+            sent = True
+        else:
+            try:
+                r = s.post(PUSHPLUS_URL,
+                           json={"token": pp, "title": title, "content": detail,
+                                 "template": "html"},
+                           timeout=15)
+                ok, reason = _notify_resp_ok(r, "pushplus")
+                if ok:
+                    sent = True
+                else:
+                    print(f"  [通知] PushPlus 推送失败：{reason}")
+            except Exception as e:
+                print(f"  [通知] PushPlus 推送失败（不影响本次执行）：{e}")
+    if bark_url:
+        try:
+            assert_safe_url(bark_url, allow_http=True)
+        except ValueError as e:
+            print(f"  [通知] bark_url 校验失败，已跳过：{e}")
+        else:
+            if dry:
                 sent = True
             else:
-                s.post(f"https://sctapi.ftqq.com/{key}.send",
-                       data={"title": title, "desp": detail}, timeout=15)
-                sent = True
-        if pp:
-            if not pushplus_token_ok(pp):
-                print("  [通知] pushplus_token 格式不对，已跳过")
-            elif dry:
-                sent = True
-            else:
-                s.post(PUSHPLUS_URL,
-                       json={"token": pp, "title": title, "content": detail,
-                             "template": "html"},
-                       timeout=15)
-                sent = True
-        if bark_url:
-            if not bark_url.lower().startswith(("http://", "https://")):
-                print("  [通知] bark_url 协议不合法，已跳过")
-            elif dry:
-                sent = True
-            else:
-                s.get(bark_url, params={"title": title, "body": detail}, timeout=15)
-                sent = True
-    except Exception as e:
-        print(f"  [通知] 推送失败（不影响本次执行）：{e}")
+                try:
+                    r = s.get(bark_url, params={"title": title, "body": detail}, timeout=15)
+                    ok, reason = _notify_resp_ok(r, "bark")
+                    if ok:
+                        sent = True
+                    else:
+                        print(f"  [通知] Bark 推送失败：{reason}")
+                except Exception as e:
+                    print(f"  [通知] Bark 推送失败（不影响本次执行）：{e}")
     return sent
 
 

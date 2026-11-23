@@ -35,9 +35,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-from common import (atomic_write_json, child_cmd, is_token_dead, load_global_settings,
-                    load_policy, parse_result, pushplus_token_ok, save_global_settings,
-                    save_policy, script_path, update_json)
+from common import (PLAT_STATS_FIELDS, assert_safe_url, atomic_write_json, child_cmd,
+                    is_token_dead, load_global_settings, load_policy, parse_result,
+                    pushplus_token_ok, save_global_settings, save_policy, script_path,
+                    seed_platform_stats, stats_key, update_json)
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）
 if getattr(sys, "frozen", False):
@@ -200,13 +201,13 @@ def update_stats(key: str, **kw):
     不加锁会整份互相覆盖（原子写只防半截文件，不防丢更新）。
     """
     with STATS_LOCK:
-        update_json(STATS_FILE, lambda st: st.setdefault(key, {}).update(kw))
+        update_json(STATS_FILE, lambda st: seed_platform_stats(st, key).update(kw))
 
 
 def bump_daily(key: str, flow_mb: float = 0, tasks: int = 0, feeds: int = 0):
     """把当日领取量记入 history（同日累加）。"""
     def mutate(st):
-        a = st.setdefault(key, {"history": []})
+        a = seed_platform_stats(st, key)
         hist = a.setdefault("history", [])
         today = TODAY()
         row = next((h for h in hist if h.get("date") == today), None)
@@ -692,6 +693,10 @@ def find_account(pred):
     return None
 
 
+def _find_account(accts, plat: str, key):
+    return next((x for x in accts if x["plat"] == plat and x["key"] == key), None)
+
+
 def _new_account(plat: str, name, phone) -> dict:
     """在界面里新建一份账号配置。
 
@@ -738,12 +743,13 @@ def act_refresh_status() -> dict:
     for a in scan_accounts():
         is_qwhd = a["plat"] == "qwhdhub"
         field = "token_qwhd" if is_qwhd else "token_bass"
+        skey = stats_key(a["plat"], a["key"])
         if a["token_state"] == "empty":
             RUNNER.push(f"⚠ {a['key']}（{a['plat']}）token 未配置，跳过")
-            update_stats(a["key"], **{field: "empty"})
+            update_stats(skey, **{field: "empty"})
             continue
         script = "cmcc_sign.py" if is_qwhd else "cmcc_fj.py"
-        parser = (parse_qwhd_output if is_qwhd else parse_bass_output, a["key"])
+        parser = (parse_qwhd_output if is_qwhd else parse_bass_output, skey)
         steps.append((py(script, "--config", a["file"], "--dry-run"), parser))
     if not steps:
         RUNNER.push("没有可刷新的账号（token 都为空）")
@@ -928,6 +934,36 @@ def _import_har_text(har_text: str, key=None) -> dict:
     return _finish_har_import(HI, rep, used)
 
 
+def _check_bark_url(url: str):
+    """校验 Bark 推送地址（允许公网 http/https，阻断内网/元数据地址）。"""
+    if not url:
+        return None
+    try:
+        assert_safe_url(url, allow_http=True)
+    except ValueError as e:
+        return f"Bark 地址不安全或格式错误（{e}）"
+    return None
+
+
+def _push_global(title: str, detail: str, ok_msg: str) -> dict:
+    from common import notify as _notify
+    ch = load_global_settings()
+    bark = str(ch.get("bark_url") or "").strip()
+    sc = str(ch.get("serverchan_sendkey") or "").strip()
+    pp = str(ch.get("pushplus_token") or "").strip()
+    has_channel = any((
+        bark, sc, pp,
+        os.environ.get("CMCC_BARK_URL", "").strip(),
+        os.environ.get("CMCC_SERVERCHAN_SENDKEY", "").strip(),
+        os.environ.get("CMCC_PUSHPLUS_TOKEN", "").strip(),
+    ))
+    if not has_channel:
+        return {"ok": False, "err": "没发出去：先在上面填一个推送方式并保存"}
+    if _notify(title, detail, bark, sc, pp):
+        return {"ok": True, "msg": ok_msg}
+    return {"ok": False, "err": "推送发送失败：请检查推送 Token / Bark 地址是否有效"}
+
+
 def do_action(body: dict):
     act = body.get("action", "")
     accts = scan_accounts()
@@ -978,7 +1014,7 @@ def do_action(body: dict):
         return _start(label, cmd)
 
     if act == "qwhd_run":
-        a = next((x for x in accts if x["key"] == body.get("key")), None)
+        a = _find_account(accts, "qwhdhub", body.get("key"))
         if not a:
             return {"ok": False, "err": "账号不存在"}
         cmd = py("cmcc_sign.py", "--config", a["file"])
@@ -986,10 +1022,11 @@ def do_action(body: dict):
         if body.get("claim"): cmd.append("--claim")
         if body.get("tasks"): cmd.append("--tasks")
         if body.get("games"): cmd.append("--games")
-        return _start(f"全国签到 · {a['key']}", cmd, parser=(parse_qwhd_output, a["key"]))
+        return _start(f"全国签到 · {a['key']}", cmd,
+                      parser=(parse_qwhd_output, stats_key("qwhdhub", a["key"])))
 
     if act == "bass_run":
-        a = next((x for x in accts if x["key"] == body.get("key")), None)
+        a = _find_account(accts, "BASS", body.get("key"))
         if not a:
             return {"ok": False, "err": "账号不存在"}
         cmd = py("cmcc_fj.py", "--config", a["file"])
@@ -1005,10 +1042,11 @@ def do_action(body: dict):
         if body.get("continue_stage"): cmd.append("--continue-stage")
         if body.get("tasks"): cmd.append("--tasks")
         if body.get("fb"): cmd.append("--fb-tasks")
-        return _start(f"福建活动 · {a['key']}", cmd, parser=(parse_bass_output, a["key"]))
+        return _start(f"福建活动 · {a['key']}", cmd,
+                      parser=(parse_bass_output, stats_key("BASS", a["key"])))
 
     if act == "bass_probe":
-        a = next((x for x in accts if x["key"] == body.get("key")), None)
+        a = _find_account(accts, "BASS", body.get("key"))
         if not a:
             return {"ok": False, "err": "账号不存在"}
         return _start(f"福建活动只读探测 · {a['key']}", py("probe_fj.py", "--config", a["file"]))
@@ -1056,7 +1094,7 @@ def do_action(body: dict):
         elif at:
             cmd += ["--at", at]
         return _start(f"秒杀抢券 · {f.stem}", cmd,
-                      parser=(parse_seckill_output, f.stem))
+                      parser=(parse_seckill_output, stats_key("qwhdhub", f.stem)))
 
     if act == "games_run":
         f = safe_conf_path(body.get("file"))
@@ -1147,7 +1185,7 @@ def do_action(body: dict):
         if body.get("phone"):
             cfg["phone"] = str(body["phone"]).strip()
         atomic_write_json(f, cfg, indent=2)
-        update_stats(f.stem, token_bass="filled" if tok else "empty")
+        update_stats(stats_key("BASS", f.stem), token_bass="filled" if tok else "empty")
         return {"ok": True, "msg": f"已保存 {f.name}（token {len(tok)} 字符）"}
 
     if act == "bass_token_new":
@@ -1171,8 +1209,10 @@ def do_action(body: dict):
             if field not in body:
                 continue
             v = str(body.get(field) or "").strip()
-            if v and field == "bark_url" and not v.lower().startswith(("http://", "https://")):
-                return {"ok": False, "err": "Bark 地址应以 http:// 或 https:// 开头"}
+            if v and field == "bark_url":
+                err = _check_bark_url(v)
+                if err:
+                    return {"ok": False, "err": err}
             if v and field == "serverchan_sendkey" and not re.fullmatch(r"[0-9A-Za-z]+", v):
                 return {"ok": False, "err": "SendKey 只能含字母和数字"}
             if v and field == "pushplus_token" and not pushplus_token_ok(v):
@@ -1189,8 +1229,9 @@ def do_action(body: dict):
         bark = str(b.get("bark_url") or "").strip()
         sc = str(b.get("serverchan_sendkey") or "").strip()
         pp = str(b.get("pushplus_token") or "").strip()
-        if bark and not bark.lower().startswith(("http://", "https://")):
-            return {"ok": False, "err": "Bark 地址应以 http:// 或 https:// 开头"}
+        err = _check_bark_url(bark)
+        if err:
+            return {"ok": False, "err": err}
         if sc and not re.fullmatch(r"[0-9A-Za-z]+", sc):
             return {"ok": False, "err": "SendKey 只能含字母和数字"}
         if pp and not pushplus_token_ok(pp):
@@ -1240,29 +1281,17 @@ def do_action(body: dict):
 
     if act == "notify_report":
         # 推送「今日战报」：当天到手的东西按账号分组，带流量/话费合计
-        from common import daily_report as _report, notify as _notify
+        from common import daily_report as _report
         title, body_txt = _report()
-        ch = load_global_settings()
-        sent = _notify(title, body_txt,
-                       str(ch.get("bark_url") or ""),
-                       str(ch.get("serverchan_sendkey") or ""),
-                       str(ch.get("pushplus_token") or ""))
-        if sent:
-            return {"ok": True, "msg": "已推送今日战报，看看手机有没有收到"}
-        return {"ok": False, "err": "没发出去：先在上面填一个推送方式并保存"}
+        return _push_global(title, body_txt, "已推送今日战报，看看手机有没有收到")
 
     if act == "notify_test":
         # 发一条测试推送，验证通道是否通
-        from common import notify as _notify
-        ch = load_global_settings()
-        sent = _notify("中国移动签到 · 测试推送",
-                       "这是一条测试消息。收到即说明推送通道正常。",
-                       str(ch.get("bark_url") or ""),
-                       str(ch.get("serverchan_sendkey") or ""),
-                       str(ch.get("pushplus_token") or ""))
-        if sent:
-            return {"ok": True, "msg": "已发送测试推送，看看手机有没有收到"}
-        return {"ok": False, "err": "没发出去：先在上面填一个推送方式并保存"}
+        return _push_global(
+            "中国移动签到 · 测试推送",
+            "这是一条测试消息。收到即说明推送通道正常。",
+            "已发送测试推送，看看手机有没有收到",
+        )
 
     # ---- 定时任务 ----
     if act == "policy_save":
@@ -1432,6 +1461,25 @@ def _month_sums(s: dict) -> dict:
     return {"flow_mb_month": round(flow, 1), "tasks_month": tasks, "feeds_month": feeds}
 
 
+def _stats_for(st: dict, plat: str, key: str, shared_keys: set) -> dict:
+    """按平台读取某账号的统计条目，并兼容旧版无前缀条目。"""
+    skey = stats_key(plat, key)
+    if isinstance(st.get(skey), dict):
+        return st[skey]
+    legacy = st.get(key)
+    if not isinstance(legacy, dict):
+        return {}
+    own = PLAT_STATS_FIELDS.get(plat, frozenset())
+    other = PLAT_STATS_FIELDS.get("BASS" if plat == "qwhdhub" else "qwhdhub", frozenset())
+    has_own = any(k in legacy for k in own)
+    has_other = any(k in legacy for k in other)
+    if (key not in shared_keys and not has_other) or (has_own and not has_other):
+        return legacy
+    out = {k: v for k, v in legacy.items() if k in own}
+    out.update(_month_sums(out))
+    return out
+
+
 def build_state():
     st = load_stats()
     accts = scan_accounts()
@@ -1439,16 +1487,23 @@ def build_state():
     for k, v in st.items():
         if isinstance(v, dict):
             v.update(_month_sums(v))
+    key_counts = {}
+    for a in accts:
+        key_counts[a["key"]] = key_counts.get(a["key"], 0) + 1
+    shared_keys = {k for k, n in key_counts.items() if n > 1}
     # 按手机号分组
     phones = {}
+    enriched = []
     for a in accts:
         p = a["phone"] or a["key"]
         g = phones.setdefault(p, {"phone": p, "plats": {}})
-        s = st.get(a["key"], {})
-        g["plats"][a["plat"]] = {**a, "stats": s}
+        s = _stats_for(st, a["plat"], a["key"], shared_keys)
+        item = {**a, "stats_key": stats_key(a["plat"], a["key"]), "stats": s}
+        enriched.append(item)
+        g["plats"][a["plat"]] = item
     return {
         "accounts": list(phones.values()),
-        "raw_accounts": accts,
+        "raw_accounts": enriched,
         "stats": st,
         "eff": efficiency(),
         "task": {"running": RUNNER.running, "label": RUNNER.label},
@@ -1477,7 +1532,7 @@ def build_state():
 # 到账流水的「来源」属于哪张卡。全国签到那边只有签到奖品和签到有礼的每周秒杀，
 # 其余（养成、转盘、消消乐、寻宝）都走福建 bass 鉴权。认不出的新来源归福建，
 # 因为新加的活动脚本基本都是福建那套。
-QWHD_SOURCES = ("每日签到", "每周秒杀", "游戏币", "追剧领福利", "次数", "掼蛋次数")
+QWHD_SOURCES = ("每日签到", "累计签到", "每周秒杀", "游戏币", "追剧领福利", "次数", "掼蛋次数")
 
 
 def award_platform(source) -> str:

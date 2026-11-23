@@ -34,7 +34,6 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import logging
 import os
@@ -45,13 +44,13 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import (app_base, atomic_write_json, emit_result, load_global_settings,
-                    load_json, record_award, setup_utf8)
+from common import (LOCAL_HOSTNAMES, app_base, assert_safe_url, atomic_write_json,
+                    emit_result, load_global_settings, load_json,
+                    notify as _common_notify, record_award, setup_utf8)
 
 # ---------------------------------------------------------------- 常量
 
@@ -66,12 +65,6 @@ USER_AGENT = (
     "leadeon/12.5.2/CMCCIT"
 )
 
-# 常见内网/元数据主机名（不依赖 DNS 解析即可识别）
-LOCAL_HOSTNAMES = {
-    "localhost", "localhost.localdomain", "ip6-localhost",
-    "metadata.google.internal", "instance-data",
-}
-
 log = logging.getLogger("cmcc_sign")
 
 
@@ -84,36 +77,6 @@ class LegacyTLSAdapter(HTTPAdapter):
         ctx.set_ciphers("DEFAULT@SECLEVEL=1")
         kwargs["ssl_context"] = ctx
         return super().init_poolmanager(*args, **kwargs)
-
-
-def assert_safe_url(url: str, allowed_hosts: set[str] | None = None):
-    """动态 URL 出网前的 SSRF 边界校验：
-
-    - 仅允许 https；
-    - IP 直填必须为公网地址（阻断环回/私网/链路本地/云元数据等）；
-    - 内网/元数据主机名直接拒绝；
-    - 传入 allowed_hosts 时执行域名白名单。
-
-    注：不做 DNS 解析结果的 IP 校验——本机开启 TUN 代理（fake-ip 网段
-    198.18.0.0/15）时所有域名都解析为非公网地址，该检查会全量误杀；
-    域名被劫持的场景由 https 证书验证兜底。
-    """
-    parts = urlsplit(url)
-    if parts.scheme != "https":
-        raise ValueError(f"仅允许 https 协议: {url!r}")
-    host = (parts.hostname or "").lower().rstrip(".")
-    if not host:
-        raise ValueError(f"URL 缺少主机名: {url!r}")
-    if host in LOCAL_HOSTNAMES:
-        raise ValueError(f"拒绝访问内网主机名: {host}")
-    if allowed_hosts is not None and host not in allowed_hosts:
-        raise ValueError(f"主机 {host!r} 不在白名单 {sorted(allowed_hosts)} 内")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return  # 域名形式，交由 https 证书校验兜底
-    if not ip.is_global:
-        raise ValueError(f"拒绝访问非公网地址: {ip}")
 
 
 # ---------------------------------------------------------------- 配置
@@ -372,13 +335,19 @@ def claim_task_awards(s: requests.Session, referer: str, status_data: dict,
     names = {}
     pools = [status_data.get("taskAwardChance") or [],
              status_data.get("accumulateTaskInfo") or [],
-             status_data.get("myTaskInfo") or []]
+             status_data.get("myTaskInfo") or [],
+             status_data.get("fullmarkTask") or []]
     for pool in pools:
+        if isinstance(pool, dict):
+            pool = [pool]
         for t in pool:
-            tid = t.get("id")
+            if not isinstance(t, dict):
+                continue
+            tid = str(t.get("id") or "").strip()
             if not tid or names.get(tid):
                 continue
-            name = (t.get("prize") or {}).get("name") or t.get("lotteryText") or t.get("prizeAlertText") or ""
+            prize = t.get("prize") if isinstance(t.get("prize"), dict) else {}
+            name = prize.get("name") or t.get("lotteryText") or t.get("prizeAlertText") or ""
             if name:
                 names[tid] = name
 
@@ -392,9 +361,9 @@ def claim_task_awards(s: requests.Session, referer: str, status_data: dict,
                if isinstance(resp.get("data"), dict) else None)
         name = won or names.get(tid) or ""
         results.append(f"{label}任务{tid}" + (f"（{name}）" if name else "") + f": {status_text} {resp.get('msg')}")
-        if resp.get("code") == "SUCCESS" and won:
+        if resp.get("code") == "SUCCESS" and name:
             try:
-                record_award(account, "累计签到", won)
+                record_award(account, "累计签到", name)
             except Exception as e:
                 log.debug("领奖台账写入失败: %s", e)
         time.sleep(random.uniform(1, 2))
@@ -508,38 +477,13 @@ def notify(cfg: Config, title: str, detail: str):
     # 单独运行某个脚本时 CMCC_NOTIFY_BATCH 未设，通知照常。
     if os.environ.get("CMCC_NOTIFY_BATCH"):
         return False
-    # 通知域名与签到主站 TLS 要求不同，用独立的直连会话（不走系统代理，避免抓包工具干扰）
-    s = requests.Session()
-    s.trust_env = False
-    try:
-        if cfg.serverchan_sendkey:
-            # sendkey 严格校验，防止拼入 URL path 造成注入
-            if not re.fullmatch(r"[0-9A-Za-z]+", cfg.serverchan_sendkey):
-                log.warning("serverchan_sendkey 含非法字符，已跳过通知")
-            else:
-                s.post(
-                    f"https://sctapi.ftqq.com/{cfg.serverchan_sendkey}.send",
-                    data={"title": title, "desp": detail}, timeout=15,
-                )
-        if cfg.bark_url:
-            # bark 允许自建域名，只做协议/公网边界校验
-            try:
-                assert_safe_url(cfg.bark_url)
-            except ValueError as e:
-                log.warning("bark_url 校验失败，已跳过通知: %s", e)
-            else:
-                s.get(cfg.bark_url, params={"title": title, "body": detail}, timeout=15)
-        if cfg.pushplus_token:
-            # PushPlus 走 POST JSON，token 放请求体，不进 URL
-            if not re.fullmatch(r"[0-9A-Za-z_-]{16,80}", cfg.pushplus_token):
-                log.warning("pushplus_token 格式不对，已跳过通知")
-            else:
-                s.post("https://www.pushplus.plus/send",
-                       json={"token": cfg.pushplus_token, "title": title,
-                             "content": detail, "template": "html"},
-                       timeout=15)
-    except Exception as e:  # 通知失败不影响主流程
-        log.warning("通知发送失败: %s", e)
+    return _common_notify(
+        title,
+        detail,
+        bark_url=getattr(cfg, "bark_url", "") or "",
+        serverchan_sendkey=getattr(cfg, "serverchan_sendkey", "") or "",
+        pushplus_token=getattr(cfg, "pushplus_token", "") or "",
+    )
 
 
 # ---------------------------------------------------------------- 主流程

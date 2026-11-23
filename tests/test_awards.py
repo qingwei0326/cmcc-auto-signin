@@ -183,6 +183,7 @@ class TestLedger(unittest.TestCase):
 
     def test_platform_mapping(self):
         self.assertEqual(D.award_platform("每日签到"), "qwhdhub")
+        self.assertEqual(D.award_platform("累计签到"), "qwhdhub")
         self.assertEqual(D.award_platform("每周秒杀"), "qwhdhub")
         # 拓展活动（游戏币/追剧/掼蛋）都走 qwhd 鉴权，奖品的流量要记在全国卡。
         # 历史台账里旧标签「次数」仍可能存在（迁移前的记录），也要归 qwhd。

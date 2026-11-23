@@ -9,11 +9,14 @@
    路径构造集中在 common.child_cmd，源码/打包两条路不能走岔。
 """
 
+import io
 import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -87,7 +90,10 @@ class TestBatchSuppression(unittest.TestCase):
             self.assertFalse(C.notify("移动签到失败", "token 失效（401）", "http://x"))
 
     def test_other_failures_still_push(self):
-        with mock.patch.dict(os.environ, {"CMCC_NOTIFY_BATCH": "1"}), \
+        env = dict(os.environ)
+        env.pop("CMCC_NOTIFY_DRY", None)
+        env["CMCC_NOTIFY_BATCH"] = "1"
+        with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(C.requests, "Session") as sess:
             sess.return_value.get.return_value = mock.Mock(status_code=200)
             self.assertTrue(C.notify("移动签到失败", "体力不足", "http://x"))
@@ -272,6 +278,7 @@ class TestLocalNotifyBatchQuiet(unittest.TestCase):
         """单独跑脚本时 CMCC_NOTIFY_BATCH 未设，通知要照常发。"""
         env = dict(os.environ)
         env.pop("CMCC_NOTIFY_BATCH", None)
+        env.pop("CMCC_NOTIFY_DRY", None)
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(self.M.requests, "Session") as sess:
             sess.return_value.post.return_value = mock.Mock(status_code=200)
@@ -315,3 +322,126 @@ class TestNotifyDecisionStatic(unittest.TestCase):
 
     def test_done_passes_current_results_and_dryrun(self):
         self.assertIn("today_finished(results=results, dry_run=args.dry_run)", self.src)
+
+
+class TestNotifyReliabilityAndSSRF(unittest.TestCase):
+    """覆盖 P1-#10：响应码校验、单通道异常隔离、SSRF 防护、统一 notify 与并发去重。"""
+
+    def _no_dry_env(self):
+        env = dict(os.environ)
+        env.pop("CMCC_NOTIFY_DRY", None)
+        env.pop("CMCC_NOTIFY_BATCH", None)
+        return env
+
+    def test_rejects_business_and_http_errors_and_skips_once_state(self):
+        class FakeResp:
+            def __init__(self, status_code=200, payload=None):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(C, "NOTIFY_STATE_FILE", Path(td) / "notify_state.json"), \
+             mock.patch.dict(os.environ, self._no_dry_env(), clear=True):
+            # 1. PushPlus code=900 判失败，且 notify_once 不写入去重时间戳
+            with mock.patch.object(C.requests, "Session") as sess:
+                sess.return_value.post.return_value = FakeResp(200, {"code": 900, "msg": "bad token"})
+                with redirect_stdout(io.StringIO()):
+                    self.assertFalse(C.notify_once("k_pp", "标题", "正文", pushplus_token="a" * 32))
+                self.assertFalse((Path(td) / "notify_state.json").exists())
+
+            # 2. Bark HTTP 404 判失败
+            with mock.patch.object(C.requests, "Session") as sess:
+                sess.return_value.get.return_value = FakeResp(404, {"code": 404})
+                with redirect_stdout(io.StringIO()):
+                    self.assertFalse(C.notify("标题", "正文", bark_url="https://api.day.app/testkey"))
+
+            # 3. Server酱 code=40001 判失败
+            with mock.patch.object(C.requests, "Session") as sess:
+                sess.return_value.post.return_value = FakeResp(200, {"code": 40001, "message": "bad key"})
+                with redirect_stdout(io.StringIO()):
+                    self.assertFalse(C.notify("标题", "正文", serverchan_sendkey="SCT123ABC"))
+
+    def test_channel_exception_does_not_block_next_channel(self):
+        class OkResp:
+            status_code = 200
+
+            def json(self):
+                return {"code": 200, "msg": "ok"}
+
+        def fake_post(url, **kw):
+            if "ftqq.com" in url:
+                raise ConnectionError("serverchan down")
+            return OkResp()
+
+        with mock.patch.dict(os.environ, self._no_dry_env(), clear=True), \
+             mock.patch.object(C.requests, "Session") as sess, \
+             redirect_stdout(io.StringIO()):
+            sess.return_value.post.side_effect = fake_post
+            ok = C.notify("标题", "正文", serverchan_sendkey="SCT123", pushplus_token="a" * 32)
+        self.assertTrue(ok)
+        self.assertEqual(sess.return_value.post.call_count, 2)
+
+    def test_bark_ssrf_blocked_in_notify_and_dashboard(self):
+        import dashboard
+        for bad in ("http://127.0.0.1/key", "http://localhost/key",
+                    "http://169.254.169.254/latest/meta-data", "http://192.168.1.10/key"):
+            with mock.patch.dict(os.environ, self._no_dry_env(), clear=True), \
+                 mock.patch.object(C.requests, "Session") as sess, \
+                 redirect_stdout(io.StringIO()):
+                self.assertFalse(C.notify("t", "b", bark_url=bad), bad)
+                sess.return_value.get.assert_not_called()
+            with tempfile.TemporaryDirectory() as td, \
+                 mock.patch.object(C, "GLOBAL_SETTINGS_FILE", Path(td) / "settings.json"), \
+                 mock.patch.object(dashboard, "save_global_settings", C.save_global_settings):
+                res = dashboard.do_action({"action": "settings_save", "push": {"bark_url": bad}})
+                self.assertFalse(res["ok"], bad)
+
+    def test_cmcc_sign_notify_respects_dry_and_delegates_to_common(self):
+        import cmcc_sign
+        cfg = type("Cfg", (), {"serverchan_sendkey": "", "bark_url": "",
+                               "pushplus_token": "b" * 32})()
+        dry_env = self._no_dry_env()
+        dry_env["CMCC_NOTIFY_DRY"] = "1"
+        with mock.patch.dict(os.environ, dry_env, clear=True), \
+             mock.patch.object(C.requests, "Session") as sess:
+            sess.return_value.post.side_effect = AssertionError("dry 模式不应发请求")
+            self.assertTrue(cmcc_sign.notify(cfg, "标题", "正文"))
+
+        class BadResp:
+            status_code = 200
+
+            def json(self):
+                return {"code": 900, "msg": "invalid"}
+
+        with mock.patch.dict(os.environ, self._no_dry_env(), clear=True), \
+             mock.patch.object(C.requests, "Session") as sess, \
+             redirect_stdout(io.StringIO()):
+            sess.return_value.post.return_value = BadResp()
+            self.assertFalse(cmcc_sign.notify(cfg, "标题", "正文"))
+
+    def test_notify_once_concurrent_only_sends_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            nf = Path(td) / "notify_state.json"
+            calls = []
+            barrier = threading.Barrier(5)
+
+            def fake_notify(*a, **k):
+                calls.append(a)
+                return True
+
+            with mock.patch.object(C, "NOTIFY_STATE_FILE", nf), \
+                 mock.patch.object(C, "notify", fake_notify):
+                def worker():
+                    barrier.wait()
+                    C.notify_once("same_key", "标题", "正文")
+
+                threads = [threading.Thread(target=worker) for _ in range(5)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+            self.assertEqual(len(calls), 1)
+

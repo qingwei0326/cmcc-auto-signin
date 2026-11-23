@@ -38,6 +38,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))
 import _guard  # noqa: F401,E402  隔离真实全局配置（见 tests/_guard.py）
 import common
+import cmcc_fj
 import dashboard
 import har_import
 import probe_token_life as PT
@@ -191,6 +192,7 @@ class TestRunAllRouting(unittest.TestCase):
 class TestXxlExitCode(unittest.TestCase):
     def _run(self, limit, ends, times=2):
         calls = {"n": 0}
+        state = {"level": 10}
 
         def fake_post(s, path, body=None, retries=1):
             if path == "getDailyPlayLimit":
@@ -198,8 +200,15 @@ class TestXxlExitCode(unittest.TestCase):
             if path == "playEnd":
                 r = ends[min(calls["n"], len(ends) - 1)]
                 calls["n"] += 1
+                if str((r or {}).get("code")) == "0000":
+                    state["level"] += 1
                 return r
             return {"code": "0000", "data": []}
+
+        def fake_get_json(s, path, params=None):
+            if path == "indexInfo":
+                return {"code": "0000", "data": {"gameLevel": state["level"]}}
+            return {"code": "0000", "data": {}}
 
         fake_time = types.SimpleNamespace(sleep=lambda *_: None,
                                           strftime=time.strftime, time=time.time)
@@ -213,6 +222,8 @@ class TestXxlExitCode(unittest.TestCase):
             # 塞一条假到账，今天「已得流量」会凭空虚高 500MB。
             self.awards = []
             with mock.patch.object(XXL, "post", fake_post), \
+                 mock.patch.object(XXL, "get_json", fake_get_json), \
+                 mock.patch.object(XXL, "make_session", lambda token: object()), \
                  mock.patch.object(XXL, "time", fake_time), \
                  mock.patch.object(XXL, "record_award",
                                    lambda *a, **k: self.awards.append(a)), \
@@ -3032,6 +3043,209 @@ class TestAuditFixes11To16(unittest.TestCase):
         self.assertIn("MobileMailWatch", html)
         self.assertIn("run_mail_watch.bat", html)
         self.assertNotIn("7 个计划任务", html)
+
+
+class TestAuditFixesP0Remaining(unittest.TestCase):
+    """覆盖 P0 剩余项（#1、#3、#4、#6）：福建喂养/任务不短路、双平台隔离、累计签到归因。"""
+
+    def test_daily_nothing_to_do_respects_feed_and_tasks(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        base_acc = {
+            "tiers_date": today,
+            "feed_reward_date": today,
+            "feed_reward": None,
+            "tiers": [{"status": "RECEIVED"}] * 3,
+            "sign": {"today": True},
+        }
+        with tempfile.TemporaryDirectory() as td:
+            ds = Path(td) / "daily_state.json"
+            with mock.patch.object(cmcc_fj, "DAILY_STATE", ds):
+                ds.write_text(json.dumps({"fj1": dict(base_acc)}), encoding="utf-8")
+                self.assertTrue(cmcc_fj.daily_nothing_to_do("fj1"))
+                self.assertFalse(cmcc_fj.daily_nothing_to_do("fj1", need_feed=True))
+                self.assertFalse(cmcc_fj.daily_nothing_to_do("fj1", need_tasks=True))
+                self.assertFalse(cmcc_fj.daily_nothing_to_do("fj1", need_fb_tasks=True))
+
+                done_acc = dict(base_acc, tasks_date=today, fb_tasks_date=today)
+                ds.write_text(json.dumps({"fj1": done_acc}), encoding="utf-8")
+                self.assertTrue(cmcc_fj.daily_nothing_to_do("fj1", need_tasks=True, need_fb_tasks=True))
+                self.assertFalse(cmcc_fj.daily_nothing_to_do("fj1", need_feed=True, need_tasks=True))
+
+    def test_cmcc_fj_daily_only_runs_feed_and_tasks_and_marks_done(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        done_tiers = [{"taskName": "t1", "fodder": 150, "taskStatus": "RECEIVED"},
+                      {"taskName": "t2", "fodder": 250, "taskStatus": "RECEIVED"},
+                      {"taskName": "t3", "fodder": 350, "taskStatus": "RECEIVED"}]
+        post_paths = []
+        fed = []
+
+        def fake_call(s, cfg, key, retries=1, extra=None):
+            if key == "index_info":
+                return {"ok": True, "data": {"fodderSurplus": 500, "feedCountToday": 0}}
+            if key == "sign_info":
+                return {"ok": True, "data": {"todaySign": "True", "openSignTime": "True",
+                                             "cycleToday": 3, "signDateList": []}}
+            if key == "daily_list":
+                return {"ok": True, "data": done_tiers}
+            if key == "lucky_bag":
+                return {"ok": True, "data": {"currentFeedCount": 1, "nextTriggerCount": 10, "needMoreFeeds": 9}}
+            if key == "stage_info":
+                return {"ok": True, "data": {"feedFodders": 0, "stageInfo": {"stageName": "1阶", "feedNeedFodderCount": 5000}}}
+            if key == "fb_index":
+                return {"ok": True, "data": {"exchangeFlow": 0, "exchangeFlowUnit": "MB", "exchangeFlowValue": 0, "hasTaskToDo": False}}
+            if key == "task_list":
+                return {"ok": True, "data": [{"id": 11, "taskName": "逛一逛", "taskStatus": "UN_DO", "completeType": "VISIT"}]}
+            if key == "fb_tasks":
+                return {"ok": True, "data": [{"id": 22, "taskTitle": "浏览", "taskCycle": 0, "completeStatus": "2"}]}
+            if key == "next_receive":
+                return {"ok": True, "data": {"taskStatus": "RECEIVED"}}
+            return {"ok": True, "data": {}}
+
+        def fake_post(s, cfg, path, retries=1, extra=None):
+            post_paths.append((path, extra))
+            return {"ok": True, "code": "0000", "msg": "ok", "data": {}}
+
+        def fake_feed(s, cfg, args, res, prize_kind, key, track_daily):
+            fed.append((key, args.feed))
+            res["feeds"] = 1
+            return 1
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            ds = base / "daily_state.json"
+            fb = base / "flowbank_state.json"
+            ds.write_text(json.dumps({"fj": {
+                "tiers_date": today, "feed_reward_date": today, "feed_reward": None,
+                "tiers": [{"status": "RECEIVED"}] * 3, "sign": {"today": True},
+            }}), encoding="utf-8")
+            cfg = {"bearer_token": "x" * 36, "app_id": "0", "phone": "13800001234"}
+            argv = ["cmcc_fj.py", "--config", "fj.json", "--daily-only", "--feed", "2", "--tasks", "--fb-tasks"]
+            with mock.patch.object(cmcc_fj, "BASE", base), \
+                 mock.patch.object(cmcc_fj, "DAILY_STATE", ds), \
+                 mock.patch.object(cmcc_fj, "FB_STATE", fb), \
+                 mock.patch.object(cmcc_fj, "load_config", lambda p: cfg), \
+                 mock.patch.object(cmcc_fj, "new_session", lambda c: object()), \
+                 mock.patch.object(cmcc_fj, "call", fake_call), \
+                 mock.patch.object(cmcc_fj, "call_post", fake_post), \
+                 mock.patch.object(cmcc_fj, "run_feed", fake_feed), \
+                 mock.patch.object(cmcc_fj, "pause", lambda *a, **k: None), \
+                 mock.patch.object(cmcc_fj, "emit_result", lambda *a, **k: None), \
+                 mock.patch.object(cmcc_fj.time, "sleep", lambda *_: None), \
+                 mock.patch.object(sys, "argv", argv), \
+                 redirect_stdout(io.StringIO()):
+                rc = cmcc_fj.main()
+            self.assertEqual(rc, 0)
+            self.assertEqual(fed, [("fj", 2)])
+            self.assertTrue(any("/task/doTask/11" in p for p, _ in post_paths))
+            self.assertTrue(any(p == cmcc_fj.EP["fb_do_task"] for p, _ in post_paths))
+            with mock.patch.object(cmcc_fj, "DAILY_STATE", ds):
+                self.assertTrue(cmcc_fj.daily_nothing_to_do("fj", need_tasks=True, need_fb_tasks=True))
+
+            # 次轮仅带 --tasks --fb-tasks（不带 --feed）时应直接 1 秒短路，不再触发接口
+            post_paths.clear()
+            argv2 = ["cmcc_fj.py", "--config", "fj.json", "--daily-only", "--tasks", "--fb-tasks"]
+            with mock.patch.object(cmcc_fj, "BASE", base), \
+                 mock.patch.object(cmcc_fj, "DAILY_STATE", ds), \
+                 mock.patch.object(cmcc_fj, "FB_STATE", fb), \
+                 mock.patch.object(cmcc_fj, "load_config", lambda p: cfg), \
+                 mock.patch.object(cmcc_fj, "new_session", lambda c: object()), \
+                 mock.patch.object(cmcc_fj, "call", side_effect=AssertionError("不应再发请求")), \
+                 mock.patch.object(cmcc_fj, "emit_result", lambda *a, **k: None), \
+                 mock.patch.object(sys, "argv", argv2), \
+                 redirect_stdout(io.StringIO()):
+                rc2 = cmcc_fj.main()
+            self.assertEqual(rc2, 0)
+
+    def test_shared_key_dual_platform_routing_and_stats_isolation(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            data = base / "gui_data"
+            data.mkdir()
+            (base / "configs").mkdir()
+            (base / "configs_fj").mkdir()
+            (base / "configs" / "1234.json").write_text(
+                json.dumps({"phone": "13800001234", "app_token": "tok_q"}), encoding="utf-8")
+            (base / "configs_fj" / "1234.json").write_text(
+                json.dumps({"phone": "13800001234", "bearer_token": "tok_b"}), encoding="utf-8")
+            sf = data / "stats.json"
+            # 预设一份旧版仅含全国字段的裸 key 历史，验证平滑迁移且不会串到福建卡
+            sf.write_text(json.dumps({
+                "1234": {"sign_days": 8, "today_signed_qwhd": dashboard.TODAY(), "token_qwhd": "ok",
+                         "history": [{"date": dashboard.TODAY(), "flow_mb": 200.0, "tasks": 1, "feeds": 0}],
+                         "flow_mb_total": 200.0}
+            }), encoding="utf-8")
+
+            started = []
+
+            class FakeRunner:
+                running = False
+                label = ""
+
+                def start(self, label, cmd, parser=None, shell=False):
+                    started.append((label, list(cmd), parser))
+                    return True
+
+            with mock.patch.object(dashboard, "BASE", base), \
+                 mock.patch.object(dashboard, "DATA", data), \
+                 mock.patch.object(dashboard, "STATS_FILE", sf), \
+                 mock.patch.object(dashboard, "RUNS_FILE", data / "runs.json"), \
+                 mock.patch.object(dashboard, "RUNNER", FakeRunner()), \
+                 mock.patch.object(dashboard, "preflight", return_value=(True, "ok")), \
+                 mock.patch.object(dashboard, "_sched_state", return_value=[]):
+                r_bass = dashboard.do_action({"action": "bass_run", "key": "1234"})
+                r_probe = dashboard.do_action({"action": "bass_probe", "key": "1234"})
+                r_qwhd = dashboard.do_action({"action": "qwhd_run", "key": "1234"})
+                self.assertTrue(r_bass["ok"] and r_probe["ok"] and r_qwhd["ok"])
+                self.assertIn("configs_fj", " ".join(started[0][1]))
+                self.assertIn("configs_fj", " ".join(started[1][1]))
+                self.assertIn("configs" + os.sep + "1234.json", " ".join(started[2][1]))
+
+                dashboard.parse_qwhd_output(
+                    started[2][2][1],
+                    '@@RESULT {"plat":"qwhd","token":"ok","sign_days":9,"today_signed":true,"flow_mb":100}'
+                )
+                dashboard.parse_bass_output(
+                    started[0][2][1],
+                    '@@RESULT {"plat":"bass","token":"ok","fodder":600,"stage":"2阶 0/5000","today_signed":true,"feeds":2}'
+                )
+                state = dashboard.build_state()
+
+            plats = state["accounts"][0]["plats"]
+            self.assertEqual(plats["qwhdhub"]["stats"]["sign_days"], 9)
+            self.assertEqual(plats["qwhdhub"]["stats"]["flow_mb_total"], 300.0)
+            self.assertEqual(plats["BASS"]["stats"]["fodder"], 600)
+            self.assertEqual(plats["BASS"]["stats"]["feeds_total"], 2)
+            self.assertNotIn("fodder", plats["qwhdhub"]["stats"])
+            self.assertNotIn("sign_days", plats["BASS"]["stats"])
+
+    def test_claim_task_awards_handles_int_id_fullmark_and_fallback_name(self):
+        status = {
+            "taskAwardChance": [],
+            "accumulateTaskInfo": [{"id": 272903, "lackDay": None, "status": None, "lotteryText": "21签200MB日包"}],
+            "fullmarkTask": {"id": 999, "lackDay": None, "status": None, "prize": {"name": "满签500MB包"}},
+        }
+
+        class FakeResp:
+            def __init__(self, tid):
+                self.tid = str(tid)
+
+            def json(self):
+                # 模拟服务端成功但 data 未回传 prizeName，需回落到活动池名称
+                return {"code": "SUCCESS", "msg": "ok", "data": {}}
+
+        s = mock.Mock()
+        s.post.side_effect = lambda url, **kw: FakeResp(url.rsplit("/", 1)[-1])
+        with tempfile.TemporaryDirectory() as td:
+            awards = Path(td) / "awards.json"
+            with mock.patch.object(common, "AWARDS_FILE", awards), \
+                 mock.patch.object(cmcc_sign, "record_award",
+                                   side_effect=lambda *a, **k: common.record_award(*a, **k)), \
+                 mock.patch.object(cmcc_sign.time, "sleep", lambda *_: None):
+                lines = cmcc_sign.claim_task_awards(s, "https://wx.10086.cn/", status, account="13800001234")
+            recs = json.loads(awards.read_text(encoding="utf-8"))["records"]
+        self.assertTrue(any("21签200MB日包" in ln for ln in lines))
+        self.assertTrue(any("满签500MB包" in ln for ln in lines))
+        self.assertEqual([r["name"] for r in recs], ["21签200MB日包", "满签500MB包"])
 
 
 if __name__ == "__main__":

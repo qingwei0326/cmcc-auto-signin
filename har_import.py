@@ -268,8 +268,11 @@ def _verify_bass(cfg):
     import cmcc_fj as FJ
 
     with FJ.new_session(cfg) as session:
-        if not FJ.call(session, cfg, "sign_info", retries=0).get("ok"):
-            raise RuntimeError("BASS 签到状态验证失败")
+        # 用只读的 index_info 验票，不用 sign_info：后者依赖签到前置任务，
+        # 新号/当天未开签到会回 1600「前置任务未完成」，把有效票误判成失效。
+        # index_info 只要 bearer 合法就成功；失效票回 401（见 api_get/_norm）。
+        if not FJ.call(session, cfg, "index_info", retries=0).get("ok"):
+            raise RuntimeError("BASS 验票失败")
 
 
 def _write_verified(path, cfg, field, patch):
@@ -340,9 +343,25 @@ def _import_national(parsed, report):
         _mark_verified(path.stem, "token_qwhd", report)
 
 
+def _known_phones():
+    """所有已知完整号码：福建配置 + 全国配置 + HAR 里的全国票据。
+
+    BASS bearer 回查只给脱敏号（如 178****9243），必须拿完整号去匹配归属。
+    新号往往只有全国 configs/ 有完整号、configs_fj/ 还没建，所以全国配置
+    也必须纳入，否则认不出账号，无法自动新建福建配置。
+    """
+    out = set(_fj_targets())
+    for directory in ("configs", "configs_fj"):
+        for f in sorted((BASE / directory).glob("*.json")):
+            phone = str(_read_json(f).get("phone") or "")
+            if PHONE_RE.fullmatch(phone):
+                out.add(phone)
+    return out
+
+
 def _import_bass(parsed, key, report):
     targets = _fj_targets()
-    known = set(targets)
+    known = _known_phones()
     known.update(phone for phone in parsed["qwhd"] if PHONE_RE.fullmatch(phone))
     if key and re.fullmatch(r"[\w-]+", str(key)):
         for directory in ("configs", "configs_fj"):

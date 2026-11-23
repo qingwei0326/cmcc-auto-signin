@@ -579,6 +579,42 @@ class TestVerifiedHarImport(unittest.TestCase):
             self.assertEqual((cfg["bearer_token"], cfg["note"]), (usable, "保持"))
             self.assertEqual(har_import.report_outcome(lines), (True, False))
 
+    def test_bass_verification_uses_index_not_sign(self):
+        """有效票在 sign_info 回 1600（前置任务未完成）时不能被误判为失效。"""
+        import cmcc_fj as FJ
+        cfg = {"bearer_token": "12345678-1234-1234-1234-123456789abc"}
+        with mock.patch.object(FJ, "new_session") as new_session:
+            session = new_session.return_value.__enter__.return_value
+            with mock.patch.object(FJ, "call", side_effect=lambda s, c, key, **kw: (
+                    {"ok": True, "code": "0000"} if key == "index_info"
+                    else {"ok": False, "code": "1600", "msg": "前置任务未完成"})) as call:
+                har_import._verify_bass(cfg)
+        self.assertEqual([c.args[2] for c in call.call_args_list], ["index_info"])
+
+    def test_bass_new_account_from_national_config(self):
+        """只有全国 configs/ 有完整号时也要能认出账号，自动新建 configs_fj 配置。"""
+        token = "12345678-1234-1234-1234-123456789abc"
+        har = {"log": {"entries": [
+            {"startedDateTime": "2026-11-23T07:12:42Z",
+             "request": {"url": "https://wap.fj.10086.cn/bass-cultivateGameServer/index/getIndexInfo",
+                         "headers": [{"name": "Authorization", "value": "Bearer " + token}]}}
+        ]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "configs").mkdir()
+            (base / "configs" / "5678.json").write_text(
+                json.dumps({"phone": "13900005678", "app_token": "x"}), encoding="utf-8")
+            with mock.patch.object(har_import, "BASE", base), \
+                 mock.patch.object(har_import, "_masked_phone_of_bearer", return_value="139****5678"), \
+                 mock.patch.object(har_import, "_verify_bass"), \
+                 mock.patch.object(har_import, "_mark_verified"):
+                lines = har_import.apply(json.dumps(har))
+            cfg = json.loads((base / "configs_fj" / "5678.json").read_text(encoding="utf-8"))
+            self.assertEqual(cfg["bearer_token"], token)
+            self.assertEqual(cfg["phone"], "13900005678")
+            self.assertEqual(cfg["app_id"], "0")
+            self.assertIn("已新建", "\n".join(lines))
+
     def test_partial_failure_notification_omits_success_details(self):
         with mock.patch.object(har_import, "notify", return_value=True) as send:
             har_import.notify_import_problem(["✓ 全国 1234：已更新配置", "✗ BASS：无法核实账号"])

@@ -779,7 +779,7 @@ class TestFrontendOptimization(unittest.TestCase):
 
     def test_manual_bass_options_not_restored_and_prize_scoped(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        js = dashboard.load_frontend_js()
         for i in ("bAuto", "bCont", "bFeedAll", "bPrize"):
             m = re.search(r'<(?:input|select)[^>]*id="%s"[^>]*>' % i, html)
             self.assertIsNotNone(m, i)
@@ -797,7 +797,7 @@ class TestFrontendOptimization(unittest.TestCase):
     def test_frontend_optimization_markers(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         css = (ROOT / "static" / "app.css").read_text(encoding="utf-8")
-        js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        js = dashboard.load_frontend_js()
         bundle = dashboard.load_frontend_bundle()
 
         self.assertIn('/static/app.css', html)
@@ -823,6 +823,38 @@ class TestFrontendOptimization(unittest.TestCase):
                        "function toggleDrawer", "function numVal", "prize:$('bPrize')"):
             with self.subTest(js_marker=marker):
                 self.assertIn(marker, js)
+
+    def test_frontend_refactor_modules_and_ux(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "app.css").read_text(encoding="utf-8")
+        js = dashboard.load_frontend_js()
+
+        for mod in ("js/core.js", "js/dash.js", "js/activities.js", "js/ops.js", "app.js"):
+            self.assertIsNotNone(dashboard._static_path(mod), f"缺少前端模块 {mod}")
+            self.assertIn(f"/static/{mod}", html)
+        self.assertIsNone(dashboard._static_path("js/../dashboard.py"))
+
+        self.assertRegex(css, r"(?m)^\.empty\{")
+        self.assertIn(".subtabs{", css)
+        self.assertIn("fontSize=(16*ZOOM)", js)
+        self.assertNotIn("style.zoom", js)
+
+        for marker in ('id="bassTabs"', 'id="appearPop"', 'id="sDirty"', 'id="mDirty"', 'id="pDirty"'):
+            self.assertIn(marker, html)
+        for fn in ("function setBassTab(", "function toggleAppear(",
+                   "function markFormDirty(", "function copyCapBox("):
+            self.assertIn(fn, js)
+
+        ids = re.findall(r'\bid="([^"]+)"', html)
+        dups = [i for i in set(ids) if ids.count(i) > 1]
+        self.assertEqual(dups, [], f"index.html 存在重复 id：{dups}")
+
+        handlers = re.findall(r'\bon(?:click|change|input)="([^"]+)"', html)
+        called = set()
+        for expr in handlers:
+            called.update(re.findall(r'(?:^|;)\s*([A-Za-z_$][\w$]*)\s*\(', expr))
+        for fn in sorted(called):
+            self.assertIn(f"function {fn}(", js, f"HTML 内联事件调用了未定义函数 {fn}")
 
 
 if __name__ == "__main__":

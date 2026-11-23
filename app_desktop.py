@@ -137,7 +137,7 @@ def main():
             icon = os.path.join(str(_base_dir()), "app.ico")
             webview.create_window(
                 "签到控制台", url, width=1440, height=920,
-                min_size=(1000, 680), background_color="#0f1115",
+                min_size=(1000, 680), background_color="#0b0d12",
             )
             t0 = time.time()
             try:

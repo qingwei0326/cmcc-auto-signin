@@ -4,38 +4,64 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>签到控制台</title>
-<script>try{var _t=localStorage.getItem('cmcc_theme');if(_t==='light'||_t==='dark')document.documentElement.dataset.theme=_t;}catch(_){}</script>
+<script>try{var _t=localStorage.getItem('cmcc_theme');if(_t==='light'||_t==='dark')document.documentElement.dataset.theme=_t;var _z=Number(localStorage.getItem('cmcc_zoom'));if(_z>=0.8&&_z<=1.6){document.documentElement.style.fontSize=(16*_z)+'px';document.documentElement.style.setProperty('--ui-scale',String(_z));}}catch(_){}</script>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><b>签到控制台</b><small>中国移动自动签到</small></div>
+    <div class="brand">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+        </div>
+        <div>
+          <b>签到控制台</b>
+          <small>中国移动自动签到</small>
+        </div>
+      </div>
+    </div>
     <nav aria-label="主导航">
+      <div class="nav-group">概览</div>
       <button data-p="dash" class="on" aria-current="page" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>总览<span class="nav-badge" id="nb-dash"></span></button>
       <button data-p="token" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 19 4m-3.5 0H19v3.5"/></svg>凭证与账号<span class="nav-badge" id="nb-token"></span></button>
+      <div class="nav-group">活动与工具</div>
       <button data-p="bass" onclick="nav(this)"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>福建活动<span class="nav-badge" id="nb-bass"></span></button>
       <button data-p="xxl" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>消消乐<span class="nav-badge" id="nb-xxl"></span></button>
       <button data-p="seckill" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M21 12h-3"/></svg>秒杀抢券<span class="nav-badge" id="nb-seckill"></span></button>
       <button data-p="games" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m9 12 2 2 4-4"/></svg>拓展活动<span class="nav-badge" id="nb-games"></span></button>
+      <div class="nav-group">运维与配置</div>
       <button data-p="sched" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>定时任务<span class="nav-badge" id="nb-sched"></span></button>
       <button data-p="logs" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m5 0h5"/></svg>日志<span class="nav-badge" id="nb-logs"></span></button>
       <button data-p="settings" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置<span class="nav-badge" id="nb-settings"></span></button>
     </nav>
     <div class="side-foot">
-      <span class="pill" id="taskPill">空闲</span><br>
       <span id="hsub">加载中…</span>
+      <span class="side-foot-sub">本地运行 · 数据仅存本机</span>
     </div>
   </aside>
   <div class="main">
     <div class="topbar">
       <div class="title" id="pageTitle">签到控制台 / 总览</div>
       <div class="actions">
-        <button type="button" class="pill pill-btn" id="taskPillTop" data-nobusy onclick="toggleDrawer()" title="点击展开/收起迷你实时日志">空闲</button>
-        <button type="button" class="btn sm" data-nobusy onclick="zoomBy(-0.1)" aria-label="缩小字号" title="缩小字号">A−</button>
-        <button type="button" class="btn sm" id="zoomVal" data-nobusy onclick="zoomReset()" aria-label="重置字号" title="点击重置字号为 100%">100%</button>
-        <button type="button" class="btn sm" data-nobusy onclick="zoomBy(0.1)" aria-label="放大字号" title="放大字号">A＋</button>
-        <button type="button" class="btn sm" id="btnTheme" data-nobusy onclick="toggleTheme()" aria-label="切换主题" title="切换浅色/深色主题">☀</button>
+        <button type="button" class="pill pill-btn" id="taskPillTop" data-nobusy onclick="toggleDrawer()" title="点击展开/收起迷你实时日志"><span class="pill-dot"></span><span id="taskPillTxt">空闲</span></button>
+        <div class="popwrap">
+          <button type="button" class="btn sm" id="btnAppear" data-nobusy onclick="toggleAppear(event)" aria-expanded="false" aria-controls="appearPop" title="切换主题与调整字号">外观 ▾</button>
+          <div class="popover" id="appearPop" role="region" aria-label="外观设置">
+            <div class="pop-sec">
+              <div class="pop-lbl"><span>界面主题</span></div>
+              <button type="button" class="btn sm" id="btnTheme" data-nobusy onclick="toggleTheme()" aria-label="切换主题" style="width:100%">☀ 切换为浅色主题</button>
+            </div>
+            <div class="pop-sec">
+              <div class="pop-lbl"><span>字号缩放</span><span class="muted">等比重排</span></div>
+              <div class="seg">
+                <button type="button" class="btn sm" data-nobusy onclick="zoomBy(-0.1)" aria-label="缩小字号" title="缩小字号">A−</button>
+                <button type="button" class="btn sm" id="zoomVal" data-nobusy onclick="zoomReset()" aria-label="重置字号" title="点击重置字号为 100%">100%</button>
+                <button type="button" class="btn sm" data-nobusy onclick="zoomBy(0.1)" aria-label="放大字号" title="放大字号">A＋</button>
+              </div>
+            </div>
+          </div>
+        </div>
         <button type="button" class="btn sm" onclick="refreshStatus()">刷新状态</button>
         <button type="button" class="btn sm danger" data-nobusy id="btnStop" onclick="act({action:'stop'})">停止</button>
       </div>
@@ -55,19 +81,22 @@
             <label class="chk" title="只查询状态，不签到、不领取、不消耗"><input type="checkbox" id="dashDry">只读检查</label>
           </div>
         </div>
-        <div id="todoBox"></div>
-        <div class="kpis" id="sumbar"></div>
+        <div id="todoBox"><div class="skel skel-todo"></div></div>
+        <div class="kpis" id="sumbar">
+          <div class="skel skel-kpi"></div><div class="skel skel-kpi"></div><div class="skel skel-kpi"></div>
+          <div class="skel skel-kpi"></div><div class="skel skel-kpi"></div><div class="skel skel-kpi"></div>
+        </div>
         <div id="cards"></div>
         <div class="panel">
-          <h3>到账台账 <span class="hint">真到手的流量和能直接用的话费券，领到就记</span><span class="hint" id="awHint" style="margin-left:auto"></span></h3>
-          <div class="strip" id="awSum"></div>
-          <div class="frow" style="margin-top:12px">
-            <label for="awAcct">号码</label><select class="inp" id="awAcct" onchange="onAwFilter()" style="min-width:140px"></select>
-            <label for="awSource">来源</label><select class="inp" id="awSource" onchange="onAwFilter()" style="min-width:140px"></select>
-            <button type="button" class="btn sm" id="awMoreBtn" data-nobusy onclick="toggleAwAll()" style="margin-left:auto">展开全部</button>
+          <h3>到账台账 <span class="hint">真到手的流量和能直接用的话费券，领到就记</span><span class="hint ml-auto" id="awHint"></span></h3>
+          <div class="strip aw-strip" id="awSum"></div>
+          <div class="frow mt-12">
+            <label for="awAcct">号码</label><select class="inp inp-md" id="awAcct" onchange="onAwFilter()"></select>
+            <label for="awSource" class="auto">来源</label><select class="inp inp-md" id="awSource" onchange="onAwFilter()"></select>
+            <button type="button" class="btn sm ml-auto" id="awMoreBtn" data-nobusy onclick="toggleAwAll()">展开全部</button>
           </div>
           <div class="tablewrap"><table class="runtab" id="awTab"></table></div>
-          <details class="guide" style="margin-top:10px">
+          <details class="guide mt-10">
             <summary>口径说明（哪些算到手、为什么不提供兑换链接）</summary>
             只记<b>到手就能直接用</b>的：流量包按 1GB=1024MB 折算。要充值才生效的券（充值 9.9 折、满 30 减 5）、
             要花钱买的券包（15 元购 10GB）、满减型手气红包<b>一律不进台账</b>，免得把没到手的东西算成到手。
@@ -88,9 +117,9 @@
         <div class="panel">
           <h3>账号 <span class="hint">一个号码两张卡：全国签到 + 福建活动</span></h3>
           <div id="acctBox"></div>
-          <div class="frow" style="margin-top:12px">
+          <div class="frow mt-12">
             <button type="button" class="btn pri sm" data-nobusy onclick="openNewAccount()">新建账号</button>
-            <span style="font-size:12.5px;color:var(--sub)">新建后导入一次抓包文件，凭证会自动填进去</span>
+            <span class="muted">新建后导入一次抓包文件，凭证会自动填进去</span>
           </div>
         </div>
         <div class="panel">
@@ -115,8 +144,8 @@
           </div>
           <div class="frow">
             <label for="harKey">归属核对</label>
-            <select class="inp" id="harKey" style="min-width:180px" title="选择供核对的账号，服务器回显的号码必须匹配"></select>
-            <button type="button" class="btn pri sm" data-nobusy onclick="importHar()">导入所选文件</button>
+            <select class="inp inp-md" id="harKey" title="选择供核对的账号，服务器回显的号码必须匹配"></select>
+            <button type="button" class="btn pri sm" id="btnHarImport" data-nobusy onclick="importHar()">导入所选文件</button>
           </div>
           <div class="frow">
             <label>自动查找</label>
@@ -132,7 +161,14 @@
         <div class="phead"><div><h2 title="cmcc_fj.py">福建活动</h2><div class="desc">养成游戏：签到、领阶段奖励、喂养、天天大抽奖、环闽寻宝</div></div>
           <div class="ops"><button type="button" class="btn sm" data-nobusy onclick="gotoSettings()" title="喂养时段、抽奖开关、推送等长期策略都在设置页">自动设置</button></div>
         </div>
-        <div class="panel">
+        <div class="subtabs" id="bassTabs" role="tablist" aria-label="福建活动分组">
+          <button type="button" class="subtab on" role="tab" aria-selected="true" data-bt="all" onclick="setBassTab('all')">全部</button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="daily" onclick="setBassTab('daily')">每日与奖励<span class="tab-dot" id="bt-dot-daily"></span></button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="manual" onclick="setBassTab('manual')">手动执行</button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="play" onclick="setBassTab('play')">抽奖与寻宝<span class="tab-dot" id="bt-dot-play"></span></button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="flowbank" onclick="setBassTab('flowbank')">流量银行</button>
+        </div>
+        <div class="panel" data-bass-group="play">
           <h3>优惠专区抽奖 <span class="hint">共用福建活动凭证，刷任务 + 抽奖</span></h3>
           <div class="frow">
             <button type="button" class="btn pri" onclick="act({action:'luck_run'},()=>setTimeout(pullState,3000))">刷任务并抽奖</button>
@@ -145,29 +181,29 @@
             若提示凭证失效（401），在手机打开一次「优惠专区抽奖」页重新抓包导入 HAR 即可。
           </details>
         </div>
-        <div class="panel">
+        <div class="panel" data-bass-group="manual">
           <h3>手动执行一次 <span class="hint">仅影响本次，日常请到「设置」调整自动策略</span></h3>
-          <div class="frow"><label for="bassRunKey">账号</label><select class="inp" id="bassRunKey" onchange="updateBassFodder()"></select></div>
+          <div class="frow"><label for="bassRunKey">账号</label><select class="inp inp-md" id="bassRunKey" onchange="updateBassFodder()"></select></div>
           <div class="frow"><label>选项</label>
             <label class="chk"><input type="checkbox" id="bClaim" autocomplete="off">领阶段奖励</label>
             <label class="chk"><input type="checkbox" id="bRoll" autocomplete="off">掷骰子 + 开箱</label>
             <label class="chk" title="只查询，不领取、不消耗"><input type="checkbox" id="bDry" autocomplete="off">只读检查</label>
           </div>
-          <div class="frow"><label for="bFeed">喂养次数</label><input class="inp" id="bFeed" type="number" min="0" max="50" value="0" autocomplete="off" style="min-width:70px">
-            <span style="font-size:12px;color:var(--sub)">每轮耗 250 饲料</span>
+          <div class="frow"><label for="bFeed">喂养次数</label><input class="inp inp-xs" id="bFeed" type="number" min="0" max="50" value="0" autocomplete="off">
+            <span class="muted">每轮耗 250 饲料</span>
             <label class="chk" title="不用填轮数：按当前饲料算，喂到不足 250 为止"><input type="checkbox" id="bFeedAll" autocomplete="off" onchange="feedAllToggle('b')">喂到用完</label>
-            <span id="bFodder" style="font-size:12px;color:var(--warn)"></span></div>
+            <span id="bFodder" class="muted" style="color:var(--warn)"></span></div>
           <div class="frow"><label>阶段喂满时</label>
             <label class="chk"><input type="checkbox" id="bAuto" autocomplete="off" onchange="pickStage('auto')">领本阶奖品后继续喂</label>
-            <select class="inp" id="bPrize" autocomplete="off" style="min-width:110px;display:none" title="领哪一档奖品">
+            <select class="inp inp-sm" id="bPrize" autocomplete="off" style="display:none" title="领哪一档奖品">
               <option value="fee">领话费券</option>
               <option value="flow">领流量包</option>
               <option value="discount">领折扣券</option>
             </select>
             <label class="chk"><input type="checkbox" id="bCont" autocomplete="off" onchange="pickStage('cont')">放弃奖品直接升阶</label>
-            <span id="bStageHint" style="font-size:12px;color:var(--sub)">都不勾：快喂满时会停手等你决定</span>
+            <span id="bStageHint" class="muted">都不勾：快喂满时会停手等你决定</span>
           </div>
-          <div class="frow"><label style="color:var(--warn)">伪造类</label>
+          <div class="frow"><label class="lbl-warn">伪造类</label>
             <label class="chk"><input type="checkbox" id="bTasks" autocomplete="off">养成浏览任务（空报）</label>
             <label class="chk"><input type="checkbox" id="bFb" autocomplete="off">流量银行任务（空报）</label>
           </div>
@@ -182,7 +218,7 @@
             这里的勾选只影响这一次手动执行，不会保存到长期策略；两个阶段选项<b>互斥</b>，都不勾时喂到「下次会打满」即停手等你决定；升阶则本阶奖品作废。
           </details>
         </div>
-        <div class="panel">
+        <div class="panel" data-bass-group="daily">
           <h3>每日奖励 &amp; 福袋 <span class="hint">三档 150/250/350 饲料（间隔 60 分钟，6 点重置）</span></h3>
           <div id="dailyBox"></div>
           <details class="guide">
@@ -190,7 +226,7 @@
             三档已交给「每日奖励」计划任务每小时自动领取（「定时任务」页可查），不用手动点。福袋每累计喂食 300 次触发一次；显示时间为脚本观测时刻。
           </details>
         </div>
-        <div class="panel">
+        <div class="panel" data-bass-group="flowbank">
           <h3>流量银行任务周期 <span class="hint">每周一次 / 每月一次，未到周期自动跳过</span></h3>
           <div id="fbTasks"></div>
           <details class="guide">
@@ -198,7 +234,7 @@
             服务端只返回「已完成 / 未做」，这里按本地记录推算周期。周任务只在周一之后、月任务只在 1 号之后尝试，避免触发频控；进行中的任务会优先收尾。
           </details>
         </div>
-        <div class="panel">
+        <div class="panel" data-bass-group="play">
           <h3>环闽寻宝记 <span class="hint">投骰子走棋盘，到终点开藏宝阁</span></h3>
           <div class="frow">
             <button type="button" class="btn pri" onclick="act({action:'xunbao_run'},()=>setTimeout(pullState,3000))">投掉现有骰子</button>
@@ -217,8 +253,8 @@
         <div class="phead"><div><h2 title="cmcc_xiaoxiaole.py">消消乐</h2><div class="desc">伪造通关成绩换抽奖机会，中奖靠服务端概率</div></div></div>
         <div class="panel">
           <h3>消消乐执行</h3>
-          <div class="frow"><label for="xxlFile">账号</label><select class="inp" id="xxlFile"></select></div>
-          <div class="frow"><label>参数</label><span style="font-size:13px" id="xxlParams">加载中…</span>
+          <div class="frow"><label for="xxlFile">账号</label><select class="inp inp-md" id="xxlFile"></select></div>
+          <div class="frow"><label>参数</label><span id="xxlParams">加载中…</span>
             <button type="button" class="btn sm" data-nobusy onclick="gotoSettings()">去设置里改</button></div>
           <div class="warnbox">关卡号每次自动读取真实进度（乱填会被判异常）；每天约 5 次可用，有全局频控，性质较重请自行决定使用。</div>
           <div class="frow">
@@ -237,11 +273,11 @@
         <div class="panel">
           <h3>实时准备状态 <span class="hint">会随后台探测动态刷新</span></h3>
           <div class="status-card">
-            <div class="frow"><label>会话就绪</label><span style="font-size:13px" id="skSess">加载中…</span></div>
-            <div class="frow"><label>票据寿命</label><div style="font-size:13px;flex:1" id="tlBox">加载中…</div></div>
+            <div class="frow"><label>会话就绪</label><span id="skSess">加载中…</span></div>
+            <div class="frow"><label>票据寿命</label><div class="flex-1" id="tlBox">加载中…</div></div>
           </div>
-          <div class="frow"><label for="skFile">账号</label><select class="inp" id="skFile"></select></div>
-          <div class="frow"><label>开抢时刻</label><span style="font-size:13px" id="skAtShow">加载中…</span>
+          <div class="frow"><label for="skFile">账号</label><select class="inp inp-md" id="skFile"></select></div>
+          <div class="frow"><label>开抢时刻</label><span id="skAtShow">加载中…</span>
             <button type="button" class="btn sm" data-nobusy onclick="gotoSettings()">去设置里改</button></div>
           <div class="warnbox" id="skWindow" style="display:none"></div>
           <div class="frow">
@@ -267,7 +303,7 @@
         <div class="phead"><div><h2 title="cmcc_extra.py">拓展活动</h2><div class="desc">周六游戏中心 / 追剧领福利 / 玩游戏抽话费，三合一</div></div></div>
         <div class="panel">
           <h3>执行拓展活动</h3>
-          <div class="frow"><label for="gmFile">账号</label><select class="inp" id="gmFile"></select></div>
+          <div class="frow"><label for="gmFile">账号</label><select class="inp inp-md" id="gmFile"></select></div>
           <div class="frow">
             <button type="button" class="btn pri" onclick="runGames('all')">打卡+任务+抽奖</button>
             <button type="button" class="btn" onclick="runGames('dry')">只查状态</button>
@@ -312,67 +348,67 @@
       <!-- 设置 -->
       <div class="page" id="p-settings">
         <div class="phead"><div><h2>设置</h2><div class="desc">设置一次、长期生效（秒杀等待期间也可随时修改并保存）</div></div></div>
-        <div class="panel">
-          <h3>推送设置 <span class="hint">优先级：环境变量 &gt; 这里 &gt; 单账号配置</span></h3>
+        <div class="panel" id="panelSetPush">
+          <h3>推送设置 <span class="hint">优先级：环境变量 &gt; 这里 &gt; 单账号配置</span><span class="dirty-pill" id="sDirty">有未保存的修改</span></h3>
           <div class="frow"><label for="sBark">Bark</label>
-            <input class="inp" id="sBark" placeholder="https://api.day.app/你的key" style="min-width:320px">
-            <span style="font-size:12px;color:var(--sub)">iOS 推送地址</span></div>
+            <input type="password" class="inp inp-lg" id="sBark" placeholder="https://api.day.app/你的key">
+            <span class="muted">iOS 推送地址</span></div>
           <div class="frow"><label for="sSendkey">Server酱</label>
-            <input class="inp" id="sSendkey" placeholder="SCTxxxxxxxxxxxxxxxx" style="min-width:320px">
-            <span style="font-size:12px;color:var(--sub)">SendKey，只含字母和数字</span></div>
+            <input type="password" class="inp inp-lg" id="sSendkey" placeholder="SCTxxxxxxxxxxxxxxxx">
+            <span class="muted">SendKey，只含字母和数字</span></div>
           <div class="frow"><label for="sPushplus">PushPlus</label>
-            <input class="inp" id="sPushplus" placeholder="32 位十六进制令牌" style="min-width:320px">
-            <span style="font-size:12px;color:var(--sub)">微信 / 邮箱推送</span></div>
+            <input type="password" class="inp inp-lg" id="sPushplus" placeholder="32 位十六进制令牌">
+            <span class="muted">微信 / 邮箱推送</span></div>
           <div class="frow"><button type="button" class="btn pri" data-nobusy onclick="saveSettings()">保存</button>
             <button type="button" class="btn" data-nobusy onclick="act({action:'notify_test'})">发一条测试</button>
             <button type="button" class="btn" data-nobusy onclick="act({action:'notify_report'})">推送今日战报</button>
-            <span style="font-size:12px;color:var(--sub)" id="sMeta">加载中…</span></div>
+            <span class="muted" id="sMeta">加载中…</span></div>
           <details class="guide">
             <summary>推送规则与战报说明</summary>
             留空保存 = 清除对应渠道；三种渠道可同时填写并同时收到通知。PushPlus Token 在 pushplus.plus 官网「我的令牌」查看（32 位字符）。每天全量任务顺利跑完会自动发一次「今日战报」。
           </details>
         </div>
-        <div class="panel">
-          <h3>邮箱收 HAR <span class="hint">凭证过期时手机发邮件，程序每 10 分钟自动查收并导入</span></h3>
+        <div class="panel" id="panelSetMail">
+          <h3>邮箱收 HAR <span class="hint">凭证过期时手机发邮件，程序每 10 分钟自动查收并导入</span><span class="dirty-pill" id="mDirty">有未保存的修改</span></h3>
           <div class="frow"><label class="chk"><input type="checkbox" id="mEnabled">启用邮箱收件</label>
-            <label for="mUser" style="min-width:auto">邮箱</label><input class="inp" id="mUser" placeholder="you@qq.com" style="min-width:230px">
-            <label for="mPass" style="min-width:auto">应用专用密码</label><input class="inp" id="mPass" type="password" placeholder="16 位授权码" style="min-width:180px"></div>
+            <label for="mUser" class="auto">邮箱</label><input class="inp inp-md" id="mUser" placeholder="you@qq.com">
+            <label for="mPass" class="auto">应用专用密码</label><input class="inp inp-md" id="mPass" type="password" placeholder="16 位授权码"></div>
           <div class="frow"><label for="mProvider">邮箱类型</label>
-            <select class="inp" id="mProvider" onchange="mailProvider()" style="min-width:130px">
+            <select class="inp inp-md" id="mProvider" onchange="mailProvider()">
               <option value="qq">QQ邮箱（推荐）</option><option value="139">139邮箱</option><option value="163">163邮箱</option><option value="gmail">Gmail（不推荐，需 OAuth2）</option>
             </select>
-            <label for="mHost" style="min-width:auto">IMAP</label>
-            <input class="inp" id="mHost" value="imap.qq.com" style="min-width:170px">
-            <label for="mPort" style="min-width:auto">端口</label><input class="inp" id="mPort" type="number" value="993" style="min-width:80px">
-            <label for="mKeyword" style="min-width:auto">标题含</label><input class="inp" id="mKeyword" value="HAR" style="min-width:90px"></div>
+            <label for="mHost" class="auto">IMAP</label>
+            <input class="inp inp-md" id="mHost" value="imap.qq.com">
+            <label for="mPort" class="auto">端口</label><input class="inp inp-xs" id="mPort" type="number" value="993">
+            <label for="mKeyword" class="auto">标题含</label><input class="inp inp-sm" id="mKeyword" value="HAR"></div>
           <div class="frow"><label for="mSender">允许的发件人</label>
-            <input class="inp" id="mSender" placeholder="你的手机号邮箱，留空=不限制" style="min-width:320px">
-            <span style="font-size:12px;color:var(--sub)">只认这个地址发来的 HAR</span></div>
+            <input class="inp inp-lg" id="mSender" placeholder="你的手机号邮箱，留空=不限制">
+            <span class="muted">只认这个地址发来的 HAR</span></div>
           <div class="frow"><button type="button" class="btn pri" data-nobusy onclick="saveMail()">保存邮箱设置</button>
             <button type="button" class="btn" data-nobusy onclick="act({action:'mail_test'})">测试连接</button>
-            <span style="font-size:12px;color:var(--sub)" id="mMeta">加载中…</span></div>
+            <span class="muted" id="mMeta">加载中…</span></div>
           <details class="guide">
             <summary>触发条件与安全白名单说明</summary>
             只有<b>凭证失效且今天任务没做完</b>时才查邮箱；没过期或今天已做完，一次都不会连邮箱服务器。只处理白名单发件人邮件中的 <b>.har</b> 附件。
           </details>
         </div>
-        <div class="panel">
-          <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span></h3>
+        <div class="panel" id="panelSetPolicy">
+          <h3>自动策略 <span class="hint">保存一次，定时任务每天照此执行</span><span class="dirty-pill" id="pDirty">有未保存的修改</span></h3>
           <div class="frow"><label for="pFeed">每天自动喂养</label>
-            <input class="inp" id="pFeed" type="number" min="0" max="50" value="0" style="min-width:70px">
-            <span style="font-size:12px;color:var(--sub)">轮（每轮 250 饲料，0 = 不喂）</span>
+            <input class="inp inp-xs" id="pFeed" type="number" min="0" max="50" value="0">
+            <span class="muted">轮（每轮 250 饲料，0 = 不喂）</span>
             <label class="chk" title="轮数按当天饲料自动算，喂到不足 250 为止，不用填数字"><input type="checkbox" id="pFeedAll" onchange="feedAllToggle('p')">喂到饲料用完</label>
-            <label for="pFeedHour" style="min-width:auto">在</label>
-            <input class="inp" id="pFeedHour" type="number" min="0" max="23" value="12" style="min-width:64px">
-            <span style="font-size:12px;color:var(--sub)">点之后（三档领齐即喂）</span></div>
+            <label for="pFeedHour" class="auto">在</label>
+            <input class="inp inp-xs" id="pFeedHour" type="number" min="0" max="23" value="12">
+            <span class="muted">点之后（三档领齐即喂）</span></div>
           <div class="frow"><label for="pFull">阶段喂满时</label>
-            <select class="inp" id="pFull" style="min-width:210px">
+            <select class="inp inp-md" id="pFull">
               <option value="stop">停手，等我自己决定</option>
               <option value="claim">领本阶奖品后继续喂</option>
               <option value="continue">放弃本阶奖品，直接升阶</option>
             </select>
-            <label for="pPrize" style="min-width:auto">领奖档位</label>
-            <select class="inp" id="pPrize" style="min-width:110px">
+            <label for="pPrize" class="auto" title="只有一阶和六阶可以自己挑档位；二~五阶由服务端按权重随机开奖，这里选什么都不会被采用">领奖档位</label>
+            <select class="inp inp-sm" id="pPrize">
               <option value="fee">话费券</option>
               <option value="flow">流量包</option>
               <option value="discount">折扣券</option>
@@ -382,22 +418,22 @@
             <label class="chk" title="四个加次数任务，实测能把次数从 0 换到 2；带链接的会先打开一次页面再上报"><input type="checkbox" id="pLuckTasks">顺手做加次数任务</label>
             <label class="chk" title="环闽寻宝记：骰子当天不用就作废，顺带投掉"><input type="checkbox" id="pXunbao">自动投掉寻宝骰子</label>
           </div>
-          <div class="frow"><label style="color:var(--warn)">伪造类</label>
+          <div class="frow"><label class="lbl-warn">伪造类</label>
             <label class="chk"><input type="checkbox" id="pTasks">养成浏览任务（空报）</label>
             <label class="chk"><input type="checkbox" id="pFb">流量银行任务（空报）</label>
             <label class="chk" title="券来世界（App 首页访问活动）：每天一次 500 饲料。脚本会先打开一次页面再上报完成"><input type="checkbox" id="pCouponWorld">券来世界访问（+500 饲料）</label>
           </div>
           <div class="frow"><label>消消乐</label>
             <label class="chk" title="先做浏览类金币任务，再把金币按 200/点换成体力，避免没体力卡关"><input type="checkbox" id="sTasks">自动做金币任务并换体力</label>
-            <label for="sStar" style="min-width:auto">星级</label><input class="inp" id="sStar" type="number" min="0" max="3" value="3" style="min-width:60px">
-            <label for="sTimes" style="min-width:auto">局数</label><input class="inp" id="sTimes" type="number" min="1" max="20" value="5" style="min-width:60px">
-            <label for="sGap" style="min-width:auto">间隔秒</label><input class="inp" id="sGap" type="number" min="5" max="120" value="12" style="min-width:70px">
-            <span style="font-size:12px;color:var(--sub)">关卡自动读取真实进度</span></div>
+            <label for="sStar" class="auto">星级</label><input class="inp inp-xs" id="sStar" type="number" min="0" max="3" value="3">
+            <label for="sTimes" class="auto">局数</label><input class="inp inp-xs" id="sTimes" type="number" min="1" max="20" value="5">
+            <label for="sGap" class="auto">间隔秒</label><input class="inp inp-xs" id="sGap" type="number" min="5" max="120" value="12">
+            <span class="muted">关卡自动读取真实进度</span></div>
           <div class="frow"><label for="sAt">秒杀抢券</label>
-            <label for="sAt" style="min-width:auto">开抢时刻</label><input class="inp" id="sAt" value="11:59:50" style="min-width:100px">
-            <span style="font-size:12px;color:var(--sub)">留空则按服务端场次自动选；填的时刻是「今天」的</span></div>
+            <label for="sAt" class="auto">开抢时刻</label><input class="inp inp-sm" id="sAt" value="11:59:50">
+            <span class="muted">留空则按服务端场次自动选；填的时刻是「今天」的</span></div>
           <div class="frow"><button type="button" class="btn pri" data-nobusy onclick="savePolicy()">保存策略</button>
-            <span style="font-size:12px;color:var(--sub)" id="pMeta">加载中…</span></div>
+            <span class="muted" id="pMeta">加载中…</span></div>
           <details class="guide">
             <summary>自动喂养等待规则说明</summary>
             每天自动喂养会等三档饲料（150/250/350）<b>全部领齐后</b>，在设定小时之后那一轮一次性喂完，一天最多喂一次；伪造类默认关闭，改完即时生效无需重启服务。
@@ -413,18 +449,19 @@
             <button type="button" class="btn sm" data-nobusy onclick="clearConsole()">清屏</button>
           </div>
         </div>
-        <div class="panel" style="padding:14px">
+        <div class="panel panel-tight">
           <div class="logbar">
             <input class="inp" id="logFilter" placeholder="关键字过滤（如 失败 / 号码尾号 / 秒杀）" oninput="renderLogList()">
             <button type="button" class="btn sm flt on" data-nobusy data-lvl="all" onclick="setLogLevel('all',this)">全部</button>
             <button type="button" class="btn sm flt" data-nobusy data-lvl="err" onclick="setLogLevel('err',this)">只看错误</button>
             <button type="button" class="btn sm flt" data-nobusy data-lvl="ok" onclick="setLogLevel('ok',this)">只看成功</button>
+            <span class="muted ml-auto" id="logCount"></span>
           </div>
           <div class="consolewrap">
             <div class="console" id="console" role="log" aria-label="运行日志"></div>
             <button type="button" class="btn sm pri log-jump" id="logJump" data-nobusy onclick="scrollLogsBottom()">↓ 回到底部</button>
           </div>
-          <div id="consoleEmpty" style="padding:10px 2px 0;color:var(--sub);font-size:13px">还没有本控制台发起的运行记录。
+          <div id="consoleEmpty" class="muted mt-10">还没有本控制台发起的运行记录。
             在任一页点执行后，输出会实时出现在这里；定时任务自己跑的输出在
             <a href="#sched" onclick="nav(document.querySelector('nav button[data-p=sched]'));return false">定时任务</a> 页每行的「日志」按钮里。</div>
         </div>
@@ -469,6 +506,10 @@
   </div>
 </div>
 
+<script src="/static/js/core.js"></script>
+<script src="/static/js/dash.js"></script>
+<script src="/static/js/activities.js"></script>
+<script src="/static/js/ops.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

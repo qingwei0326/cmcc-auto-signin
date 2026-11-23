@@ -78,6 +78,7 @@ POST /bass-cultivateGameServer/sign/doSign
 - 奖励**连续累进**：600g → 900g → 1200g，**断一天 `cycleDay` 重置回 1**
 - `signDateList` 直接给出未来几天的奖励，控制台显示的就是这份数据
 - `todaySign` 为 true 表示今日已签
+- **累计签到阶梯奖励（fullmarkTask）**：当累签天数达到 7/14/21 天等阶段门槛时，接口返回待领取的满签奖励，脚本会自动识别并触发领取，领取的奖励（如流量包、话费券）会实时记入到账台账 `gui_data/awards.json`。
 
 ### 每日奖励三档
 
@@ -169,6 +170,7 @@ POST /bass-cultivateGameServer/stage/batchFeed        ← 批量喂养（一次 
 
 → 调用后**直接升到下一阶、进度归零**，等价于放弃本阶奖品换取继续喂养。
 这是 `--auto-claim` 之外处理"阶段满"的第二种选择，适合不想要奖品、只想冲高阶的情况。
+**注意**：`--continue-stage`（直接升阶）与 `--auto-claim`（领奖）在参数与业务逻辑上**严格互斥**，自动策略配置与命令行调用时只能二选一。
 
 #### 完整奖品表（6 阶，getStagePrizes 实测）
 

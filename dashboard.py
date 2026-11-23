@@ -1100,13 +1100,11 @@ def do_action(body: dict):
         f = safe_conf_path(body.get("file"))
         if f is None or not f.is_file():
             return {"ok": False, "err": "配置文件非法或不存在"}
-        cmd = py("cmcc_sign.py", "--config", str(f))
+        cmd = py("cmcc_sign.py", "--config", str(f), "--games")
         if body.get("dry"):
             cmd.append("--dry-run")
-        else:
-            cmd.append("--games")
-            if body.get("tasks"):
-                cmd.append("--tasks")
+        elif body.get("tasks"):
+            cmd.append("--tasks")
         return _start(f"拓展活动 · {f.stem}", cmd)
 
     if act == "xxl_run":
@@ -2010,7 +2008,12 @@ STATIC_FILES = {
     "index.html": "text/html; charset=utf-8",
     "app.css": "text/css; charset=utf-8",
     "app.js": "application/javascript; charset=utf-8",
+    "js/core.js": "application/javascript; charset=utf-8",
+    "js/dash.js": "application/javascript; charset=utf-8",
+    "js/activities.js": "application/javascript; charset=utf-8",
+    "js/ops.js": "application/javascript; charset=utf-8",
 }
+STATIC_JS_FILES = ("js/core.js", "js/dash.js", "js/activities.js", "js/ops.js", "app.js")
 
 
 def _static_path(name: str):
@@ -2043,10 +2046,20 @@ def _load_frontend() -> str:
                      "（打包时由 spec 的 datas 带上）")
 
 
-def load_frontend_bundle() -> str:
-    """拼接前端静态文件（index.html + app.css + app.js），供单测扫描。"""
+def load_frontend_js() -> str:
+    """按加载顺序拼接全部前端 JS 模块，供单测检查。"""
     parts = []
-    for name in ("index.html", "app.css", "app.js"):
+    for name in STATIC_JS_FILES:
+        p = _static_path(name)
+        if p is not None:
+            parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+def load_frontend_bundle() -> str:
+    """拼接前端静态文件（index.html + app.css + JS 模块），供单测扫描。"""
+    parts = []
+    for name in ("index.html", "app.css") + STATIC_JS_FILES:
         p = _static_path(name)
         if p is not None:
             parts.append(p.read_text(encoding="utf-8"))

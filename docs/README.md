@@ -6,9 +6,8 @@
 |---|---|---|
 | [qwhdhub.md](qwhdhub.md) | 全国签到 | `wx.10086.cn` |
 | [seckill.md](seckill.md) | 签到有礼每周秒杀（12:00 抢话费券） | `wx.10086.cn` |
-| [wedrecharge.md](wedrecharge.md) | 周三充值日 | `wx.10086.cn` |
-| [bass.md](bass.md) | 福建站活动 | `wap.fj.10086.cn` |
 | [wedrecharge.md](wedrecharge.md) | 周三充值日（独立活动） | `wx.10086.cn` |
+| [bass.md](bass.md) | 福建站活动 | `wap.fj.10086.cn` |
 
 > 文档里的字段名与状态值来自实际抓包与接口返回，**不是猜测**。
 > 标注「实测」的是已经跑通并验证过的结论。

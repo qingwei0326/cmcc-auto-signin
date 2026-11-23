@@ -181,12 +181,21 @@ def _got_prize(res, name, cfg=None):
 
 # 阶段奖励每阶固定 3 档：1=话费券 2=流量券 3=折扣券
 PRIZE_KIND = {"fee": 1, "flow": 2, "discount": 3}
+# 只有一阶和六阶能自己挑档位；二~五阶由服务端按 weigh 随机开奖（App 上标「随机」），
+# 这时候传 prizeId 没有意义，照实测的无参调用走就行。stage 是 0 基，所以一阶=0、六阶=5。
+CHOOSABLE_STAGES = frozenset({0, 5})
 
 
 def prize_id_for(stage, kind):
-    """按 阶段号 + 档位 算出奖品 id，例如 1阶流量 = (1-1)*3+2 = 2。"""
+    """按 阶段号 + 档位 算奖品 id（实测池：一阶 1-3、二阶 4-6 … 六阶 16-18）。
+
+    stage 是 getStagePrizes / getUserStageInfo 里那个 0 基序号：stage=0 是一阶
+    （need 5000）、stage=1 二阶（10000）……stage=5 六阶。所以是 stage*3+off，
+    不能再减 1——历史实现减了 1，一阶时被 max(stage,1) 兜住看不出来，
+    从二阶起每次都在要上一阶的奖品。
+    """
     off = PRIZE_KIND.get(kind, 1)
-    return (max(int(stage or 1), 1) - 1) * 3 + off
+    return max(int(stage or 0), 0) * 3 + off
 
 
 FB_STATE = BASE / "gui_data" / "flowbank_state.json"
@@ -468,12 +477,26 @@ def fb_due_tasks(tasks, records, now=None, force=False):
     return todo, skipped
 
 
+def _claim_label(pid) -> str:
+    """领奖那行日志的标题：能挑档位就写 id，随机阶写明是随机开。"""
+    return f"领阶段奖励(prizeId={pid})" if pid else "领阶段奖励(随机开奖)"
+
+
 def receive_stage_prize(s, cfg, kind):
-    """领阶段奖励，带上 prizeId 指定档位；返回 (resp, prizeId, prizeName)。"""
+    """领阶段奖励；返回 (resp, prizeId, prizeName)。
+
+    一阶/六阶带 prizeId 指定档位；二~五阶服务端随机开奖，走无参调用
+    （11-19 实测无参即领默认档，成功后 feedFodders 归零、status 回到 0）。
+    """
     st = call(s, cfg, "stage_info")
-    stage = ((st.get("data") or {}).get("stageInfo") or {}).get("stage") or 1
-    pid = prize_id_for(stage, kind)
-    r = call(s, cfg, "stage_receive", extra={"prizeId": pid})
+    raw = ((st.get("data") or {}).get("stageInfo") or {}).get("stage")
+    stage = int(raw) if raw is not None else 0
+    if stage in CHOOSABLE_STAGES:
+        pid = prize_id_for(stage, kind)
+        r = call(s, cfg, "stage_receive", extra={"prizeId": pid})
+    else:
+        pid = None
+        r = call(s, cfg, "stage_receive")
     name = ""
     if isinstance(r.get("data"), dict):
         name = (r["data"].get("prizeDto") or {}).get("prizeName") or ""
@@ -541,9 +564,13 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
                     break
                 pause()
                 rp, pid, pname = receive_stage_prize(s, cfg, prize_kind)
-                if show(f"领阶段奖励(prizeId={pid})", rp):
+                if show(_claim_label(pid), rp):
                     _got_prize(res, pname, cfg)
                     continue
+                if pid is None:
+                    # 随机阶没有「换档位」可退，重试也是同一个请求，别刷两遍
+                    print("  -  随机阶领奖失败，停止喂养")
+                    break
                 # 带 prizeId 不被服务端接受时，退回默认档，至少不卡住
                 print("     -  指定档位失败，退回默认档重试")
                 pause()
@@ -934,9 +961,9 @@ def main():
         status = str(((stc.get("data") or {}).get("status")))
         if status == "1":
             r, pid, pname = receive_stage_prize(s, cfg, prize_kind)
-            if show(f"领阶段奖励(prizeId={pid})", r):
+            if show(_claim_label(pid), r):
                 _got_prize(res, pname, cfg)
-            else:
+            elif pid is not None:
                 pause()
                 r2c, _p, pname2 = receive_stage_prize(s, cfg, "fee")
                 if show("领阶段奖励(默认档)", r2c):
@@ -950,7 +977,9 @@ def main():
             print("  奖品池：")
             for item in r2["data"]:
                 names = "、".join(f"{x.get('prizeName')}" for x in (item.get("prizeList") or []))
-                print(f"     第{item.get('stage')}阶：{names}")
+                idx = int(item.get("stage") or 1) - 1
+                mark = "可选" if idx in CHOOSABLE_STAGES else "随机"
+                print(f"     第{item.get('stage')}阶（{mark}）：{names}")
 
     # ---------- 可选：红包宝掷骰子 ----------
     if args.roll:

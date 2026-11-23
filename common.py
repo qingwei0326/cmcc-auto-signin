@@ -629,7 +629,7 @@ POLICY_DEFAULT = {
         "feed_all": False,       # True = 喂到饲料不足 250 为止，轮数自动算，不用填 feed
         "feed_hour": 12,         # 只在几点那一轮喂（默认 12 点，与每日奖励任务同一次运行）
         "on_stage_full": "stop",  # stop 停手 / claim 领奖续喂 / continue 放弃奖品升阶
-        "prize": "fee",          # 领奖档位 fee 话费 / flow 流量 / discount 折扣
+        "prize": "fee",          # 领奖档位 fee/flow/discount（只在一阶、六阶可选时生效，2~5 阶随机）
         "tasks": False,          # 养成浏览任务（空报，默认关）
         "fb_tasks": False,       # 流量银行任务（空报，默认关）
     },

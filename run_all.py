@@ -637,13 +637,15 @@ def main():
         args.seckill = False
         args.platform = "none"
 
-    # 保活：只登录续 jwt，不签到；失败也不推送（保活失败由每日签到去告警）
+    # 保活 / 只读检查：不签到或只读探测，都不推送手机通知
     if args.keepalive:
         args.platform = "qwhd"
         args.xxl = False
         args.dry_run = False
         args.no_notify = True
         extra_map["qwhd"].append("--login-only")
+    if args.dry_run:
+        args.no_notify = True
 
     # 拓展活动（周六游戏中心 / 追剧 / 玩游戏抽话费）需要透传 --games，
     # 否则这些代码写好了却永远没人调用。
@@ -727,7 +729,7 @@ def main():
     # 给邮箱监听用的触发标记：只有「票失效了、今天还没全做完」才值得去收 HAR
     if TOKEN_DEAD_ACCOUNTS:
         mark_mail_needed(TOKEN_DEAD_ACCOUNTS)
-    elif should_mark_done(args.platform, good, len(results)):
+    elif not args.dry_run and should_mark_done(args.platform, good, len(results)):
         mark_today_done()
 
     # 推送通道配置：战报和失败提醒都用它
@@ -743,7 +745,7 @@ def main():
 
     # 做完就推「今日战报」：当天到手的东西按账号分组。
     # 不再要求「全部成功且无过期」——只要今天真有收获就发总结。
-    # notify_once 按天去重，每小时轮询也只会推一条。
+    # notify_once 按天去重，每小时轮询也只会推一条；只读检查（--dry-run 已置 no_notify）不推通知。
     if not args.no_notify and done:
         try:
             from common import daily_report

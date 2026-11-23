@@ -1320,9 +1320,10 @@ def do_action(body: dict):
         # 抽之前顺手把「加抽奖次数」的任务做掉（4 个任务 ≈ 2 次机会）
         patch["luck_tasks"] = bool(body.get("luck_tasks", True))
         # 寻宝骰子同样当天作废；任务上报只涉及「参与天天大转盘」这类真做过的
+        old_pol = load_policy()
         patch["xunbao"] = bool(body.get("xunbao", True))
         patch["coupon_world"] = bool(body.get("coupon_world", True))
-        patch["xunbao_tasks"] = bool(body.get("xunbao_tasks", True))
+        patch["xunbao_tasks"] = bool(body.get("xunbao_tasks", old_pol.get("xunbao_tasks", True)))
         xxl = body.get("xxl")
         if isinstance(xxl, dict):
             try:

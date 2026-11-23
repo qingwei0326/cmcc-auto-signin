@@ -604,7 +604,8 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
 
     summary = "\n".join(lines)
     log.info("\n%s", summary)
-    notify(cfg, "移动签到通知", f"{summary}\n手机尾号 {cfg.phone[-4:]}")
+    if not dry_run:
+        notify(cfg, "移动签到通知", f"{summary}\n手机尾号 {cfg.phone[-4:]}")
     emit_result(res)
     return 0
 
@@ -650,7 +651,8 @@ def main() -> int:
             log.exception("执行失败: %s", e)
         else:
             log.error("执行失败: %s", e)
-        notify(cfg, "移动签到异常", f"{e}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
+        if not args.dry_run and not args.login_only:
+            notify(cfg, "移动签到异常", f"{e}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
         emit_result({"plat": "qwhd",
                      "token": "expired" if "appTokenLogin" in str(e) else "error",
                      "error": str(e)[:200]})

@@ -442,9 +442,10 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
     except Exception as e:
         log.error("没有可用会话：%s", e)
         log.error("请在开抢前重新抓包导入；脚本运行期间导入也会被自动识别。")
-        notify(cfg, "移动秒杀：会话缺失",
-               f"{e}\n请在开抢前重新抓包导入\n"
-               "手机尾号 %s" % (cfg.phone[-4:] if cfg.phone else "????"))
+        if not dry_run:
+            notify(cfg, "移动秒杀：会话缺失",
+                   f"{e}\n请在开抢前重新抓包导入\n"
+                   "手机尾号 %s" % (cfg.phone[-4:] if cfg.phone else "????"))
         return 1
 
     srv_ms = server_now_ms(s, referer)
@@ -482,7 +483,8 @@ def run(cfg: Config, dry_run: bool, once: bool, at: str,
         detail = (f"{zone['prize']['name']}\n场次 {st.strftime('%m-%d %H:%M')}，"
                   f"今日已抢到，无需重复抢购\n手机尾号 {cfg.phone[-4:]}")
         log.info("本场已抢到（prize.status=1），无需再抢")
-        notify(cfg, "移动秒杀：今日已抢到", detail)
+        if not dry_run:
+            notify(cfg, "移动秒杀：今日已抢到", detail)
         # 已经抢到过了，也要把这张券补记进「收获」台账
         record_seckill_prize({"data": {"prizeName": zone["prize"]["name"]}}, cfg, zone)
         emit_result({"plat": "seckill", "token": "ok", "success": True,
@@ -608,7 +610,8 @@ def main() -> int:
         return 1
     except Exception as e:
         log.exception("执行失败: %s", e)
-        notify(cfg, "移动秒杀异常", f"{e}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
+        if not args.dry_run:
+            notify(cfg, "移动秒杀异常", f"{e}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
         return 1
 
 

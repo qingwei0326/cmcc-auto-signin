@@ -445,3 +445,51 @@ class TestNotifyReliabilityAndSSRF(unittest.TestCase):
                     t.join()
             self.assertEqual(len(calls), 1)
 
+
+class TestDryRunNeverNotifies(unittest.TestCase):
+    """只读查询（--dry-run / 只查状态 / 刷新状态）在控制台已有输出，绝不该发 PushPlus 打扰手机。"""
+
+    def test_cmcc_sign_dry_run_success_does_not_notify(self):
+        import cmcc_sign as CS
+        cfg = type("Cfg", (), {"phone": "13800001234", "app_token": "tok",
+                               "bark_url": "", "serverchan_sendkey": "", "pushplus_token": ""})()
+        fake_status = {"userinfo": {"accumulateTimes": 21}, "markstatus": []}
+        with mock.patch.object(CS, "exchange_session", return_value=(object(), "https://wx.10086.cn/x")), \
+             mock.patch.object(CS, "query_markstatus", return_value=fake_status), \
+             mock.patch.object(CS, "save_activity_session"), \
+             mock.patch.object(CS, "emit_result"), \
+             mock.patch.object(CS, "notify") as m_notify:
+            rc = CS.run(cfg, dry_run=True, claim=False, games=False)
+        self.assertEqual(rc, 0)
+        m_notify.assert_not_called()
+
+    def test_cmcc_sign_dry_run_exception_does_not_notify(self):
+        import cmcc_sign as CS
+        with tempfile.TemporaryDirectory() as td:
+            cf = Path(td) / "3239.json"
+            cf.write_text('{"phone":"13800001234","app_token":"JSESSIONID=x; UID=y; ticketID=z"}',
+                          encoding="utf-8")
+            with mock.patch.object(sys, "argv", ["cmcc_sign.py", "--config", str(cf), "--dry-run"]), \
+                 mock.patch.object(CS, "run", side_effect=RuntimeError("appTokenLogin 失败")), \
+                 mock.patch.object(CS, "emit_result"), \
+                 mock.patch.object(CS, "notify") as m_notify:
+                rc = CS.main()
+        self.assertEqual(rc, 1)
+        m_notify.assert_not_called()
+
+    def test_cmcc_seckill_dry_run_does_not_notify_on_missing_session_or_won(self):
+        import cmcc_seckill as SK
+        cfg = type("Cfg", (), {"phone": "13800001234", "app_token": "tok",
+                               "bark_url": "", "serverchan_sendkey": "", "pushplus_token": ""})()
+        # 1. 会话缺失 + dry_run → 不推送
+        with mock.patch.object(SK, "acquire_session_with_retry", side_effect=RuntimeError("无会话")), \
+             mock.patch.object(SK, "notify") as m_notify:
+            rc = SK.run(cfg, dry_run=True, once=False, at=None,
+                        interval=0.35, lead=0.4, max_attempts=1, pre_window_s=60.0)
+        self.assertEqual(rc, 1)
+        m_notify.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
+

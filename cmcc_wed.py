@@ -263,8 +263,9 @@ def main() -> int:
             log.error("app_token 约 30~46 分钟寿命，请重新抓包导入后再运行。")
         else:
             log.exception("周三充值日执行失败: %s", e)
-        notify(cfg, "周三充值日执行失败",
-               f"{msg.split('——')[0].strip()}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
+        if not args.dry_run:
+            notify(cfg, "周三充值日执行失败",
+                   f"{msg.split('——')[0].strip()}\n手机尾号 {cfg.phone[-4:] if cfg.phone else '????'}")
         return 1
 
 

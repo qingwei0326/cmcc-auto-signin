@@ -180,6 +180,19 @@ function runBassProbe(){
   capStart('bass');
   act({action:'bass_probe',key:V('bassRunKey')}).then(capArm);
 }
+function runLuck(mode){
+  capStart('luckOut');
+  const body={action:'luck_run'};
+  if(mode==='dry')body.dry=1;
+  if(mode==='no_tasks')body.no_tasks=1;
+  act(body).then(capArm);
+}
+function runXunbao(mode){
+  capStart('xunbaoOut');
+  const body={action:'xunbao_run'};
+  if(mode==='dry')body.dry=1;
+  act(body).then(capArm);
+}
 function pickStage(which){
   if(which==='auto'&&$('bAuto').checked)$('bCont').checked=false;
   if(which==='cont'&&$('bCont').checked)$('bAuto').checked=false;
@@ -189,7 +202,7 @@ function syncStageUi(){
   const a=$('bAuto'), c=$('bCont'), p=$('bPrize'), h=$('bStageHint');
   if(!a||!c)return;
   if(p)p.style.display=a.checked?'':'none';
-  if(h)h.textContent=a.checked?'喂满时会领所选档位的奖品后继续喂'
+  if(h)h.textContent=a.checked?'喂满时会领奖后继续喂（一/六阶按所选档位，二~五阶服务端随机开奖）'
     :(c.checked?'喂满时会放弃本阶奖品直接升阶（奖品作废）':'都不勾：快喂满时会停手等你决定');
 }
 // 手动执行区的勾选只管这一次：页面每次加载都回到默认，不让浏览器偷偷恢复

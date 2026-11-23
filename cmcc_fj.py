@@ -485,13 +485,14 @@ def _claim_label(pid) -> str:
 def receive_stage_prize(s, cfg, kind):
     """领阶段奖励；返回 (resp, prizeId, prizeName)。
 
-    一阶/六阶带 prizeId 指定档位；二~五阶服务端随机开奖，走无参调用
+    一阶/六阶带 prizeId 指定档位；二~五阶（或 kind=None 退回默认档时）
+    服务端随机/默认开奖，走无参调用
     （11-19 实测无参即领默认档，成功后 feedFodders 归零、status 回到 0）。
     """
     st = call(s, cfg, "stage_info")
     raw = ((st.get("data") or {}).get("stageInfo") or {}).get("stage")
     stage = int(raw) if raw is not None else 0
-    if stage in CHOOSABLE_STAGES:
+    if kind is not None and stage in CHOOSABLE_STAGES:
         pid = prize_id_for(stage, kind)
         r = call(s, cfg, "stage_receive", extra={"prizeId": pid})
     else:
@@ -571,10 +572,10 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
                     # 随机阶没有「换档位」可退，重试也是同一个请求，别刷两遍
                     print("  -  随机阶领奖失败，停止喂养")
                     break
-                # 带 prizeId 不被服务端接受时，退回默认档，至少不卡住
+                # 带 prizeId 不被服务端接受时，退回无参默认档，至少不卡住
                 print("     -  指定档位失败，退回默认档重试")
                 pause()
-                rp2, _pid2, pname2 = receive_stage_prize(s, cfg, "fee")
+                rp2, _pid2, pname2 = receive_stage_prize(s, cfg, None)
                 if show("领阶段奖励(默认档)", rp2):
                     _got_prize(res, pname2, cfg)
                     continue
@@ -982,7 +983,7 @@ def main():
                 _got_prize(res, pname, cfg)
             elif pid is not None:
                 pause()
-                r2c, _p, pname2 = receive_stage_prize(s, cfg, "fee")
+                r2c, _p, pname2 = receive_stage_prize(s, cfg, None)
                 if show("领阶段奖励(默认档)", r2c):
                     _got_prize(res, pname2, cfg)
         else:

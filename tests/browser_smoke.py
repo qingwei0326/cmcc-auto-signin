@@ -196,14 +196,17 @@ with sync_playwright() as p:
     check("秒杀结果区存在", page.eval_on_selector_all("#skBox", "e=>e.length") == 1)
     page.screenshot(path=str(OUT / "shot_seckill.png"), full_page=True)
 
-    # 字号缩放
+    # 字号缩放（顶栏「外观」弹层内触发，基于根节点 rem 与 --ui-scale）
+    page.click('#btnAppear')
+    page.wait_for_timeout(150)
     page.click('button[aria-label="放大字号"]')
     page.wait_for_timeout(200)
-    z = page.evaluate("()=>document.documentElement.style.zoom")
+    z = page.evaluate("()=>document.documentElement.style.getPropertyValue('--ui-scale')")
     check("字号可放大", str(z) == "1.1", z)
     page.click('button[aria-label="缩小字号"]')
     page.wait_for_timeout(200)
-    check("字号可缩回", str(page.evaluate("()=>document.documentElement.style.zoom")) == "1")
+    check("字号可缩回", str(page.evaluate("()=>document.documentElement.style.getPropertyValue('--ui-scale')")) == "1")
+    page.click('#btnAppear')
 
     # 动态内容转义：伪造一份带 HTML 的 STATE，只重绘，不触发任何任务。
     # 注入的 img 若被当成元素插入，onerror 会置 window.__xss。

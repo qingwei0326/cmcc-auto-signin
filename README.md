@@ -85,6 +85,14 @@ python run_all.py --dry-run
 
 ## 图形控制台
 
+### 界面预览
+
+| 控制台总览（双平台隔离卡片 / 待办条 / 到账台账） | 福建活动（分类子标签页 / 每日三档 / 转盘与寻宝） |
+|:---:|:---:|
+| ![控制台总览](docs/images/dash_overview.png) | ![福建活动](docs/images/bass_activities.png) |
+| **定时任务运维（真实状态 / 8 个计划任务）** | **全局运维配置（自动策略 / 推送通道 / 邮箱 HAR）** |
+| ![定时任务](docs/images/scheduled_tasks.png) | ![设置与策略](docs/images/settings_policy.png) |
+
 ### 界面与交互
 
 | 页面 / 组件 | 内容与特性 |

@@ -185,6 +185,8 @@ POST /bass-cultivateGameServer/stage/batchFeed        ← 批量喂养（一次 
 
 每项都带 `stockEnough` / `expire` / `weigh`（权重 1/2/3 对应话费/流量/折扣）。
 
+**领奖口径（2026-11-24 用户实测修正）**：`receiveStagePrize` 每一阶都是**随机开奖**，包括一阶——传 `prizeId` 服务端也按 `weigh` 随机（当天一阶传 flow=2 仍领到 0.5 元话费券）。故脚本领奖一律无参，`prize` / `prize_prefer` 设置当前无效。六阶特殊：抽出来之后可以「换其他档位」，但该换奖动作的接口尚未抓到，暂未实现；`prize_id_for()` 仍保留正确 id 号段供将来接换奖用。
+
 ### 福袋
 
 ```
@@ -281,6 +283,29 @@ GET /bass-preferentialAreaServer/luck/qrySubscription     → 订阅状态
 - `complete:true` 表示服务端已记完成，再报也**不会**多给次数，必须跳过
 - 「请好友帮忙」是例外：`doTask` 回 `0000 成功`，但**次数不涨、`complete` 一直是
   false** —— 它确实要真人点一下才算。重复上报无害但也没用，嫌脏就加 `--skip-assist`
+
+**2026-11-23 16:20 抓包补全「请好友帮忙」真实助力链路**（此前以为无对端账号，实为搞错了接口体系）：
+
+- `GET /bass-preferentialAreaServer/luck/doTask/3/{id}` 返回的 49 位串**不是没用的码**，
+  它是助力 `encodeId`，且**有时效**（过期后 `hmxb/assist/detail` 回 `status=2 已过期`）。
+- 真正的助力走**微信小程序网关**，不是 preferentialAreaServer：
+  `POST https://wap.fj.10086.cn/weixin/wxAppletService/bass/callService`
+  Header 带 `Authorization: Bearer <小程序token>` + `Referer: https://servicewechat.com/wx7f4c967c88ffdb82/261/page-frame.html`：
+  - `serviceId=25` `{taskType:"3", encodeId:码}` → 查助力信息，回 `helpUser` + `helpText`
+  - `serviceId=28` `{taskType:"3", encodeId:码}` → **提交助力**（好友点「立即帮TA」那一下）
+    - 成功：`resp_code=0000`
+    - 重复：`resp_code=1501 您已接受过TA的邀请`
+- 活动就是「天天大转盘 / 双十二天天抽好礼」（configKey `SSETTCHLGZ`/`SSETTCHLZL`），
+  H5 与小程序是同一活动联动。规则原文：「**活动周期内，一位用户只能为同一好友助力 1 次，
+  最多可为 3 位不同好友助力**」。即日起至 2026-11-30，每号最多帮 3 个不同好友。
+- **卡点：小程序 token 无法用现有 H5 bearer 换取**。H5 `configs_fj/*.json` 的 bearer 调
+  callService 一律 `BASS-0001 token过期`；小程序 token 来自
+  `POST /weixin/wxAppletService/wx/code2session`（微信 code，一次性）或
+  `POST /bass-applet-authServer/auth/loginByHangYan`（openId+大网SSO票配套）。
+  实测 `gui_data/guandan_auth.json` 的咪咕 cat（ANDTYZsid…）换不来（回 1001）。
+  → 要自动化多号助力，需为每个号维护微信小程序 token，抓包时顺手存下或另找签发途径。
+- 抓包样本：`incoming_har/luck_1.json`（发起方 doTask/3 生成码）、
+  `incoming_har/luck_2.json`（好友方 serviceId=25 查询→28 提交）。
 - 任务**一天只算一次**，重跑 `run_luck` 不会重复薅到次数
 - `doTask` 偶尔回 `401 未登陆`（同一张 bearer 前两分钟 `index` 还是好的），
   说明它比 `index` 更早失效；遇到就整轮收手，别继续抽

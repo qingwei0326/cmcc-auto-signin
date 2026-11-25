@@ -196,7 +196,7 @@
             <span id="bFodder" class="muted" style="color:var(--warn)"></span></div>
           <div class="frow"><label>阶段喂满时</label>
             <label class="chk"><input type="checkbox" id="bAuto" autocomplete="off" onchange="pickStage('auto')">领本阶奖品后继续喂</label>
-            <select class="inp inp-sm" id="bPrize" autocomplete="off" style="display:none" title="只有一阶和六阶可以自己挑档位；二~五阶由服务端按权重随机开奖">
+            <select class="inp inp-sm" id="bPrize" autocomplete="off" style="display:none" title="每阶领奖都是随机开奖（含一阶）；六阶抽中后可换其他档位，换奖接口尚未抓到">
               <option value="fee">领话费券</option>
               <option value="flow">领流量包</option>
               <option value="discount">领折扣券</option>
@@ -409,7 +409,7 @@
               <option value="claim">领本阶奖品后继续喂</option>
               <option value="continue">放弃本阶奖品，直接升阶</option>
             </select>
-            <label for="pPrize" class="auto" title="只有一阶和六阶可以自己挑档位；二~五阶由服务端按权重随机开奖，这里选什么都不会被采用">领奖档位</label>
+            <label for="pPrize" class="auto" title="每阶领奖都是随机开奖（含一阶），这里选什么都不会影响结果；六阶抽中后可在 App 换其他档位，换奖接口尚未抓到">领奖档位（当前无效）</label>
             <select class="inp inp-sm" id="pPrize">
               <option value="fee">话费券</option>
               <option value="flow">流量包</option>

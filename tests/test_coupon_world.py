@@ -141,12 +141,13 @@ class TestPolicy(unittest.TestCase):
 
 
 class TestStagePrizeTier(unittest.TestCase):
-    """阶段奖品档位：id 号段对齐真实奖品池，只有一阶/六阶能挑。
+    """阶段奖品：id 号段对齐真实奖品池；领奖全阶随机，抽后无选档。
 
+    2026-11-24 用户口径：每阶领奖都随机开（含一阶），传 prizeId 无效；
+    六阶抽出来后可换其他档位（换奖接口未抓到，脚本暂不实现）。
     2026-11-23 只读实测 getStagePrizes：6 阶 × 3 档 = id 1~18，
     四阶 10=4元话费券/11=2GB月包/12=9.5折…六阶 16/17/18。
-    getUserStageInfo 的 stage 是 0 基（stage=1 已经是「二阶」），
-    旧实现按 (stage-1)*3+off 算，从二阶起每次都在要上一阶的奖品。
+    prize_id_for 仍保留正确号段，供将来六阶换奖接口用。
     """
 
     def test_prize_id_matches_real_pool(self):
@@ -158,22 +159,20 @@ class TestStagePrizeTier(unittest.TestCase):
         self.assertEqual(F.prize_id_for(5, "discount"), 18)
         self.assertEqual(F.prize_id_for(None, "fee"), 1)
 
-    def test_only_first_and_last_stage_choosable(self):
-        # App 上只有一阶、六阶可以自己选，二~五阶标「随机」
-        self.assertEqual(set(F.CHOOSABLE_STAGES), {0, 5})
+    def test_no_stage_is_choosable(self):
+        # 2026-11-24 口径：每阶领奖都随机，已无可传 prizeId 选档的阶段
+        self.assertEqual(set(F.CHOOSABLE_STAGES), set())
 
     def _fake_call(self, sent, stage):
         def fake(s, cfg, key, retries=1, extra=None):
             sent[key] = extra
-            if key == "stage_info":
-                return {"ok": True, "code": "0000",
-                        "data": {"stageInfo": {"stage": stage}}}
             return {"ok": True, "code": "0000",
                     "data": {"prizeDto": {"prizeName": "1GB流量月包券"}}}
         return fake
 
-    def test_random_stage_sends_no_prize_id(self):
-        for stage in (1, 2, 3, 4):     # 二阶~五阶
+    def test_every_stage_random_sends_no_prize_id(self):
+        # 全 6 阶（含一阶、六阶）一律无参随机，传 flow 也不带 prizeId
+        for stage in range(6):
             sent = {}
             with mock.patch.object(F, "call", self._fake_call(sent, stage)):
                 r, pid, name = F.receive_stage_prize(object(), {}, "flow")
@@ -182,15 +181,6 @@ class TestStagePrizeTier(unittest.TestCase):
                 self.assertIsNone(pid)
                 self.assertTrue(r["ok"])
                 self.assertEqual(name, "1GB流量月包券")
-
-    def test_choosable_stage_sends_prize_id(self):
-        for stage, pid in ((0, 2), (5, 17)):
-            sent = {}
-            with mock.patch.object(F, "call", self._fake_call(sent, stage)):
-                _r, got, _name = F.receive_stage_prize(object(), {}, "flow")
-            with self.subTest(stage=stage):
-                self.assertEqual(sent["stage_receive"], {"prizeId": pid})
-                self.assertEqual(got, pid)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,11 @@ EP = {
     "daily_receive":  "/bass-cultivateGameServer/index/dailyReceive",
     "next_receive":   "/bass-cultivateGameServer/index/getNextReceiveTask",
     "feed_reward_claim": "/bass-cultivateGameServer/index/nextReceive",
+    # 2026-11-24 18:16 抓包新发现：喂养累计的「轮次任务」（独立于每日三档 nextReceive）。
+    # 某轮 taskStatus=COMPLETED 后，doMeet 领掉本轮饲料并解锁下一轮（LOCK→UN_DO）。
+    # 老号 getMeetTask 回 1606「非新人」不适用；仅新人号（如 9243）有这条链。
+    "meet_task":      "/bass-cultivateGameServer/index/getMeetTask",
+    "do_meet":        "/bass-cultivateGameServer/index/doMeet",
     "stage_info":     "/bass-cultivateGameServer/stage/getUserStageInfo",
     "stage_prizes":   "/bass-cultivateGameServer/stage/getStagePrizes",
     "stage_receive":  "/bass-cultivateGameServer/stage/receiveStagePrize",
@@ -181,9 +186,11 @@ def _got_prize(res, name, cfg=None):
 
 # 阶段奖励每阶固定 3 档：1=话费券 2=流量券 3=折扣券
 PRIZE_KIND = {"fee": 1, "flow": 2, "discount": 3}
-# 只有一阶和六阶能自己挑档位；二~五阶由服务端按 weigh 随机开奖（App 上标「随机」），
-# 这时候传 prizeId 没有意义，照实测的无参调用走就行。stage 是 0 基，所以一阶=0、六阶=5。
-CHOOSABLE_STAGES = frozenset({0, 5})
+# 2026-11-24 用户实测口径修正：每一阶（含一阶）领奖都是随机开奖，
+# 传 prizeId 服务端也按权重随机，不支持"领奖时选档"（当天一阶传 flow=2 仍领到话费券）。
+# 六阶特殊：抽出来之后可以"换其他档位"，但那是抽后独立动作，换奖接口尚未抓到
+# （见 docs/bass.md）。当前领奖一律走无参；prize_id_for/PRIZE_KIND 保留供六阶换奖用。
+CHOOSABLE_STAGES = frozenset()   # 兼容旧引用：已无"领奖可选档"的阶段
 
 
 def prize_id_for(stage, kind):
@@ -254,6 +261,72 @@ def handle_feed_reward(s, cfg, key, res, dry_run):
             track_daily(key, feed_reward=pending, feed_reward_checked=True)
     except TimeoutError:
         print("  投喂累计奖励：另一次任务正在处理")
+
+
+def meet_state(s, cfg):
+    """查喂养轮次任务，返回 (待领轮次, 是否确认)。
+
+    仅新人号有这条链；老号 getMeetTask 回 1606「非新人」，视为无轮次、已确认。
+    待领条件：当前轮且 taskStatus=COMPLETED（喂够 needFeeds 次）且未过 expireTime。
+    """
+    r = call(s, cfg, "meet_task")
+    if not r.get("ok"):
+        code = str(r.get("code"))
+        # 1606=非新人（这条链不适用）；其余失败（含 401）交由调用方处理
+        return None, code == "1606", r
+    d = r.get("data")
+    if not isinstance(d, dict):
+        return None, True, r
+    tasks = d.get("taskDtoList") or []
+    for t in tasks:
+        if str(t.get("taskStatus") or "").upper() != "COMPLETED":
+            continue
+        if not t.get("currentTask"):
+            continue
+        expire = str(t.get("expireTime") or "")
+        if expire:
+            try:
+                if datetime.datetime.strptime(expire, "%Y-%m-%d %H:%M:%S") <= datetime.datetime.now():
+                    return None, True, r
+            except ValueError:
+                pass
+        return {"name": str(t.get("taskName") or "喂养轮次"),
+                "fodder": t.get("fodder"),
+                "id": t.get("id"),
+                "expire": expire}, True, r
+    return None, True, r
+
+
+def handle_meet(s, cfg, key, res, dry_run):
+    """喂养轮次：有 COMPLETED 轮次时 doMeet 领奖并解锁下一轮。
+
+    与投喂累计奖励同属领奖动作，串行加锁避免多进程重复领。
+    """
+    lock_path = DAILY_STATE.with_name(f"meet.{key}")
+    try:
+        with file_lock(lock_path):
+            pending, checked, probe = meet_state(s, cfg)
+            _note_token(res, probe)
+            if not checked:
+                print("  喂养轮次：暂时无法确认，跳过")
+                return
+            if pending is None:
+                return  # 无待领轮次（老号/未达标/已过期/已领完），静默
+            if dry_run:
+                print(f"  喂养轮次：{pending['name']} {pending['fodder']} 饲料待领"
+                      f"（{pending['expire']} 过期），未领")
+                return
+            pause()
+            reply = call(s, cfg, "do_meet", retries=0)
+            _note_token(res, reply)
+            if show(f"喂养轮次领奖({pending['name']})", reply):
+                nxt = ((reply.get("data") or {}).get("taskName")) if isinstance(reply.get("data"), dict) else None
+                tail = f"，解锁 {nxt}" if nxt and nxt != pending["name"] else ""
+                print(f"     领到饲料 {pending['fodder']}{tail}")
+                res["meet_received"] = pending["fodder"]
+                res["meet_round"] = pending["name"]
+    except TimeoutError:
+        print("  喂养轮次：另一次任务正在处理")
 
 
 def track_daily(key, daily_list=None, lucky=None, sign=None,
@@ -478,30 +551,23 @@ def fb_due_tasks(tasks, records, now=None, force=False):
 
 
 def _claim_label(pid) -> str:
-    """领奖那行日志的标题：能挑档位就写 id，随机阶写明是随机开。"""
-    return f"领阶段奖励(prizeId={pid})" if pid else "领阶段奖励(随机开奖)"
+    """领奖那行日志的标题：全阶随机开奖。"""
+    return "领阶段奖励(随机开奖)"
 
 
-def receive_stage_prize(s, cfg, kind):
-    """领阶段奖励；返回 (resp, prizeId, prizeName)。
+def receive_stage_prize(s, cfg, kind=None):
+    """领阶段奖励（全阶随机开奖）；返回 (resp, prizeId, prizeName)。
 
-    一阶/六阶带 prizeId 指定档位；二~五阶（或 kind=None 退回默认档时）
-    服务端随机/默认开奖，走无参调用
-    （11-19 实测无参即领默认档，成功后 feedFodders 归零、status 回到 0）。
+    2026-11-24 用户实测：每一阶都是随机开奖，传 prizeId 也按权重随机，
+    一阶传 flow=2 仍领到话费券 → 领奖一律走无参调用，kind 参数保留仅为兼容旧调用。
+    11-19 实测无参即领默认档，成功后 feedFodders 归零、status 回到 0。
+    六阶抽后可"换其他档位"，但那是独立的换奖动作且接口未抓到，不在此函数内。
     """
-    st = call(s, cfg, "stage_info")
-    raw = ((st.get("data") or {}).get("stageInfo") or {}).get("stage")
-    stage = int(raw) if raw is not None else 0
-    if kind is not None and stage in CHOOSABLE_STAGES:
-        pid = prize_id_for(stage, kind)
-        r = call(s, cfg, "stage_receive", extra={"prizeId": pid})
-    else:
-        pid = None
-        r = call(s, cfg, "stage_receive")
+    r = call(s, cfg, "stage_receive")
     name = ""
     if isinstance(r.get("data"), dict):
         name = (r["data"].get("prizeDto") or {}).get("prizeName") or ""
-    return r, pid, name
+    return r, None, name
 
 
 def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
@@ -568,17 +634,7 @@ def run_feed(s, cfg, args, res, prize_kind, key, track_daily):
                 if show(_claim_label(pid), rp):
                     _got_prize(res, pname, cfg)
                     continue
-                if pid is None:
-                    # 随机阶没有「换档位」可退，重试也是同一个请求，别刷两遍
-                    print("  -  随机阶领奖失败，停止喂养")
-                    break
-                # 带 prizeId 不被服务端接受时，退回无参默认档，至少不卡住
-                print("     -  指定档位失败，退回默认档重试")
-                pause()
-                rp2, _pid2, pname2 = receive_stage_prize(s, cfg, None)
-                if show("领阶段奖励(默认档)", rp2):
-                    _got_prize(res, pname2, cfg)
-                    continue
+                # 全阶随机、无参请求，失败重试也是同一个请求，不刷两遍
                 print("  -  领阶段奖励失败，停止喂养")
                 break
             break
@@ -723,8 +779,8 @@ def main():
                     help="补签到、领取每日三档和昨日投喂奖励，用于定时轮询")
     ap.add_argument("--delay", type=int, default=0, help="执行前随机等待上限（秒）")
     ap.add_argument("--prize", choices=list(PRIZE_KIND), default=None,
-                    help="阶段奖励档位：fee=话费券 flow=流量券 discount=折扣券"
-                         "（不传则读配置 prize_prefer，再不行默认 fee）")
+                    help="阶段奖励档位 fee/flow/discount（当前无效：每阶随机开奖，"
+                         "传了服务端也按权重随机；六阶抽后可换档但接口未抓到）")
     ap.add_argument("--auto-claim", action="store_true",
                     help="阶段将满时自动领奖并继续喂；不加则停手等人工（便于抓包）")
     ap.add_argument("--continue-stage", action="store_true",
@@ -846,7 +902,9 @@ def main():
               f"  还差 {d.get('needMoreFeeds')} 次喂食{flag}")
     pause()
     handle_feed_reward(s, cfg, key, res, args.dry_run)
-    if "feed_reward_received" in res:
+    # 喂养轮次（新人号）：达标轮次 doMeet 领奖+解锁下一轮，紧接投喂奖励之后串行处理
+    handle_meet(s, cfg, key, res, args.dry_run)
+    if "feed_reward_received" in res or "meet_received" in res:
         info = call(s, cfg, "index_info")
         data = info.get("data")
         res["fodder"] = data.get("fodderSurplus") if info["ok"] and isinstance(data, dict) else None
@@ -981,11 +1039,6 @@ def main():
             r, pid, pname = receive_stage_prize(s, cfg, prize_kind)
             if show(_claim_label(pid), r):
                 _got_prize(res, pname, cfg)
-            elif pid is not None:
-                pause()
-                r2c, _p, pname2 = receive_stage_prize(s, cfg, None)
-                if show("领阶段奖励(默认档)", r2c):
-                    _got_prize(res, pname2, cfg)
         else:
             fodders = ((stc.get("data") or {}).get("feedFodders"))
             print(f"  -  阶段未满（{fodders}），暂无可领奖励")
@@ -996,7 +1049,7 @@ def main():
             for item in r2["data"]:
                 names = "、".join(f"{x.get('prizeName')}" for x in (item.get("prizeList") or []))
                 idx = int(item.get("stage") or 1) - 1
-                mark = "可选" if idx in CHOOSABLE_STAGES else "随机"
+                mark = "随机·抽后可换" if idx == 5 else "随机"
                 print(f"     第{item.get('stage')}阶（{mark}）：{names}")
 
     # ---------- 可选：红包宝掷骰子 ----------

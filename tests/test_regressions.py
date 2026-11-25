@@ -831,9 +831,13 @@ class TestEndToEndResult(unittest.TestCase):
             "next_receive": {"taskName": "喂养累计", "taskStatus": "COMPLETED",
                              "fodder": 950, "recordId": 499520178,
                              "expireTime": "2999-01-01 00:00:00"},
+            # 老号 fj1 无喂养轮次链，getMeetTask 回 1606「非新人」
+            "meet_task": None,
         }
 
         def fake_call(s, cfg, key, retries=1, extra=None):
+            if key == "meet_task":
+                return {"ok": False, "code": "1606", "msg": "非新人", "data": None}
             return {"ok": True, "code": "0000", "msg": "", "data": data[key]}
 
         buf = io.StringIO()
@@ -2600,6 +2604,75 @@ class TestFeedReward(unittest.TestCase):
         acc = {"feed_reward": {"fodder": 950}}
         FJ._apply_daily(acc, None, None, None, datetime(2026, 11, 20, 20, 0))
         self.assertEqual(acc["feed_reward"]["fodder"], 950)
+
+
+class TestFeedMeet(unittest.TestCase):
+    """喂养轮次链：COMPLETED 轮次 doMeet 领奖+解锁，老号不误碰。"""
+
+    def _meet(self, tasks):
+        import cmcc_fj as FJ
+        return {"ok": True, "code": "0000", "data": {"taskDtoList": tasks}}
+
+    def test_completed_current_round_is_claimable(self):
+        import cmcc_fj as FJ
+        tasks = [{"id": 11, "taskName": "第二轮", "taskStatus": "COMPLETED",
+                  "currentTask": True, "fodder": 550,
+                  "expireTime": "2999-01-01 00:00:00"},
+                 {"id": 12, "taskName": "第三轮", "taskStatus": "LOCK",
+                  "currentTask": False, "fodder": 700, "expireTime": ""}]
+        with mock.patch.object(FJ, "call", return_value=self._meet(tasks)):
+            pending, checked, _ = FJ.meet_state(None, {})
+        self.assertTrue(checked)
+        self.assertEqual(pending["fodder"], 550)
+        self.assertEqual(pending["name"], "第二轮")
+
+    def test_non_current_and_expired_not_claimable(self):
+        import cmcc_fj as FJ
+        tasks = [{"id": 10, "taskName": "第一轮", "taskStatus": "COMPLETED",
+                  "currentTask": False, "fodder": 450,
+                  "expireTime": "2999-01-01 00:00:00"}]
+        with mock.patch.object(FJ, "call", return_value=self._meet(tasks)):
+            self.assertEqual(FJ.meet_state(None, {})[:2], (None, True))
+        expired = [{"id": 11, "taskName": "第二轮", "taskStatus": "COMPLETED",
+                    "currentTask": True, "fodder": 550,
+                    "expireTime": "2020-01-01 00:00:00"}]
+        with mock.patch.object(FJ, "call", return_value=self._meet(expired)):
+            self.assertEqual(FJ.meet_state(None, {})[:2], (None, True))
+
+    def test_non_new_account_1606_is_not_claimed(self):
+        import cmcc_fj as FJ
+        with mock.patch.object(FJ, "call", return_value={
+                "ok": False, "code": "1606", "msg": "非新人", "data": None}):
+            self.assertEqual(FJ.meet_state(None, {})[:2], (None, True))
+
+    def test_handle_meet_claims_and_records(self):
+        import cmcc_fj as FJ
+        tasks = [{"id": 11, "taskName": "第二轮", "taskStatus": "COMPLETED",
+                  "currentTask": True, "fodder": 550,
+                  "expireTime": "2999-01-01 00:00:00"}]
+        success = {"ok": True, "code": "0000", "data": {"taskName": "第三轮"}}
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            with mock.patch.object(FJ, "DAILY_STATE", Path(tmp) / "daily.json"), \
+                 mock.patch.object(FJ, "pause", lambda *a, **k: None), \
+                 mock.patch.object(FJ, "call", side_effect=[self._meet(tasks), success]) as call:
+                res = {}
+                FJ.handle_meet(None, {}, "test", res, dry_run=False)
+                self.assertEqual(res["meet_received"], 550)
+                self.assertEqual(res["meet_round"], "第二轮")
+                self.assertEqual(call.call_args_list[-1].args[2], "do_meet")
+
+    def test_handle_meet_dry_run_does_not_claim(self):
+        import cmcc_fj as FJ
+        tasks = [{"id": 11, "taskName": "第二轮", "taskStatus": "COMPLETED",
+                  "currentTask": True, "fodder": 550,
+                  "expireTime": "2999-01-01 00:00:00"}]
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            with mock.patch.object(FJ, "DAILY_STATE", Path(tmp) / "daily.json"), \
+                 mock.patch.object(FJ, "call", return_value=self._meet(tasks)) as call:
+                res = {}
+                FJ.handle_meet(None, {}, "test", res, dry_run=True)
+                self.assertNotIn("meet_received", res)
+                call.assert_called_once()  # 只查状态，未调 do_meet
 
 
 class TestRotatingLogArchive(unittest.TestCase):

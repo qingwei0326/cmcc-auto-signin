@@ -14,6 +14,12 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('Crypto')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# 本机 site-packages 里装了 numpy / Pillow（OI 逆向脚本与截图工具留的），
+# PyInstaller 会把它们连带打进 exe，体积从 20MB 涨到 40MB。项目本身和
+# webview 都不 import 它们（已核 xref：无任何上游引用），直接排掉。
+# 以后若真要用图像/数值库，先在这里删掉对应名字，否则 exe 里会「缺模块」。
+excludes = ['numpy', 'PIL', 'scipy', 'pandas', 'matplotlib']
+
 
 a = Analysis(
     ['app_desktop.py'],
@@ -24,7 +30,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
     optimize=0,
 )

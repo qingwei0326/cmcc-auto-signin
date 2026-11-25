@@ -22,6 +22,27 @@ def _no_sleep():
     return mock.patch.object(L.time, "sleep", lambda *_: None)
 
 
+class PhonePickingTest(unittest.TestCase):
+    """台账里的号码口径要统一成完整号。
+
+    2026-11-25 实测：`luck/index` 回的 `userPhone` 是 `138****1234`（脱敏），
+    configs_fj 里是完整号。早先优先取接口值，导致同一账号在
+    awards.json 里出现脱敏号与完整号两条，按号统计会拆开。
+    """
+
+    def test_prefers_full_config_phone_over_masked_api(self):
+        self.assertEqual(L.pick_phone("13800001234", "138****1234"), "13800001234")
+
+    def test_uses_api_when_config_has_no_phone(self):
+        self.assertEqual(L.pick_phone("", "13800001234"), "13800001234")
+
+    def test_all_masked_yields_blank(self):
+        self.assertEqual(L.pick_phone("138****1234", "139****5678"), "")
+
+    def test_ignores_blank_candidates(self):
+        self.assertEqual(L.pick_phone(None, "  ", "13800001234"), "13800001234")
+
+
 class DoTasksTest(unittest.TestCase):
     def test_reports_every_unfinished_task(self):
         tasks = [

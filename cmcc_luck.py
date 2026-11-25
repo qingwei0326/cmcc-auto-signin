@@ -206,6 +206,21 @@ def do_tasks(get, visit, tasks, skip_assist=False):
 
 # ---------------------------------------------------------------- 单账号流程
 
+def pick_phone(*cands):
+    """挑一个**完整**号码，全部脱敏时返回空串。
+
+    大转盘 `index` 返回的 `userPhone` 是脱敏的（形如 `138****1234`），而
+    `configs_fj/*.json` 里的 `phone` 是完整号。早先这里优先取接口值，
+    结果同一账号在到账台账里出现脱敏号与完整号两种口径，
+    按账号统计会被拆成两个号。号码只用于显示/记账，取完整号更稳妥。
+    """
+    for c in cands:
+        c = str(c or "").strip()
+        if c and "*" not in c:
+            return c
+    return ""
+
+
 def run_one(tag, phone_hint, tok, args):
     s = requests.Session()
     s.trust_env = False
@@ -240,7 +255,7 @@ def run_one(tag, phone_hint, tok, args):
         return {"tag": tag, "skip": True}
 
     d = idx.get("data") or {}
-    phone = d.get("userPhone") or phone_hint or ""
+    phone = pick_phone(phone_hint, d.get("userPhone")) or phone_hint or d.get("userPhone") or ""
     surplus = int(d.get("surplusLuckCount") or 0)
     tasks = d.get("taskList") or []
     print(f"  账号 {mask_phone(phone) or '(未返回)'}   剩余次数 {surplus}")

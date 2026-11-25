@@ -744,7 +744,7 @@ python probe_token_life.py --report
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests -v      # 416 个用例，覆盖全部业务、安全与界面
+python -m unittest discover -s tests -v      # 428 个用例，覆盖全部业务、安全与界面
 python tests/browser_smoke.py                # 可选：真实浏览器冒烟（需 playwright）
 ```
 

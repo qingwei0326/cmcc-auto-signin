@@ -9,11 +9,19 @@
 
 ---
 
+**目录**
+
+- 日常用：[快速开始](#快速开始) · [图形控制台](#图形控制台) · [定时任务](#定时任务) · [功能详解](#功能详解)
+- 出问题：[Token 获取与刷新](#token-获取与刷新) · [失败推送](#失败推送) · [已知限制](#已知限制)
+- 进阶：[接口文档](#接口文档) · [数据与统计](#数据与统计) · [开发与测试](#开发与测试) · [目录结构](#目录结构)
+
+---
+
 ## 功能一览
 
 | 平台 | 域名 | 管什么 | 凭证 | 寿命 |
 |---|---|---|---|---|
-| **qwhdhub** | `wx.10086.cn` | 全国签到、月签、群签、任务、秒杀 | `app_token` = `JSESSIONID=…; UID=…; ticketID=…` | 约 30 分钟（分钟级实测） |
+| **qwhdhub** | `wx.10086.cn` | 全国签到、月签、群签、任务、秒杀 | `app_token` = `JSESSIONID=…; UID=…; ticketID=…` | 随机（10 分钟 ~ 11 小时不等，分钟级实测） |
 | **BASS** | `wap.fj.10086.cn` | 福建养成游戏、流量银行、消消乐、优惠抽奖 | `Bearer token` = 36 位 UUID | **≥20 小时**（实测仍存活） |
 
 **已覆盖的活动**
@@ -27,12 +35,17 @@
 | 福袋 | 每累计喂食 300 次触发 | 随机 |
 | 优惠抽奖 | 转盘，刷任务换次数 | 流量券 / 话费券 |
 | 一起消消乐 | 每次读取真实关卡再上报；自动做金币任务换体力 | 每天约 5 点体力 + 金币兑换 |
+| 环闽寻宝记 | 投骰子走棋盘 + 藏宝阁开箱 + 多号互助力换骰子 | 流量包 / 话费券 |
+| 拓展活动三合一 | 周六游戏中心 / 追剧领福利 / 全民掼蛋挑战赛 | 游戏币抽奖 / 流量券 |
+| 手气红包拆包 | `cmcc_redpacket.py`：查分享码 + 小程序渠道多号互拆 | 流量日包（需微信抓一次小程序包） |
 
 > 日常只需要双击 `签到领福利.exe`，其余内容都是排查和进阶用。
 
 ---
 
 ## 快速开始
+
+> **开箱即用（推荐）**：普通用户可直接前往仓库右侧 **Releases** 下载最新的 `cmcc-auto-signin-v*-win64.zip`，解压后双击 `签到领福利.exe` 即可使用（无需安装 Python；仅注册 Windows 计划任务时需安装 Python 3.9+）。
 
 > **先说清楚一件事**：双击 `签到领福利.exe` 在界面里点按钮时，任务脚本由 exe 自带的运行时解释执行
 > （`--run-script`），**不需要目标机器装 Python**，只需确保 exe 与 `cmcc_*.py`、`static/` 在同一目录。
@@ -129,7 +142,7 @@ dist\签到领福利.exe → 复制到项目根目录
 - `static/` 目录必须完整在位：前端采用纯原生无构建的现代化分层架构（`index.html`、`app.css`、`app.js` 及 `js/core.js`、`js/dash.js`、`js/activities.js`、`js/ops.js`），由 `签到领福利.spec` 的 `datas` 统一打包进 exe
 - 打包配置以 **spec 为唯一来源**：`build_exe.bat` 直接构建 spec。若改回用命令行参数构建，
   PyInstaller 会按参数重新生成 spec，把手工维护的 `datas`/图标等配置覆盖掉
-- 成功标志是日志末尾出现 `Build complete!`，exe 约 33MB，产物在 `dist\签到领福利.exe`
+- 成功标志是日志末尾出现 `Build complete!`，exe 约 24MB，产物在 `dist\签到领福利.exe`
 
 窗口起不来时程序会自动回退浏览器模式，启动过程记录在 `gui_data/startup.log`。
 
@@ -155,8 +168,8 @@ dist\签到领福利.exe → 复制到项目根目录
 | `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**（长期重复） | `run_token_life.bat` | 探测 app_token 精确寿命（分钟级），确认失效后自动停手 |
 | `MobileMailWatch` | 每天 **00:00 起每 10 分钟**（长期重复） | `run_mail_watch.bat` | 凭证失效且当日未完成时查收 HAR 邮件并自动导入与补跑 |
 
-> **每天只需要抓一次包**：qwhdhub 的 `app_token` 存活只有 1~2 小时（实测 22:52 导入的票
-> 23:58 仍有效、00:21 还能签到，01:05 已失效）。所以签到挪到 11:45，与 11:54 会话刷新、
+> **每天只需要抓一次包**：qwhdhub 的 `app_token` 寿命为服务端单次签发的随机属性（实测 10 分钟 ~ 11 小时不等）。
+> 所以签到挪到 11:45，与 11:54 会话刷新、
 > 11:55 秒杀、12:05 拓展活动共用同一张票。**11:30~11:40 抓包 → 立刻发到监控邮箱**，
 > `MobileMailWatch` 每 10 分钟扫一次并自动导入，导入成功后还会自动补跑一次签到。
 > 票据寿命从你在 App 里抓的那一刻算，攒着不发等于白抓。
@@ -189,7 +202,7 @@ dist\签到领福利.exe → 复制到项目根目录
 | `jwtToken` + 真实 app_token | **SUCCESS** |
 
 服务端真正校验的是 **`token`（App 票据）**，`jwtToken` 单独用通不过。
-也就是说**登录终究依赖 app_token（约 30 分钟寿命）**，定时重跑只能延后失效、不能真正续命。
+也就是说**登录终究依赖 app_token（单次签发随机寿命，10 分钟 ~ 11 小时不等）**，定时重跑只能延后失效、不能真正续命。
 
 保活任务的作用因此变成：**在票据有效期内尽量多跑，失败就说明该重新抓包了**，
 同时把每次尝试的结果写进 `logs/keepalive.log`，方便统计票据的真实寿命。
@@ -247,7 +260,7 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 | **11:54** | **13:54** | ✅ |
 
 **必须临近 12:00 重新签到一次**（计划任务 `MobileSessionRefresh` 11:54 干这个），
-否则 12 点时会话已死。而那次签到**仍需要有效 app_token**（票据约 30~46 分钟寿命），
+否则 12 点时会话已死。而那次签到**仍需要有效 app_token**（随机寿命 10 分钟 ~ 11 小时不等），
 若已过期就还得抓一次包 —— 这是目前唯一无法自动化的环节。
 
 服务器时间比本机快约 1 秒，脚本用 `markSeckill/sysTime` 校准后**提前 0.4 秒**出手；
@@ -260,7 +273,7 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 **启动时拿不到会话不再直接退出**：脚本每 15 秒重试一次，直到 `11:59:50 + 60 秒` 才放弃，
 而且**每轮都重读配置文件** —— 等待期间导入的新 HAR 会被下一轮自动识别，不用重启任务。
 
-> 限制：真正的开抢时刻尚未实测（每天只有 12:00 一次机会）；
+> 限制：已实测 12:00 开抢中奖（如 2 元话费券），但每天只有 12:00 ~ 13:00 一次机会，且高峰期会触发瞬时限流；
 > 资格要求当日已签到（脚本会自动补签）；库存通常只有 1 份，抢不抢得到看手速与运气；
 > **会话 2 小时硬过期**，所以必须靠 11:54 那次签到建立新会话，
 > 而那次签到仍需有效 app_token —— 票据过期时只能重新抓包。
@@ -312,9 +325,9 @@ App 首页那个图标点进去就是它）。每天一次，完成给 **500 饲
 ### 喂养与阶段
 
 `GET /stage/batchFeed`：一次消耗 250 饲料、算 5 次喂食、阶段进度 +250。属游戏内正常消耗。
-阶段将满时会自动停手（避免错过领奖），加 `--auto-claim` 可自动领奖续喂。
+阶段将满时会自动停手（避免错过领奖），加 `--auto-claim` 可自动领奖续喂；同时已接入 `doMeet` 轮次解锁（当前轮喂够次数后自动领本轮饲料并解锁下一轮，老号返回 1606「非新人」自动跳过）。
 
-**自动策略（设一次，长期生效）**：控制台「福建活动 → 自动策略」面板保存一次即可，
+**自动策略（设一次，长期生效）**：控制台「设置 → 自动策略」面板保存一次即可，
 存在 `gui_data/policy.json`，由每小时那次 `MobileDailyReward` 读取执行：
 
 | 字段 | 含义 |
@@ -413,6 +426,21 @@ GET /bass-preferentialAreaServer/luck/join               → 抽奖
 `complete:true` 的任务直接跳过——服务端已经记过账，再报一次也不会多给。
 这些任务一天只算一次，重跑不会重复薅。
 
+**手气红包：抽中 ≠ 到账。** 手气红包是「转赠红包」，转盘抽中后只是待分享状态，
+必须当日分享给好友、好友当日拆包，双方才各得同等面值奖励（每号每期只能帮拆 1 次）。
+所以上面抽奖把「手气红包」记进到账台账，其实只代表抽中。
+
+`cmcc_redpacket.py` 把拆包这段做成自动化，但有个绕不开的前提：
+
+> **多账号互开流量手气红包时，每个「拆包号」都得先用微信打开一次活动小程序并抓一次包**
+> （ProxyPin 抓 `wxAppletService/wx/code2session` 那次即可），把 HAR 喂给脚本。
+> 拆包接口只认**小程序渠道签发**的 bass token；APP token 换任何 Referer 都进不去
+> （实测 `BASS-0001`）。发红包号用 APP token 查分享码即可，那个现成取号脚本能刷。
+
+分享码 `encodeJoinId` 每次查都重新签发、值都不同，必须现查现用。脚本自动按渠道从 HAR 分开两类 token，
+拆包默认 dry-run，真拆要 `--go`，会跳过自己发的包、成功后即停。
+接口细节（请求体、失败码、实测案例）见 [docs/bass.md](docs/bass.md#手气红包拆包2026-11-26-抓包实测脚本-cmcc_redpacketpy)。
+
 ### 环闽寻宝记（`cmcc_xunbao.py`）
 
 活动页 `https://wap.fj.10086.cn/bass-activityH5/pages/nationalDay2026/index`，
@@ -436,8 +464,9 @@ prize/list       prize/claim     assist/create  assist/detail  assist/do
 
 程序只做「投掉现有骰子 + 领待领取奖品 + 到终点开宝箱」，
 `--tasks` 只上报「参与天天大转盘」这类本程序真的做过的跳转任务；
-**好友助力和打开消息提醒一律不代报**（`SKIP_TASKS`），要助力只能
-`--invite` 生成链接发给真人。
+**打开消息提醒和空报好友助力一律不代报**（`SKIP_TASKS`）；多账号场景已支持真实接口互点助力
+（`--mutual-assist`，调用 `assist/create` + `assist/do`，每号每天限助他人 1 次且同对号码每月限 1 次），
+并已接入 `run_all` 一键流程（`--xunbao-mutual`，默认开）；额外真人助力可用 `--invite` 生成链接发给朋友。
 
 助力还有一条服务端限制：**同一对号码每月只能互相助力一次**，
 重复会回 `status=8「本月已助力过该发起者」`（实测两个号互相帮过之后就再也点不动，
@@ -447,6 +476,7 @@ prize/list       prize/claim     assist/create  assist/detail  assist/do
 python cmcc_xunbao.py --dry-run        # 只查进度/骰子/任务/奖品
 python cmcc_xunbao.py                  # 投掉现有骰子
 python cmcc_xunbao.py --key fj2 --tasks  # 顺手上报大转盘任务换骰子
+python cmcc_xunbao.py --mutual-assist   # 多号真实互点助力换骰子
 python cmcc_xunbao.py --key fj1 --invite # 只生成好友助力链接
 ```
 
@@ -479,7 +509,7 @@ python cmcc_xunbao.py --key fj1 --invite # 只生成好友助力链接
 
 > **App 内切号会让另一个号的 app_token 失效**，两个号尽量分设备登录。
 
-**关于抓包频率**：`app_token` 只有约 30 分钟寿命，且**只靠它才能登录**——
+**关于抓包频率**：`app_token` 为服务端单次签发的随机寿命（10 分钟 ~ 11 小时不等），且**只靠它才能登录**——
 `jwtToken` 单独用服务端不认（详见上面「会话保活」那节的对照实验）。
 所以 qwhdhub 需要定期重新抓包。保活任务会在票据有效期内不断尝试，
 失败即代表该抓包了，结果记在 `logs/keepalive.log`。
@@ -526,6 +556,7 @@ python pull_token_phone.py --save     # Termux
 ├── cmcc_fj.py              BASS 签到 + 喂养 + 每日奖励 + 流量银行 + 福袋
 ├── cmcc_xiaoxiaole.py      消消乐
 ├── cmcc_luck.py            优惠专区转盘抽奖（加次数任务 + 抽完次数）
+├── cmcc_redpacket.py       优惠专区手气红包查分享码与小程序渠道拆包
 ├── cmcc_xunbao.py          环闽寻宝记（投骰子、开宝箱、奖品领取）
 ├── cmcc_seckill.py         签到有礼每周秒杀（12:00 抢话费券）
 ├── cmcc_wed.py             周三充值日（拼图任务、抽奖、集齐领券）
@@ -568,6 +599,8 @@ python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks    # 流量银行任�
 python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks --fb-all  # 忽略周期强制尝试
 python cmcc_luck.py --key fj2 --dry-run                      # 抽奖：只看次数
 python cmcc_luck.py --key fj2 --skip-assist                  # 刷任务但跳过「请好友帮忙」
+python cmcc_redpacket.py --mine --har 我的APP包.har         # 列我抽到的手气红包+实时分享码
+python cmcc_redpacket.py --har 拆包号的小程序包.har --go    # 真拆别人的红包（不可逆）
 python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5
 python probe_token_life.py --report                    # 看 app_token 寿命结论
 python probe_token_life.py --once                      # 手动探一轮
@@ -613,7 +646,8 @@ python probe_token_life.py --report
 各活动的端点、字段含义与踩过的坑都整理在 [`docs/`](docs/)：
 
 - [docs/qwhdhub.md](docs/qwhdhub.md) —— 全国签到平台的端点与凭证获取
-- [docs/bass.md](docs/bass.md) —— 福建站的养成游戏、流量银行、抽奖、消消乐
+- [docs/bass.md](docs/bass.md) —— 福建站的养成游戏、流量银行、抽奖、消消乐、
+  手气红包拆包（含 APP / 小程序两套 token 的分工和实测失败码）
 - [docs/wedrecharge.md](docs/wedrecharge.md) —— 周三充值日（独立活动，含服务器时间戳）
 
 想适配别的省份或加新活动，从这几份文档入手会快很多。
@@ -642,7 +676,7 @@ python probe_token_life.py --report
 
 ### 今日战报
 
-每天跑完且**没出错**时，会自动推一条「今日战报」：当天到手的流量/券按账号分组，
+每天有真实收获或跑完非只读任务时，会自动推一条「今日战报」：当天到手的流量/券按账号分组，
 带每号小计和总计（流量 GB、话费元）。同一天只推一条（20 小时内不重复），
 所以每小时轮询也不会刷屏。
 
@@ -708,7 +742,7 @@ python probe_token_life.py --report
 
 ## 已知限制
 
-- qwhdhub 的 `app_token` 约 30 分钟寿命，**只靠它才能登录**（`jwtToken` 单独用服务端不认，已实测）；
+- qwhdhub 的 `app_token` 寿命为服务端单次签发随机属性（10 分钟 ~ 11 小时不等），**只靠它才能登录**（`jwtToken` 单独用服务端不认，已实测）；
   所以 qwhdhub 仍需定期抓包，保活任务只能延后失效、不能续命
 - **app_token 实质是中国移动 App 的主站会话 cookie**（HAR 里格式与 App Cookie 完全一致）：
   App 会话一过期，qwhdhub 票据同时作废，两者寿命是同一条曲线
@@ -733,7 +767,7 @@ python probe_token_life.py --report
   同一次中多张相同奖品也逐张记账，不会被去重吞掉
 - **周三充值日的抽奖与领券已实现**（`cmcc_wed.py`），但端点来自公开实现而非本地抓包，
   尚未用有效票据实测；任务类只做查询/浏览类，**邀请助力与真实充值一律不代做**
-- **秒杀的真正开抢时刻尚未实测**：每天只有 12:00 ~ 13:00 一次机会，
+- **秒杀 12:00 开抢已实测中奖**（如 2 元话费券），但每天仅 12:00 ~ 13:00 一场且高峰限流严重，
   库存通常只有 1 份，抢不抢得到看运气
 - qwhdhub 签到**必须**有有效 app_token；秒杀虽可用已保存的会话 cookie 兜底，
   但会话本身也是靠签到时建立的，app_token 全断后仍需重新抓包
@@ -744,7 +778,7 @@ python probe_token_life.py --report
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests -v      # 428 个用例，覆盖全部业务、安全与界面
+python -m unittest discover -s tests -v      # 435 个用例，覆盖全部业务、安全与界面
 python tests/browser_smoke.py                # 可选：真实浏览器冒烟（需 playwright）
 ```
 

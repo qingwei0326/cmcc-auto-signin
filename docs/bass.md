@@ -15,6 +15,9 @@
   用同一个 token 都能调通
 - 例外：`luck/index` 的请求头 Bearer 只能调 `luck/index` 本身，调其他接口一律 `401 未登陆`；
   业务接口要用 `loginByHangYan` 返回的那个 token
+- **2026-11-26 补充**：上面两个其实是**不同渠道签发的 token**（APP vs 微信小程序），
+  不是同一把钥匙权限不同。详见下面「优惠专区抽奖 → 手气红包拆包」段的对照表——
+  拿分享码用 APP token、拆包只能用小程序 token，不可互换。
 
 ### 换票接口（实测可用，但依赖已失效的上游 token）
 
@@ -299,11 +302,15 @@ GET /bass-preferentialAreaServer/luck/qrySubscription     → 订阅状态
   H5 与小程序是同一活动联动。规则原文：「**活动周期内，一位用户只能为同一好友助力 1 次，
   最多可为 3 位不同好友助力**」。即日起至 2026-11-30，每号最多帮 3 个不同好友。
 - **卡点：小程序 token 无法用现有 H5 bearer 换取**。H5 `configs_fj/*.json` 的 bearer 调
-  callService 一律 `BASS-0001 token过期`；小程序 token 来自
-  `POST /weixin/wxAppletService/wx/code2session`（微信 code，一次性）或
-  `POST /bass-applet-authServer/auth/loginByHangYan`（openId+大网SSO票配套）。
+  callService 一律 `BASS-0001 token过期`。两类 bass token 签发入口不同、各进各的门
+  （2026-11-26 实测，详见下面「手气红包拆包」段）：
+  - **小程序 token** ← `POST /weixin/wxAppletService/wx/code2session`（微信 code，一次性），
+    用于 `callService` 的 serviceId 助力/查红包/拆包；
+  - **APP token** ← `POST /bass-applet-authServer/auth/loginByHangYan`（openId+大网SSO票配套），
+    用于 `bass-preferentialAreaServer/*`（含 `getUserLuckRecord`）。
+  两者虽都是 UUID 格式的 bass token，但**不可互换**；换 Referer 也绕不过去。
   实测 `gui_data/guandan_auth.json` 的咪咕 cat（ANDTYZsid…）换不来（回 1001）。
-  → 要自动化多号助力，需为每个号维护微信小程序 token，抓包时顺手存下或另找签发途径。
+  → 要自动化多号助力/拆红包，需为每个**执行号**在微信里打开一次活动小程序、抓一次包拿它的小程序 token。
 - 抓包样本：`incoming_har/luck_1.json`（发起方 doTask/3 生成码）、
   `incoming_har/luck_2.json`（好友方 serviceId=25 查询→28 提交）。
 - 任务**一天只算一次**，重跑 `run_luck` 不会重复薅到次数
@@ -311,6 +318,49 @@ GET /bass-preferentialAreaServer/luck/qrySubscription     → 订阅状态
   说明它比 `index` 更早失效；遇到就整轮收手，别继续抽
 - 之前 `run_all.run_luck` 写死 `--no-tasks`（README 也写着"不替人做加次数任务"），
   等于每天白扔 2 次抽奖机会。现在由策略项 `luck_tasks` 控制，默认开
+
+### 手气红包拆包（2026-11-26 抓包实测，脚本 `cmcc_redpacket.py`）
+
+**先纠正一个口径**：转盘 `join` 抽中手气红包（`prizeType=2`）**不等于到账**。
+规则原文（`configKey=SSETTCHLGZ`）：手气红包是「转赠红包」，抽中后必须**当日分享给好友 +
+好友当日拆包**，用户和好友才各得同等面值奖励；一个用户一个活动周期只能协助拆 1 次，
+分享和拆包均限当日。所以 `cmcc_luck.py` 把抽中记进「到账台账」只是**抽中**。
+
+拆包链路跨两套入口，**缺一不可**：
+
+```
+# ① APP 侧：查我的中奖记录，拿手气红包的分享码（发红包号 APP token）
+POST https://wap.fj.10086.cn/bass-preferentialAreaServer/luck/getUserLuckRecord
+     Referer: https://3998516324156551.h5app.10086.cn/3998516324156551/1.0
+     body {appId:26, timestamp:ms, pageNum, pageSize, queryMonth, queryYear}
+     → data.list[] 里手气红包条目带 encodeJoinId（分享码）+ prizeDto + expire + luckTime
+
+# ② 小程序侧：查红包详情（只读）/ 拆包（不可逆）——拆包号小程序 token
+POST https://wap.fj.10086.cn/weixin/wxAppletService/bass/callService?math=<随机>
+     Referer: https://servicewechat.com/wx7f4c967c88ffdb82/262/page-frame.html
+     body {serviceId:26, params:{encodeId}}  → helpUser（发红包的人）+ prizeDto（只读）
+     body {serviceId:30, params:{encodeId}}  → 拆包，成功后 data.prizeName = 实际到手奖品
+     serviceId=22 {appId:8,timestamp}        → userPhone 判拆包号归属
+```
+
+**实测要点**
+
+- `callService` 的 `serviceId=26/30` **只认小程序 token**。用活的 APP token（9243，
+  APP 侧 `code=0000`）分别带 servicewechat / h5app / 无 Referer 调，全部回
+  `BASS-0001 token过期`；反之小程序 token 调 `getUserLuckRecord` 回 `401 未登陆`。
+  **没有绕开办法**——多号互开必须给每个拆包号抓一次小程序包。
+- `encodeJoinId` **每次查询服务端都重新签发、值都不同**（同一条记录连查两次得到不同码），
+  不能缓存，必须现查现用；用它查详情/拆包都有效。
+- `serviceId=26` 的 `helpUser` 是**发红包的人**（不是查询者）。自己拆自己的回
+  `1500 不能接受自己的邀请哦~`，所以拆包必须用**另一个号**的小程序 token。
+- 拆包失败码：`1410 您来晚了，该红包已被其他人拆开`、`1510 您本月已拆过红包`、
+  `1500` 自己拆自己、`1600` 次数用尽——都是硬停信号，继续试别包也白费名额。
+- 2026-11-26 真拆验证：4167 的小程序 token 拆 3239 发的包 → `0000`，到手
+  「1GB流量日包」（prizeId=53，有效期 7 天）。发红包方按规则也得同等面值（服务端发放，
+  程序侧观测不到）。
+- 抓包样本（均在微信接收目录 `D:/wechat/xwechat_files/wxid_r406l4jfoqgc22_e498/msg/file/2026-11/`）：
+  `ProxyPin11-26_19_16_01.har`（小程序查/拆包）、`ProxyPin11-26_19_22_39(1).har`
+  （APP 中奖记录+分享码）、`ProxyPin11-26_19_29_48.har`（APP token）。
 
 ---
 

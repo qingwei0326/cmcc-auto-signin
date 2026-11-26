@@ -1,0 +1,132 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布标签名（例如 v1.1），留空则使用当前 ref 名"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release-win64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runtime and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pywebview pyinstaller
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build desktop executable
+        run: |
+          python -m PyInstaller --noconfirm --clean 签到领福利.spec
+          if (-not (Test-Path "dist/签到领福利.exe")) {
+            throw "Build failed: dist/签到领福利.exe not found"
+          }
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          $tag = "${{ github.event.inputs.tag }}".Trim()
+          if (-not $tag) {
+            $tag = "${{ github.ref_name }}"
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Package portable win64 archive
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $stageRoot = Join-Path $env:RUNNER_TEMP "cmcc-stage"
+          $pkgDir = Join-Path $stageRoot "cmcc-auto-signin"
+          if (Test-Path $stageRoot) { Remove-Item -Recurse -Force $stageRoot }
+          New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
+
+          # 1. 桌面端可执行文件
+          Copy-Item "dist/签到领福利.exe" -Destination $pkgDir
+
+          # 2. 运行时白名单脚本（绝对排除 configs/、gui_data/、logs/、tests/ 等）
+          $pyAllow = @(
+            "app_desktop.py", "common.py", "dashboard.py", "disk_imports.py",
+            "har_import.py", "mail_watch.py", "probe_fj.py", "probe_token_life.py",
+            "pull_token_phone.py", "run_all.py", "run_hidden.py"
+          )
+          foreach ($f in $pyAllow) {
+            if (Test-Path $f) { Copy-Item $f -Destination $pkgDir }
+          }
+          Get-ChildItem -Path . -Filter "cmcc_*.py" -File | ForEach-Object {
+            Copy-Item $_.FullName -Destination $pkgDir
+          }
+
+          # 3. 辅助脚本、批处理、配置模板与说明文档
+          $otherFiles = @(
+            "pull_token_iphone.js", "config.example.json", "config_fj.example.json",
+            "requirements.txt", "app.ico", "README.md", "LICENSE"
+          )
+          foreach ($f in $otherFiles) {
+            if (Test-Path $f) { Copy-Item $f -Destination $pkgDir }
+          }
+          Get-ChildItem -Path . -Filter "run_*.bat" -File | ForEach-Object {
+            Copy-Item $_.FullName -Destination $pkgDir
+          }
+
+          # 4. 前端静态资源与接口文档
+          Copy-Item "static" -Destination (Join-Path $pkgDir "static") -Recurse
+          if (Test-Path "docs") {
+            $docsDest = Join-Path $pkgDir "docs"
+            New-Item -ItemType Directory -Path $docsDest -Force | Out-Null
+            Get-ChildItem -Path "docs" -Filter "*.md" -File | ForEach-Object {
+              Copy-Item $_.FullName -Destination $docsDest
+            }
+            if (Test-Path "docs/images") {
+              $imgDest = Join-Path $docsDest "images"
+              New-Item -ItemType Directory -Path $imgDest -Force | Out-Null
+              Get-ChildItem -Path "docs/images" -Filter "*.png" -File | ForEach-Object {
+                Copy-Item $_.FullName -Destination $imgDest
+              }
+            }
+          }
+
+          # 5. 生成便携压缩包与校验文件
+          $zipName = "cmcc-auto-signin-$tag-win64.zip"
+          Compress-Archive -Path $pkgDir -DestinationPath $zipName -Force
+
+          $zipHash = (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLower()
+          $exeHash = (Get-FileHash "dist/签到领福利.exe" -Algorithm SHA256).Hash.ToLower()
+          @(
+            "$zipHash  $zipName"
+            "$exeHash  签到领福利.exe"
+          ) | Out-File -FilePath "SHA256SUMS.txt" -Encoding utf8
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            ### 使用说明（Windows 便携版）
+            - 下载并解压 `cmcc-auto-signin-${{ steps.meta.outputs.tag }}-win64.zip` 后，直接双击 **`签到领福利.exe`** 即可启动控制台（**无需安装 Python**；仅在配置 Windows 计划任务 `run_*.bat` 时需要安装 Python 3.9+）。
+            - **切勿单独把 `签到领福利.exe` 移出解压目录**：它通过 `--run-script` 执行同目录下的 `cmcc_*.py` 任务脚本，保持完整目录结构才能正常运行。
+            - PyInstaller 打包的可执行文件偶发杀毒软件误报；如介意，可直接从本仓库下载源码并运行 `run_gui.bat`。
+          files: |
+            cmcc-auto-signin-*-win64.zip
+            SHA256SUMS.txt

@@ -32,14 +32,52 @@ def _check_write(path):
             raise PermissionError(f"测试禁止写入项目数据：{candidate}")
 
 
+# 审计事件参数里 dir_fd 的下标。dir_fd 为 None 或路径为绝对路径时走原逻辑。
+# "os.rename" 有 src/dst 两个 dir_fd，单独处理。
+_DIRFD_INDEX = {
+    "os.mkdir": 2,    # (path, mode, dir_fd)
+    "os.remove": 1,   # (path, dir_fd)
+    "os.rmdir": 1,    # (path, dir_fd)
+    "os.utime": 3,    # (path, times, ns, dir_fd)
+}
+
+
+def _check_write_fd(path, dir_fd):
+    """按 dir_fd 解析相对路径后再检查；解析不到就跳过，不能误拦。
+
+    Linux 上 shutil.rmtree / TemporaryDirectory 清理走基于 fd 的实现，
+    审计事件里是相对名（如 "configs"）+ dir_fd。若按 cwd（仓库根）解析，
+    会误判成写真实项目数据。
+    """
+    if dir_fd is None:
+        _check_write(path)
+        return
+    try:
+        decoded = os.fsdecode(path)
+    except (TypeError, ValueError):
+        return
+    if os.path.isabs(decoded):
+        _check_write(path)
+        return
+    if not os.path.isdir("/proc/self/fd"):
+        return
+    try:
+        base = os.readlink(f"/proc/self/fd/{dir_fd}")
+    except OSError:
+        return
+    _check_write(os.path.join(base, decoded))
+
+
 def _audit(event, args):
-    if event == "open" and args[2] & _WRITE_FLAGS:
+    if event == "open" and len(args) > 2 and args[2] & _WRITE_FLAGS:
         _check_write(args[0])
     elif event == "os.rename":  # os.rename 和 os.replace 共用这个审计事件
-        _check_write(args[0])
-        _check_write(args[1])
-    elif event in {"os.mkdir", "os.remove", "os.rmdir", "os.utime"}:
-        _check_write(args[0])
+        # (src, dst, src_dir_fd, dst_dir_fd)
+        _check_write_fd(args[0], args[2] if len(args) > 2 else None)
+        _check_write_fd(args[1], args[3] if len(args) > 3 else None)
+    elif event in _DIRFD_INDEX:
+        idx = _DIRFD_INDEX[event]
+        _check_write_fd(args[0], args[idx] if len(args) > idx else None)
 
 
 def _guard_json_write(write):

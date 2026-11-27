@@ -97,6 +97,33 @@ class TestProjectDataIsolation(unittest.TestCase):
                 run_all.mark_today_done()
             self.assertIn("date", common.load_json(base / "gui_data" / "today_done.json"))
 
+    def test_audit_rmdir_with_dir_fd_does_not_block_temp_paths(self):
+        """Linux 上 rmtree 传的是相对名 + dir_fd，不能按 cwd 误判成写项目数据。"""
+        if not os.path.isdir("/proc/self/fd"):
+            self.skipTest("需要 /proc/self/fd 才能按 dir_fd 解析路径")
+        with tempfile.TemporaryDirectory() as tmp:
+            fd = os.open(tmp, os.O_RDONLY)
+            try:
+                _guard._audit("os.rmdir", ("configs", fd))
+                _guard._audit("os.rmdir", ("gui_data", fd))
+            finally:
+                os.close(fd)
+
+    def test_audit_rmdir_without_dir_fd_still_blocks_project_data(self):
+        """没有 dir_fd 的路径仍要拦住真实项目数据（只调钩子，不真删）。"""
+        with self.assertRaisesRegex(PermissionError, "测试禁止写入项目数据"):
+            _guard._audit("os.rmdir", (str(ROOT / "configs"), None))
+
+    def test_temporary_directory_with_protected_subdirs_cleans_up(self):
+        """临时目录里建 configs/gui_data 再清理，Linux 上不应被守卫拦下。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "configs").mkdir()
+            (base / "gui_data").mkdir()
+            snapshot = base
+        # 退出 with 后清理：若把相对名按仓库根解析，这里会抛 PermissionError
+        self.assertFalse(snapshot.exists())
+
 
 # ======================================================================
 # run_all 的参数分发与超时

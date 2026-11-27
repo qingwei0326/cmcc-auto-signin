@@ -789,6 +789,25 @@ class TestHarSourceFileDeletion(unittest.TestCase):
             self.assertTrue(src.exists(), "凭证没写进去时源文件必须保留")
             self.assertIn(har_import.KEPT_HINT, lines)
 
+    def test_readonly_source_file_is_deleted(self):
+        """微信接收的 HAR 是只读的：也要能删掉，不能报「删除失败」。"""
+        import stat as _stat
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "configs").mkdir()
+            src = base / "readonly.har"
+            src.write_text(self._har("JSESSIONID=NEW; UID=1; ticketID=x",
+                                     "2026-11-20T04:00:00Z"), encoding="utf-8")
+            os.chmod(src, _stat.S_IREAD)
+            try:
+                with mock.patch.object(har_import, "BASE", base),                      mock.patch.object(har_import, "_verify_national"),                      mock.patch.object(PT, "mark_issued"):
+                    lines = har_import.apply(src.read_text(encoding="utf-8"), source_path=src)
+            finally:
+                if src.exists():
+                    os.chmod(src, _stat.S_IWRITE | _stat.S_IREAD)
+            self.assertFalse(src.exists(), lines)
+            self.assertTrue(any("已删除抓包文件 readonly.har" in line for line in lines), lines)
+
     def test_delete_oserror_does_not_fail_import(self):
         """删除抛 OSError（被占用）时导入仍成功，只在报告里提示。"""
         with tempfile.TemporaryDirectory() as tmp:

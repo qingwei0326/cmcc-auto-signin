@@ -222,13 +222,16 @@ def do_coin_tasks(s: requests.Session) -> dict:
         print(f"  金币任务读取失败: code={info.get('code')} msg={info.get('msg')!r}")
         return info
     tasks = (info.get("data") or {}).get("taskInfoList") or []
+    if not tasks:
+        print("  金币任务列表为空")
     done = 0
     for t in tasks:
-        if t.get("hasComplete"):
-            continue
         tid = t.get("id")
-        ttype = int(t.get("taskType") or 0)
         name = t.get("taskName") or f"任务{tid}"
+        if t.get("hasComplete"):
+            print(f"  - 已完成「{name}」，跳过")
+            continue
+        ttype = int(t.get("taskType") or 0)
         if ttype == 1:
             print(f"  - 跳过「{name}」（必须好友真的点助力链接）")
             continue
@@ -384,8 +387,8 @@ def main() -> int:
         pn = prize_name(r.get("data"))
         # 服务端会把「谢谢参与」当 prizeName 回传，不能算中奖、更不能进台账
         won = bool(pn) and "谢谢参与" not in pn
-        played += 1
         if code == "0000":
+            played += 1
             fail_streak = 0
             if won:
                 got += 1
@@ -441,6 +444,7 @@ def main() -> int:
             print(f"  - {x.get('prizeName')}  status={x.get('status')} 到期={x.get('expireDate')}")
     else:
         print(f"奖品查询：code={pr.get('code')} msg={pr.get('msg')!r}")
+    print(f"@@XXL_PLAYED {played}")
 
     if hard_fail:
         return 1

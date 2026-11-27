@@ -333,6 +333,7 @@ class TestPolicyAppliesToScheduledRun(unittest.TestCase):
                     mock.patch.object(run_all, "load_policy", return_value=policy), \
                     mock.patch.object(run_all, "feed_due", return_value=True), \
                     mock.patch.object(run_all, "mark_fed"), \
+                    mock.patch.object(run_all, "BASE", Path(tmp)), \
                     mock.patch.object(run_all, "run_script", side_effect=fake_run_script), \
                     mock.patch.object(sys, "argv", list(argv)), \
                     mock.patch.object(run_all, "notify"), \

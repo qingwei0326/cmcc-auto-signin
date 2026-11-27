@@ -498,6 +498,8 @@ python cmcc_xunbao.py --key fj1 --invite # 只生成好友助力链接
    - 「自动查找」：服务端去**项目目录 / 下载目录 / 微信接收目录**扫，
      最新的先处理、最后落地（避免旧票据覆盖新的）；「只导入最新一份」只处理最新的那个
 
+> 导入成功后会自动删除抓包文件（含完整票据与手机号）；没写入任何凭证或解析失败时保留文件以便重试。
+
 > 导入后控制台会**实测登录一次**，报告里会写明「✓ 实测登录成功」或失败原因，
 > 所以「显示导入了」不等于「票能用」，看报告里的验证行。
 
@@ -598,7 +600,7 @@ python cmcc_fj.py --config configs_fj/fj1.json --feed 3      # 喂养 3 次（�
 python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks    # 流量银行任务（按周期门控）
 python cmcc_fj.py --config configs_fj/fj1.json --fb-tasks --fb-all  # 忽略周期强制尝试
 python cmcc_luck.py --key fj2 --dry-run                      # 抽奖：只看次数
-python cmcc_luck.py --key fj2 --skip-assist                  # 刷任务但跳过「请好友帮忙」
+python cmcc_luck.py --key fj2                                # 刷任务时默认跳过「请好友帮忙」
 python cmcc_redpacket.py --mine --har 我的APP包.har         # 列我抽到的手气红包+实时分享码
 python cmcc_redpacket.py --har 拆包号的小程序包.har --go    # 真拆别人的红包（不可逆）
 python cmcc_xiaoxiaole.py --config configs_fj/fj1.json --detect-level --times 5

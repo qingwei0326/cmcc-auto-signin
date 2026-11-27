@@ -45,7 +45,7 @@ if getattr(sys, "frozen", False):
     BASE = Path(sys.executable).resolve().parent
 else:
     BASE = Path(__file__).resolve().parent
-DATA = BASE / "gui_data"
+DATA = Path(os.environ.get("CMCC_DASHBOARD_DATA") or BASE / "gui_data")
 DATA.mkdir(exist_ok=True)
 STATS_FILE = DATA / "stats.json"
 RUNS_FILE = DATA / "runs.json"
@@ -1165,7 +1165,8 @@ def do_action(body: dict):
                     return {"ok": False, "err": "没找到 HAR 文件（已查：项目目录 / 下载 / 微信接收目录）"}
                 newest = cands[0]
                 text = newest.read_text(encoding="utf-8", errors="ignore")
-                rep = [f"—— {newest.name}（{newest.stat().st_size // 1048576}MB）——"] + HI.apply(text, key=(body.get("key") or None))
+                rep = [f"—— {newest.name}（{newest.stat().st_size // 1048576}MB）——"] + HI.apply(
+                    text, key=(body.get("key") or None), source_path=newest)
                 used = 1
             else:
                 rep, used = HI.scan_dir(d)

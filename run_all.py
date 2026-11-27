@@ -19,6 +19,7 @@ import datetime
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -102,7 +103,13 @@ FEED_STATE = BASE / "gui_data" / "feed_state.json"
 DAILY_STATE = BASE / "gui_data" / "daily_state.json"
 # 邮箱收 HAR 的触发标记：只有「票确实失效且今天任务没全做完」才去查邮箱
 MAIL_NEED = BASE / "gui_data" / "mail_need.json"
-TODAY_DONE = BASE / "gui_data" / "today_done.json"
+
+
+# 消消乐当天运行记录：11:45 的 MobileSignIn 单独跑消消乐，每小时的 MobileDailyReward
+# 单独跑寻宝（强制 xxl=False）。寻宝的「参与消消乐换骰子」任务需要知道今天有没有跑过
+# 消消乐，跨进程只能靠这个文件，不能只看本轮 results。
+def _xxl_daily_path() -> Path:
+    return BASE / "gui_data" / "xxl_daily_state.json"
 
 
 def all_tiers_claimed() -> bool:
@@ -163,7 +170,8 @@ def mark_mail_needed(accounts) -> None:
 
 def mark_today_done() -> None:
     """今天所有任务都跑顺了：邮箱监听就不必再查。"""
-    atomic_write_json(TODAY_DONE, {"date": datetime.date.today().isoformat()}, indent=1)
+    path = BASE / "gui_data" / "today_done.json"
+    atomic_write_json(path, {"date": datetime.date.today().isoformat()}, indent=1)
 
 
 def should_mark_done(platform: str, good: int, total: int) -> bool:
@@ -184,6 +192,45 @@ def mark_fed() -> None:
         "date": datetime.date.today().isoformat(),
         "at": datetime.datetime.now().strftime("%H:%M:%S"),
     }, indent=1)
+
+
+def mark_xxl_ran(names) -> None:
+    """记下今天哪些号真的跑过消消乐（成功才算），给寻宝上报任务用。
+
+    11:45 那轮跑消消乐、每小时那轮跑寻宝，是两个独立进程；寻宝要判断
+    「本号今天有没有玩过消消乐」只能读这个文件。写成功过的号，失败的不记。
+    """
+    ok = [str(n) for n in (names or []) if n]
+    if not ok:
+        return
+    path = _xxl_daily_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = load_json(path, default={}) or {}
+    today = datetime.date.today().isoformat()
+    accounts = list(old.get("accounts") or []) if old.get("date") == today else []
+    for n in ok:
+        if n not in accounts:
+            accounts.append(n)
+    atomic_write_json(path, {
+        "date": today,
+        "accounts": accounts,
+        "at": datetime.datetime.now().strftime("%H:%M:%S"),
+    }, indent=1)
+
+
+def xxl_ran_today(name=None) -> bool:
+    """今天有没有真跑过消消乐。name 给了就查该号，不给则查任意号。"""
+    st = load_json(_xxl_daily_path(), default={}) or {}
+    if st.get("date") != datetime.date.today().isoformat():
+        return False
+    accounts = st.get("accounts") or []
+    if name is None:
+        return bool(accounts)
+    if name in accounts:
+        return True
+    # 配置名与脚本回传名可能一个尾号一个全号，做一次宽松匹配
+    tail = str(name)[-4:]
+    return any(str(a)[-4:] == tail for a in accounts)
 
 PLATFORMS = {
     "qwhd": {
@@ -260,14 +307,19 @@ def run_script(script: Path, conf: Path, args: list, timeout: int,
             note_token_dead(name)
         if head:
             buf.append(head)
+        weekly_limit = "本周已领，达到每周限领一次"
+        if ok and script.name == "cmcc_sign.py":
+            stdout_lines = set(out.splitlines())
+            buf.extend(line for line in dict.fromkeys(err.splitlines())
+                       if line not in stdout_lines and weekly_limit not in line)
         if out:
             tail = out[-1500:]
             for line in out.splitlines():
                 if "追剧领福利" in line and "抽奖" in line and line not in tail:
                     buf.append(line)
             buf.append(tail)
-        if "本周已领，达到每周限领一次" in err:
-            buf.append("  本周已领，达到每周限领一次")
+        if weekly_limit in err:
+            buf.append(f"  {weekly_limit}")
         if not ok:
             msg = brief_error(err) or brief_error(out)
             if msg:
@@ -363,6 +415,7 @@ def run_xxl(dry_run: bool, times: int) -> list:
             args.append("--dry-run")
         return run_script(script, conf, args, 900)
 
+    played_accounts = []
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(confs))) as ex:
         futs = [ex.submit(one, i, c) for i, c in enumerate(confs)]
         for fut in futs:
@@ -370,6 +423,11 @@ def run_xxl(dry_run: bool, times: int) -> list:
             if text:
                 print(text)
             results.append(("xxl", name, ok, sec))
+            if re.search(r"^@@XXL_PLAYED [1-9][0-9]*$", text, re.MULTILINE):
+                played_accounts.append(name)
+    # 成功跑过的号写入当天状态：每小时那轮寻宝要靠它判断能否上报「参与消消乐」任务
+    if not dry_run:
+        mark_xxl_ran(played_accounts)
     return results
 
 
@@ -474,10 +532,12 @@ def run_xunbao(dry_run: bool, tasks: bool = False,
 
     print(f"\n环闽寻宝记 · {len(confs)} 个福建账号")
     if mutual:
-        # 多号互助力换骰子（按号对每天一次），必须在投骰前跑，否则当天骰子没处投
+        # 先跑多号互助力，让本轮投骰能用上新获得的骰子
         try:
             import cmcc_xunbao as XB
-            XB.mutual_assist(dry_run=dry_run)
+            assist = XB.mutual_assist(dry_run=dry_run)
+            for tag in assist["expired"]:
+                note_token_dead(label_of(PLATFORMS["bass"]["dir"] / f"{tag}.json", "phone"))
         except Exception as e:
             print(f"  [xunbao] 互助力异常：{e}")
     args = []
@@ -558,7 +618,7 @@ def main():
     ap.add_argument("--xunbao-tasks", action="store_true",
                     help="寻宝顺手上报「参与天天大转盘」任务换骰子")
     ap.add_argument("--xunbao-mutual", action="store_true",
-                    help="寻宝投骰前先多号互助力换骰子（按号对每天一次）")
+                    help="寻宝投骰前先多号互助力换骰子（同一号对每月一次）")
     ap.add_argument("--daily-only", action="store_true",
                     help="只补签到 + 领 BASS 每日奖励三档，用于每小时轮询")
     ap.add_argument("--log", default="", help="同时写一份按天轮转的日志")
@@ -710,11 +770,14 @@ def main():
     if args.xxl:
         results.extend(run_xxl(args.dry_run, args.xxl_times))
 
-    # 寻宝放在转盘 / 消消乐之后：它的加骰子任务里就有「参与天天大转盘」「参与一起消消乐」，
-    # 先投骰子再去做任务，等于把本轮赚到的骰子留到明天（骰子当天不用就作废）。
-    # 只有这两件事**真的跑成功**才允许上报对应任务，失败时宁可少拿骰子也不空报。
+    # 寻宝放在转盘 / 消消乐之后：它的加骰子任务里有「参与天天大转盘」「参与一起消消乐」，
+    # 只有这两件事**真做过**才允许上报换骰子，失败时宁可少拿也不空报。
+    # 注意两个计划任务是分开的：11:45 只跑消消乐，每小时只跑寻宝（xxl=False），
+    # 所以消消乐的「做过」不能只看本轮 results，还要读当天状态文件（mark_xxl_ran 写的）。
     if args.xunbao:
-        did_xxl = any(k == "xxl" and ok for k, _n, ok, _s in results)
+        # 只认当天状态文件：run_xxl 只把真玩成 ≥1 局的号写进去，
+        # 退出码 0 但一局没玩（体力用尽）的不算「参与过消消乐」
+        did_xxl = xxl_ran_today()
         did_luck = any(k == "luck" and ok for k, _n, ok, _s in results)
         results.extend(run_xunbao(args.dry_run, tasks=args.xunbao_tasks,
                                   did_xxl=did_xxl, did_luck=did_luck,

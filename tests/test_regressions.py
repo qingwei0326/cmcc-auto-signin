@@ -24,19 +24,13 @@ import types
 import unittest
 from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timedelta
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import cmcc_sign
-import sys as _sys
-from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _guard  # noqa: F401,E402  隔离真实全局配置（见 tests/_guard.py）
+import cmcc_sign
 import common
 import cmcc_fj
 import dashboard
@@ -60,6 +54,50 @@ def _fake_config_dir(tmp, name):
     return d
 
 
+def _dashboard_status(path, *, body=b"", headers=None):
+    """通过内存流测试实际 HTTP 解析及路由。"""
+    method = "POST" if body else "GET"
+    fields = {"Host": "127.0.0.1:8765", "Content-Length": len(body), **(headers or {})}
+    lines = [f"{method} {path} HTTP/1.0", *(f"{k}: {v}" for k, v in fields.items()), "", ""]
+    handler = dashboard.Handler.__new__(dashboard.Handler)
+    handler.rfile = io.BytesIO("\r\n".join(lines).encode("ascii") + body)
+    handler.wfile = io.BytesIO()
+    handler.handle_one_request()
+    return int(handler.wfile.getvalue().split(b" ", 2)[1])
+
+
+class TestProjectDataIsolation(unittest.TestCase):
+    def test_dashboard_console_is_outside_project_data(self):
+        self.assertEqual(dashboard.DATA, Path(os.environ["CMCC_DASHBOARD_DATA"]))
+        self.assertFalse(dashboard.DATA.is_relative_to(ROOT))
+
+    def test_project_writes_are_blocked_before_touching_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.json"
+            source.write_text("{}", encoding="utf-8")
+            writes = (
+                lambda: (ROOT / "gui_data" / "console.log").write_text("blocked"),
+                lambda: (ROOT / "configs" / "fixture.json").write_bytes(b"{}"),
+                lambda: (ROOT / "configs_fj" / "fixture.json").open("a"),
+                lambda: (ROOT / ".cmcc_ticket_cache_fixture.json").open("w"),
+                lambda: os.replace(source, ROOT / "configs_fj" / "fixture.json"),
+                lambda: common.atomic_write_json(ROOT / ".cmcc_jwt_cache_fixture.json", {}),
+                lambda: common.update_json(ROOT / "gui_data" / "fixture.json", dict.clear),
+            )
+            for write in writes:
+                with self.subTest(write=write), self.assertRaisesRegex(
+                        PermissionError, "测试禁止写入项目数据"):
+                    write()
+            self.assertTrue(source.is_file())
+
+    def test_today_done_uses_current_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            with mock.patch.object(run_all, "BASE", base):
+                run_all.mark_today_done()
+            self.assertIn("date", common.load_json(base / "gui_data" / "today_done.json"))
+
+
 # ======================================================================
 # run_all 的参数分发与超时
 # ======================================================================
@@ -81,6 +119,7 @@ class TestRunAllRouting(unittest.TestCase):
                 stack.enter_context(mock.patch.object(run_all.subprocess, "run", fake))
                 stack.enter_context(mock.patch.object(sys, "argv", ["run_all.py", *argv]))
                 stack.enter_context(mock.patch.object(run_all, "notify"))
+                stack.enter_context(mock.patch.object(run_all, "mark_today_done"))
                 stack.enter_context(redirect_stdout(io.StringIO()))
                 if policy is not None:
                     # 传了策略就整份替换，用例结果不该取决于用户此刻勾了哪些开关
@@ -170,6 +209,20 @@ class TestRunAllRouting(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("token 过期", text)
 
+    def test_run_script_keeps_national_process_logs_and_special_lines(self):
+        award = "追剧领福利 抽奖成功"
+        weekly = "本周已领，达到每周限领一次"
+        log = "13:00 [INFO] 拓展活动开始"
+        reply = types.SimpleNamespace(
+            returncode=0, stdout=f"{award}\n{'x' * 1600}\n@@RESULT {{}}",
+            stderr=f"{log}\n{log}\n{weekly}\n{award}",
+        )
+        with mock.patch.object(run_all.subprocess, "run", return_value=reply):
+            _, ok, _, output = run_all.run_script(ROOT / "cmcc_sign.py", Path("test.json"), [], 10)
+        self.assertTrue(ok)
+        for line in (award, weekly, log, "@@RESULT {}"):
+            self.assertEqual(output.count(line), 1)
+
     def test_run_script_reports_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
             conf = Path(tmp) / "a.json"
@@ -228,13 +281,15 @@ class TestXxlExitCode(unittest.TestCase):
                  mock.patch.object(XXL, "record_award",
                                    lambda *a, **k: self.awards.append(a)), \
                  mock.patch.object(sys, "argv", argv), \
-                 redirect_stdout(io.StringIO()):
+                 redirect_stdout(io.StringIO()) as out:
+                self.output = out
                 return XXL.main()
 
     def test_success_is_zero(self):
         limit = {"code": "0000", "data": {"playToken": "t", "reachedLimit": False}}
         ends = [{"code": "0000", "data": {"prizeName": "500MB月包券"}}]
         self.assertEqual(self._run(limit, ends), 0)
+        self.assertIn("@@XXL_PLAYED 2", self.output.getvalue())
 
     def test_win_is_recorded_to_ledger(self):
         """中奖要进到账台账，否则「今天到手多少」少算消消乐那一份。"""
@@ -253,6 +308,23 @@ class TestXxlExitCode(unittest.TestCase):
         limit = {"code": "0000", "data": {"playToken": "t"}}
         ends = [{"code": "-100", "msg": "您的体力不足，无法进行挑战"}]
         self.assertEqual(self._run(limit, ends), 0)
+        self.assertIn("本次实际提交 0 局", self.output.getvalue())
+        self.assertIn("@@XXL_PLAYED 0", self.output.getvalue())
+
+    def test_single_rejected_round_is_failure(self):
+        limit = {"code": "0000", "data": {"playToken": "t"}}
+        self.assertEqual(self._run(limit, [{"code": "-100", "msg": "网关繁忙"}], times=1), 1)
+
+    def test_coin_tasks_reports_completed_and_empty_lists(self):
+        completed = {"id": 1, "taskName": "分享活动", "hasComplete": True}
+        for tasks, message in (([], "金币任务列表为空"), ([completed], "已完成「分享活动」，跳过")):
+            with self.subTest(tasks=tasks), redirect_stdout(io.StringIO()) as out, \
+                    mock.patch.object(XXL, "get_json", return_value={
+                        "code": "0000", "data": {"taskInfoList": tasks},
+                    }), mock.patch.object(XXL, "post") as post:
+                XXL.do_coin_tasks(None)
+            self.assertIn(message, out.getvalue())
+            post.assert_not_called()
 
     def test_token_expired_is_one(self):
         self.assertEqual(self._run({"code": "401"}, [{"code": "0000"}]), 1)
@@ -621,6 +693,90 @@ class TestVerifiedHarImport(unittest.TestCase):
         send.assert_called_once_with("HAR 部分导入失败", "✗ BASS：无法核实账号")
 
 
+class TestHarSourceFileDeletion(unittest.TestCase):
+    """导入成功后删除源 HAR；没写进凭证或删除失败都不能改变导入结论。"""
+
+    _har = TestHarImport._har
+
+    def test_success_deletes_source_file(self):
+        """扫描导入：写进凭证的那份 HAR 应被删除，报告要写明。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "configs").mkdir()
+            src = base / "capture.har"
+            src.write_text(self._har("JSESSIONID=NEW; UID=1; ticketID=x",
+                                     "2026-11-20T04:00:00Z"), encoding="utf-8")
+            with mock.patch.object(har_import, "BASE", base), \
+                 mock.patch.object(har_import, "_verify_national"), \
+                 mock.patch.object(PT, "mark_issued"):
+                lines, used = har_import.scan_files([src])
+            self.assertFalse(src.exists(), "成功导入后源 HAR 应被删除")
+            self.assertTrue(any("已删除抓包文件 capture.har" in line for line in lines), lines)
+            self.assertEqual(used, 1)
+
+    def test_no_token_deletes_source_file(self):
+        """一个凭证都没有的 HAR 留着没用还带隐私，直接删。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            src = base / "no_token.har"
+            src.write_text(json.dumps({"log": {"entries": []}}), encoding="utf-8")
+            with mock.patch.object(har_import, "BASE", base):
+                lines = har_import.apply(src.read_text(encoding="utf-8"), source_path=src)
+            self.assertFalse(src.exists(), "没有任何凭证的 HAR 应被删除")
+            self.assertNotIn(har_import.KEPT_HINT, lines)
+            self.assertEqual(har_import.report_outcome(lines), (False, False))
+
+    def test_scan_without_target_requests_deletes_file(self):
+        """扫描时不含目标请求的 HAR 也直接删。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "other.har"
+            src.write_text(json.dumps({"log": {"entries": []}}), encoding="utf-8")
+            lines, used = har_import.scan_files([src])
+            self.assertFalse(src.exists())
+            self.assertEqual(used, 0)
+            self.assertTrue(any("已删除抓包文件 other.har" in line for line in lines), lines)
+
+    def test_found_but_not_written_keeps_source_file(self):
+        """抓到了凭证但实测登录/写配置失败：保留文件以便重试。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "configs").mkdir()
+            src = base / "bad.har"
+            text = self._har("JSESSIONID=NEW; UID=1; ticketID=x", "2026-11-20T04:00:00Z")
+            src.write_text(text, encoding="utf-8")
+            with mock.patch.object(har_import, "BASE", base),                  mock.patch.object(har_import, "_verify_national",
+                                   side_effect=RuntimeError("登录失败")),                  mock.patch.object(PT, "mark_issued"):
+                lines = har_import.apply(text, source_path=src)
+            self.assertTrue(src.exists(), "凭证没写进去时源文件必须保留")
+            self.assertIn(har_import.KEPT_HINT, lines)
+
+    def test_delete_oserror_does_not_fail_import(self):
+        """删除抛 OSError（被占用）时导入仍成功，只在报告里提示。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "configs").mkdir()
+            src = base / "locked.har"
+            text = self._har("JSESSIONID=NEW; UID=1; ticketID=x", "2026-11-20T04:00:00Z")
+            src.write_text(text, encoding="utf-8")
+            real_unlink = Path.unlink
+
+            def fake_unlink(self, *a, **kw):
+                if self == src:
+                    raise OSError("文件被占用")
+                return real_unlink(self, *a, **kw)
+
+            with mock.patch.object(har_import, "BASE", base), \
+                 mock.patch.object(har_import, "_verify_national"), \
+                 mock.patch.object(PT, "mark_issued"), \
+                 mock.patch.object(Path, "unlink", fake_unlink):
+                lines = har_import.apply(text, source_path=src)
+            self.assertTrue(src.exists())
+            self.assertEqual(har_import.report_outcome(lines), (True, False),
+                             "删除失败不能把导入改成失败")
+            self.assertTrue(any("删除失败" in line and "locked.har" in line for line in lines), lines)
+            self.assertFalse(any(line.startswith("✗") for line in lines), lines)
+
+
 class TestCrossProcessState(unittest.TestCase):
     def test_update_json_does_not_lose_updates(self):
         """4 个进程同时改同一份 json，各自的 key 都要留下（原子写防不了丢更新）。"""
@@ -688,36 +844,13 @@ class TestDashboardGuards(unittest.TestCase):
                             "Origin": "https://evil.example"})._local_only())
 
     def test_http_guards_end_to_end(self):
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
-        th = threading.Thread(target=srv.serve_forever, daemon=True)
-        th.start()
-        base = f"http://127.0.0.1:{srv.server_address[1]}"
-
-        def status(req):
-            try:
-                with urlopen(req, timeout=10) as r:
-                    return r.status
-            except HTTPError as e:
-                return e.code
-
-        try:
-            # 会明文吐 app_token 的死端点必须已经不存在
-            self.assertEqual(status(base + "/api/bass_cfg?file=configs/1234.json"), 404)
-            # 恶意网页的跨站 POST → 403
-            self.assertEqual(status(Request(
-                base + "/api/action", data=b'{"action":"stop"}',
-                headers={"Content-Type": "application/json",
-                         "Origin": "https://evil.example"})), 403)
-            # text/plain 属「简单请求」不触发预检 → 必须被 415 挡住
-            self.assertEqual(status(Request(
-                base + "/api/action", data=b'{"action":"stop"}',
-                headers={"Content-Type": "text/plain"})), 415)
-            # 正常本机请求仍能拿到页面
-            self.assertEqual(status(base + "/"), 200)
-        finally:
-            srv.shutdown()
-            srv.server_close()
-            th.join(timeout=10)
+        self.assertEqual(_dashboard_status("/api/bass_cfg?file=configs/1234.json"), 404)
+        self.assertEqual(_dashboard_status(
+            "/api/action", body=b'{"action":"stop"}',
+            headers={"Content-Type": "application/json", "Origin": "https://evil.example"}), 403)
+        self.assertEqual(_dashboard_status(
+            "/api/action", body=b'{"action":"stop"}', headers={"Content-Type": "text/plain"}), 415)
+        self.assertEqual(_dashboard_status("/"), 200)
 
 
 # ======================================================================
@@ -1504,6 +1637,7 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
                  mock.patch.object(run_all.subprocess, "run", fake), \
                  mock.patch.object(sys, "argv", ["run_all.py", "--games-only"]), \
                  mock.patch.object(run_all, "notify"), \
+                 mock.patch.object(run_all, "mark_today_done"), \
                  redirect_stdout(io.StringIO()):
                 run_all.main()
         self.assertTrue(cmds)
@@ -1524,6 +1658,7 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
                  mock.patch.object(run_all.subprocess, "run", fake), \
                  mock.patch.object(sys, "argv", ["run_all.py", "--games-only"]), \
                  mock.patch.object(run_all, "notify"), \
+                 mock.patch.object(run_all, "mark_today_done"), \
                  redirect_stdout(io.StringIO()):
                 run_all.main()
         self.assertFalse([c for c in cmds if "cmcc_fj.py" in c[1]],
@@ -2252,7 +2387,8 @@ class TestUsabilityFixes(unittest.TestCase):
         self.assertTrue(any("已停止" in l["line"] for l in r.logs))
 
     def test_refresh_status_without_accounts_explains_next_step(self):
-        with mock.patch.object(dashboard, "scan_accounts", lambda: []):
+        with mock.patch.object(dashboard, "scan_accounts", lambda: []), \
+                mock.patch.object(dashboard, "RUNNER", mock.Mock(running=False)):
             r = dashboard.do_action({"action": "refresh_status"})
         self.assertFalse(r["ok"])
         self.assertIn("新建账号", r["err"])
@@ -2297,24 +2433,8 @@ class TestUsabilityFixes(unittest.TestCase):
         self.assertEqual(r["lines"][-1], "行49")
 
     def test_tasklog_and_favicon_routes(self):
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
-        th = threading.Thread(target=srv.serve_forever, daemon=True)
-        th.start()
-        base = "http://127.0.0.1:%d" % srv.server_address[1]
-
-        def status(path):
-            try:
-                with urlopen(base + path, timeout=10) as r:
-                    return r.status
-            except HTTPError as e:
-                return e.code
-
-        try:
-            self.assertEqual(status("/api/tasklog?name=../config.json"), 404)
-            self.assertIn(status("/favicon.ico"), (200, 204))
-        finally:
-            srv.shutdown()
-            srv.server_close()
+        self.assertEqual(_dashboard_status("/api/tasklog?name=../config.json"), 404)
+        self.assertIn(_dashboard_status("/favicon.ico"), (200, 204))
 
     def test_account_new_and_save(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2556,10 +2676,28 @@ class TestFeedReward(unittest.TestCase):
         import cmcc_fj as FJ
         with mock.patch.object(FJ, "call", side_effect=[
             {"ok": False, "code": "1503", "data": None},
+            {"ok": False, "code": 1600, "msg": "前置任务未完成", "data": None},
             {"ok": False, "code": -1, "data": None},
         ]):
             self.assertEqual(FJ.feed_reward_state(None, {}), (None, True))
+            self.assertEqual(FJ.feed_reward_state(None, {}), (None, True))
             self.assertEqual(FJ.feed_reward_state(None, {}), (None, False))
+
+    def test_success_without_reward_object_is_checked(self):
+        for data in (None, [], ""):
+            with self.subTest(data=data):
+                self.assertEqual(self._state(data), (None, True))
+
+    def test_query_failure_keeps_state_and_logs_response(self):
+        failure = {"ok": False, "code": -1, "msg": "查询超时"}
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()) as out, \
+                mock.patch.object(cmcc_fj, "DAILY_STATE", Path(tmp) / "daily_state.json"), \
+                mock.patch.object(cmcc_fj, "call", return_value=failure), \
+                mock.patch.object(cmcc_fj, "track_daily") as track:
+            cmcc_fj.handle_feed_reward(None, {}, "test", {}, dry_run=False)
+        self.assertIn("暂时无法确认", out.getvalue())
+        self.assertIn("code=-1 msg=查询超时", out.getvalue())
+        track.assert_not_called()
 
     def test_claim_dry_run_and_timeout_keep_pending_until_success(self):
         import cmcc_fj as FJ
@@ -2765,6 +2903,83 @@ class TestXunbaoTaskReport(unittest.TestCase):
             label, cmd = captured[0]
             self.assertNotIn("--xunbao", cmd)
             self.assertNotIn("含寻宝", label)
+
+class TestXxlDailyState(unittest.TestCase):
+    """11:45 跑消消乐、每小时跑寻宝是两个进程，did_xxl 必须靠当天状态跨进程传递"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        self.state = self.base / "gui_data" / "xxl_daily_state.json"
+        self.real_state = run_all.BASE / "gui_data" / "xxl_daily_state.json"
+        patch_base = mock.patch.object(run_all, "BASE", self.base)
+        patch_base.start()
+        self.addCleanup(patch_base.stop)
+
+    def test_mark_and_query_same_day(self):
+        self.assertFalse(run_all.xxl_ran_today())
+        run_all.mark_xxl_ran(["fj1", "fj2"])
+        self.assertTrue(run_all.xxl_ran_today())
+        self.assertTrue(run_all.xxl_ran_today("fj1"))
+        self.assertFalse(run_all.xxl_ran_today("9243"))
+        # 状态里记全号时，用尾号也能查到（脚本回传名和配置名可能不同）
+        run_all.mark_xxl_ran(["13800001234"])
+        self.assertTrue(run_all.xxl_ran_today("1234"))
+
+    def test_empty_names_do_not_write(self):
+        run_all.mark_xxl_ran([])
+        self.assertFalse(self.state.exists())
+        run_all.mark_xxl_ran(["fj1"])
+        run_all.mark_xxl_ran([])  # 空列表不能清掉已有记录
+        self.assertTrue(run_all.xxl_ran_today("fj1"))
+
+    def test_expired_next_day(self):
+        run_all.mark_xxl_ran(["fj1"])
+        st = json.loads(self.state.read_text(encoding="utf-8"))
+        st["date"] = "2000-01-01"
+        self.state.write_text(json.dumps(st), encoding="utf-8")
+        self.assertFalse(run_all.xxl_ran_today())
+        self.assertFalse(run_all.xxl_ran_today("fj1"))
+
+    def _run_xxl(self, dry_run, text="@@XXL_PLAYED 1", ok=True):
+        configs = self.base / "configs_fj"
+        configs.mkdir(exist_ok=True)
+        (configs / "fj1.json").write_text("{}", encoding="utf-8")
+        (self.base / "cmcc_xiaoxiaole.py").touch()
+
+        def write_state(path, data, **kwargs):
+            self.assertEqual(path, self.state)
+            common.atomic_write_json(path, data, **kwargs)
+
+        with mock.patch.object(run_all, "load_policy", return_value={}), \
+             mock.patch.object(run_all, "run_script", return_value=("fj1", ok, 0.1, text)), \
+             mock.patch.object(run_all, "atomic_write_json", side_effect=write_state), \
+             redirect_stdout(io.StringIO()):
+            return run_all.run_xxl(dry_run=dry_run, times=1)
+
+    def test_run_xxl_writes_state_under_patched_base(self):
+        before = self.real_state.stat() if self.real_state.exists() else None
+
+        self._run_xxl(dry_run=False)
+
+        after = self.real_state.stat() if self.real_state.exists() else None
+        self.assertEqual(after, before)
+        self.assertEqual(json.loads(self.state.read_text(encoding="utf-8"))["accounts"], ["fj1"])
+
+    def test_run_xxl_dry_run_does_not_write_state(self):
+        self.assertEqual(self._run_xxl(dry_run=True), [("xxl", "fj1", True, 0.1)])
+        self.assertFalse(self.state.exists())
+
+    def test_run_xxl_missing_or_zero_marker_does_not_write_state(self):
+        for text in ("", "@@XXL_PLAYED 0"):
+            with self.subTest(text=text):
+                self._run_xxl(dry_run=False, text=text)
+                self.assertFalse(self.state.exists())
+
+    def test_run_xxl_records_completed_round_before_later_failure(self):
+        self.assertEqual(self._run_xxl(dry_run=False, ok=False), [("xxl", "fj1", False, 0.1)])
+        self.assertTrue(run_all.xxl_ran_today("fj1"))
 
 
 class TestMailWatchGate(unittest.TestCase):

@@ -212,12 +212,15 @@ CYCLE_NAME = {1: "每月一次", 2: "每周一次", 0: "不限次"}
 
 def feed_reward_state(s, cfg):
     """返回昨日投喂奖励及是否取得了明确状态。"""
-    r = call(s, cfg, "next_receive")
+    return _parse_feed_reward(call(s, cfg, "next_receive"))
+
+
+def _parse_feed_reward(r):
     if not r.get("ok"):
-        return None, str(r.get("code")) == "1503"
+        return None, str(r.get("code")) in ("1503", "1600")
     d = r.get("data")
     if not isinstance(d, dict):
-        return None, False
+        return None, True
     if str(d.get("taskStatus") or "").upper() != "COMPLETED":
         return None, True
     expire = str(d.get("expireTime") or "")
@@ -239,9 +242,11 @@ def handle_feed_reward(s, cfg, key, res, dry_run):
     lock_path = DAILY_STATE.with_name(f"feed_reward.{key}")
     try:
         with file_lock(lock_path):
-            pending, checked = feed_reward_state(s, cfg)
+            reply = call(s, cfg, "next_receive")
+            pending, checked = _parse_feed_reward(reply)
             if not checked:
-                print("  投喂累计奖励：暂时无法确认，保留上次记录")
+                print(f"  投喂累计奖励：暂时无法确认，保留上次记录"
+                      f"（code={reply.get('code')} msg={reply.get('msg') or ''}）")
                 return
             if pending is None:
                 print("  投喂累计奖励：无待领")

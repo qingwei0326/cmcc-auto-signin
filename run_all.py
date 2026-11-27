@@ -27,9 +27,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import (RotatingLog, Tee, app_base, atomic_write_json, child_cmd,
+from common import (RotatingLog, Tee, app_base, atomic_write_json, child_cmd, file_lock,
                     collect_notify_settings, is_token_dead, load_awards,
-                    load_json, load_policy, notify, notify_once,
+                    load_json, load_policy, notify, notify_once, parse_result,
                     update_json)   # 导入即固定 UTF-8 输出
 
 BASE = app_base()
@@ -108,7 +108,7 @@ def _xxl_daily_path() -> Path:
     return _gui_path("xxl_daily_state.json")
 
 
-def all_tiers_claimed() -> bool:
+def all_tiers_claimed(account: str) -> bool:
     """今天三档饲料（150/250/350）是否都已领到手。
 
     档位之间要隔 60 分钟，全领完至少要约 3 小时。用户要求先把饲料领完
@@ -116,22 +116,15 @@ def all_tiers_claimed() -> bool:
     """
     st = load_json(_gui_path("daily_state.json"), default={}) or {}
     today = datetime.date.today().isoformat()
-    confs = sorted((BASE / "configs_fj").glob("*.json"))
-    if not confs:
+    acc = st.get(account) or {}
+    if acc.get("tiers_date") != today:
         return False
-    for c in confs:
-        d = st.get(c.stem) or {}
-        if d.get("tiers_date") != today:
-            return False
-        tiers = d.get("tiers") or []
-        if len(tiers) < 3:
-            return False
-        if any(str(t.get("status") or "").upper() != "RECEIVED" for t in tiers[:3]):
-            return False
-    return True
+    tiers = acc.get("tiers") or []
+    return len(tiers) >= 3 and all(
+        str(t.get("status") or "").upper() == "RECEIVED" for t in tiers[:3])
 
 
-def feed_due(pol: dict) -> bool:
+def feed_due(pol: dict, account: str) -> bool:
     """今天这一轮要不要自动喂养。
 
     三个条件：过了策略指定的最早时间、三档饲料今天已全部领到手、今天还没喂过。
@@ -143,10 +136,12 @@ def feed_due(pol: dict) -> bool:
         return False
     if datetime.datetime.now().hour < hour:
         return False
-    if not all_tiers_claimed():
+    if not all_tiers_claimed(account):
         return False
     st = load_json(_gui_path("feed_state.json"), default={}) or {}
-    return st.get("date") != datetime.date.today().isoformat()
+    today = datetime.date.today().isoformat()
+    account_state = (st.get("accounts") or {}).get(account) or {}
+    return st.get("date") != today and account_state.get("date") != today
 
 
 def mark_mail_needed(accounts) -> None:
@@ -182,11 +177,16 @@ def should_mark_done(platform: str, good: int, total: int) -> bool:
     return str(platform or "") != "none"
 
 
-def mark_fed() -> None:
-    atomic_write_json(_gui_path("feed_state.json"), {
-        "date": datetime.date.today().isoformat(),
-        "at": datetime.datetime.now().strftime("%H:%M:%S"),
-    }, indent=1)
+def mark_fed(account: str) -> None:
+    now = datetime.datetime.now()
+
+    def mutate(st):
+        st.setdefault("accounts", {})[account] = {
+            "date": now.date().isoformat(),
+            "at": now.strftime("%H:%M:%S"),
+        }
+
+    update_json(_gui_path("feed_state.json"), mutate)
 
 
 def mark_xxl_ran(names) -> None:
@@ -346,7 +346,7 @@ def run_one(platform_key: str, conf: Path, dry_run: bool, extra: list,
 
 
 def run_platform(key: str, confs: list, dry_run: bool, extra: list,
-                 delay: int = 0) -> list:
+                 delay: int = 0, *, feed_policy=None, feed_args=()) -> list:
     """跑一个平台下的所有账号。
 
     账号之间互不依赖（各自独立 token 与会话），所以默认并发执行；
@@ -355,9 +355,26 @@ def run_platform(key: str, confs: list, dry_run: bool, extra: list,
     results = []
     total = len(confs)
 
+    def run_account(conf, idx):
+        if not feed_args or not feed_due(feed_policy, conf.stem):
+            return run_one(key, conf, dry_run, extra, idx, total)
+        if dry_run:
+            return run_one(key, conf, True, extra + list(feed_args), idx, total)
+
+        # 同一账号的两轮计划任务重叠时，等前一轮写完再检查是否还要喂。
+        with file_lock(_gui_path(f"feed_state.{conf.stem}"), timeout=310):
+            if not feed_due(feed_policy, conf.stem):
+                return run_one(key, conf, False, extra, idx, total)
+            result = run_one(key, conf, False, extra + list(feed_args), idx, total)
+            payload = parse_result(result[3]) or {}
+            feeds = payload.get("feeds")
+            if isinstance(feeds, int) and feeds > 0:
+                mark_fed(conf.stem)
+            return result
+
     if delay:
         for i, conf in enumerate(confs, 1):
-            name, ok, sec, text = run_one(key, conf, dry_run, extra, i, total)
+            name, ok, sec, text = run_account(conf, i)
             print(text)
             results.append((key, name, ok, sec))
             if i < total:
@@ -369,7 +386,7 @@ def run_platform(key: str, confs: list, dry_run: bool, extra: list,
     workers = min(MAX_WORKERS, total)
     with ThreadPoolExecutor(max_workers=workers) as ex:
         # 提交顺序固定，取结果也按顺序，输出不会交错
-        futs = [ex.submit(run_one, key, c, dry_run, extra, i, total)
+        futs = [ex.submit(run_account, c, i)
                 for i, c in enumerate(confs, 1)]
         for fut in futs:
             name, ok, sec, text = fut.result()
@@ -648,7 +665,7 @@ def main():
     # 早先两个平台共用一个 extra 字符串、却只透传给 bass，导致 --keepalive
     # 的 --login-only 被丢掉，保活任务变成了每 90 分钟真签到一次。
     extra_map = {"qwhd": [], "bass": args.extra.split() if args.extra else []}
-    feed_injected = False   # 这一轮是否按策略注入了 --feed（成功后才记「今天已喂」）
+    feed_args = []
     # 策略读一次就够：bass 段落是喂养/任务这类子项，luck / xunbao 这些是顶层开关。
     # 早先全从 policy["bass"] 里取，顶层开关永远是 None → 一律走默认 True，
     # 结果「设置」里取消勾选不生效。
@@ -665,10 +682,9 @@ def main():
         pol = (policy.get("bass") or {})
         feed = int(pol.get("feed") or 0)
         feed_all = bool(pol.get("feed_all"))
-        if (feed > 0 or feed_all) and feed_due(pol):
+        if feed > 0 or feed_all:
             # 喂到用完时轮数由脚本按当前饲料算，这里不传数字
-            extra_map["bass"] += ["--feed-all"] if feed_all else ["--feed", str(feed)]
-            feed_injected = True
+            feed_args = ["--feed-all"] if feed_all else ["--feed", str(feed)]
         full = str(pol.get("on_stage_full") or "stop")
         if full == "claim":
             extra_map["bass"].append("--auto-claim")
@@ -721,6 +737,11 @@ def main():
         extra_map["qwhd"].append("--games")
     if args.tasks:
         extra_map["qwhd"].append("--tasks")
+    # 连签/累计签到奖励（如「5签5GB流量券」）是已经挣到的，签完就领；
+    # 早先计划任务从不传 --claim，奖励一直躺着没人领。保活只登录，不领。
+    if (not args.keepalive and policy.get("sign_claim", True)
+            and "--claim" not in extra_map["qwhd"]):
+        extra_map["qwhd"].append("--claim")
 
     # 只跑拓展活动：qwhdhub 侧三个活动，不碰 BASS / 消消乐 / 秒杀
     if args.games_only:
@@ -753,13 +774,9 @@ def main():
         print(f" {p['name']}   {len(confs)} 个账号")
         print("=" * 66)
 
+        scheduled_feed = {"feed_policy": pol, "feed_args": feed_args} if feed_args else {}
         results.extend(run_platform(key, confs, args.dry_run,
-                                    extra_map[key], args.delay))
-
-    # 喂养成功才记「今天已喂」，失败（多半是票据过期）留到下一次补跑
-    if feed_injected and not args.dry_run and any(
-            k == "bass" and ok for k, _n, ok, _s in results):
-        mark_fed()
+                                    extra_map[key], args.delay, **scheduled_feed))
 
     if args.luck:
         results.extend(run_luck(args.dry_run, tasks=luck_tasks))

@@ -167,6 +167,20 @@ class TestRunAllRouting(unittest.TestCase):
                 run_all.main()
         return cmds
 
+    def test_sign_claims_rewards_by_default(self):
+        """计划任务签到要带 --claim 领连签奖励；保活不带；策略关掉也不带。"""
+        cmds = self._run([], policy={})
+        qwhd = [c for c in cmds if any("cmcc_sign.py" in str(x) for x in c)]
+        self.assertTrue(qwhd)
+        self.assertTrue(all("--claim" in c for c in qwhd), qwhd)
+        keep = [c for c in self._run(["--keepalive"], policy={})
+                if any("cmcc_sign.py" in str(x) for x in c)]
+        self.assertTrue(keep)
+        self.assertFalse(any("--claim" in c for c in keep), keep)
+        off = [c for c in self._run([], policy={"sign_claim": False})
+               if any("cmcc_sign.py" in str(x) for x in c)]
+        self.assertFalse(any("--claim" in c for c in off), off)
+
     def test_keepalive_passes_login_only(self):
         """保活必须只登录不签到：extra 曾只透传给 bass，qwhd 的 --login-only 被丢掉。"""
         cmds = self._run(["--keepalive"])
@@ -1019,6 +1033,7 @@ class TestEndToEndResult(unittest.TestCase):
                            "feedFodders": 250},
             "fb_index": {"exchangeFlow": 1.5, "exchangeFlowUnit": "GB",
                          "exchangeFlowValue": 1536, "hasTaskToDo": False},
+            "fb_tasks": [{"id": 12, "completeStatus": "0"}],
             "next_receive": {"taskName": "喂养累计", "taskStatus": "COMPLETED",
                              "fodder": 950, "recordId": 499520178,
                              "expireTime": "2999-01-01 00:00:00"},
@@ -1039,6 +1054,7 @@ class TestEndToEndResult(unittest.TestCase):
                                        "phone": "13800001234"}), encoding="utf-8")
             sf = d / "stats.json"
             with mock.patch.object(cmcc_fj, "call", fake_call), \
+                 mock.patch.object(cmcc_fj, "call_post", side_effect=AssertionError("只读总览禁止上报")), \
                  mock.patch.object(cmcc_fj, "new_session", lambda c: object()), \
                  mock.patch.object(cmcc_fj, "pause", lambda *a, **k: None), \
                  mock.patch.object(cmcc_fj, "BASE", d), \
@@ -1048,6 +1064,9 @@ class TestEndToEndResult(unittest.TestCase):
                 rc = cmcc_fj.main()
                 self.assertEqual(rc, 0)
                 text = buf.getvalue()
+                self.assertIn("未完成任务=1 个", text)
+                fb_state = json.loads((d / "gui_data" / "flowbank_state.json").read_text(encoding="utf-8"))
+                self.assertEqual(fb_state["fj1"]["tasks"]["12"]["status"], "0")
                 r = common.parse_result(text)
                 self.assertIsNotNone(r, "main() 必须输出 @@RESULT 行")
                 self.assertEqual(r["plat"], "bass")
@@ -2245,6 +2264,30 @@ class TestFlowbankCycleGate(unittest.TestCase):
         2026-11-23 实测：任务其实全部完成、奖励已到账，但状态文件停在开工前的
         快照（completeStatus=0），控制台一直显示「可做」，被误判成漏跑。
         """
+        ok, tracked, output, res = self._run_fb_task_with_final_status("1")
+        self.assertTrue(ok)
+        self.assertEqual(tracked, [["0"], ["1"]])
+        self.assertIn("回查已完成", output)
+        self.assertEqual(res["tasks"], 1)
+
+    def test_fb_report_success_with_no_status_change_remains_pending(self):
+        ok, tracked, output, res = self._run_fb_task_with_final_status("0")
+        self.assertFalse(ok)
+        self.assertEqual(tracked, [["0"], ["0"]])
+        self.assertIn("上报成功但任务状态未变化", output)
+        self.assertNotIn("✓", output)
+        self.assertEqual(res["tasks"], 0)
+
+    def test_fb_summary_uses_live_list_or_dates_the_old_cache(self):
+        import cmcc_fj as FJ
+
+        cached = {"fj1": {"updated": "2000-01-01 08:00", "tasks": {"12": {"status": "0"}}}}
+        with mock.patch.object(FJ, "load_json", return_value=cached):
+            self.assertEqual(FJ.fb_task_summary("fj1", []), "  未完成任务=0 个")
+            self.assertEqual(FJ.fb_task_summary("fj1", None),
+                             "  未完成任务=1 个（记录于 2000-01-01，可能已过期）")
+
+    def _run_fb_task_with_final_status(self, final_status):
         import argparse
         import cmcc_fj as FJ
 
@@ -2254,7 +2297,7 @@ class TestFlowbankCycleGate(unittest.TestCase):
             if key == "fb_tasks":
                 calls["fb_tasks"] += 1
                 # 第一次：开工前未做；第二次：做完后回查应为已完成
-                st = "0" if calls["fb_tasks"] == 1 else "1"
+                st = "0" if calls["fb_tasks"] == 1 else final_status
                 return {"ok": True, "data": [
                     {"id": 12, "taskCycle": 2, "taskTitle": "浏览领券中心",
                      "taskFlow": "50", "taskFlowUnit": "M", "completeStatus": st}]}
@@ -2264,6 +2307,8 @@ class TestFlowbankCycleGate(unittest.TestCase):
             return {"ok": True, "data": {}}
 
         tracked = []
+        res = {"tasks": 0, "token": "ok"}
+        out = io.StringIO()
         with mock.patch.object(FJ, "pause", lambda *a, **k: None), \
              mock.patch.object(FJ, "call", fake_call), \
              mock.patch.object(FJ, "call_post",
@@ -2271,16 +2316,12 @@ class TestFlowbankCycleGate(unittest.TestCase):
              mock.patch.object(FJ, "load_json", lambda *a, **k: {}), \
              mock.patch.object(FJ, "track_fb_tasks",
                                lambda key, tasks: tracked.append([t["completeStatus"] for t in tasks])), \
-             mock.patch.object(FJ, "show", lambda *a, **k: True), \
              mock.patch.object(FJ, "_note_token", lambda *a, **k: None), \
-             mock.patch.object(FJ.time, "sleep", lambda *a, **k: None):
-            ok = FJ.run_fb_tasks(None, {}, argparse.Namespace(fb_all=False),
-                                 {"tasks": 0, "token": "ok"}, "fj1")
+             mock.patch.object(FJ.time, "sleep", lambda *a, **k: None), \
+             redirect_stdout(out):
+            ok = FJ.run_fb_tasks(None, {}, argparse.Namespace(fb_all=False), res, "fj1")
 
-        self.assertTrue(ok)
-        self.assertEqual(len(tracked), 2, "开工前记一次 + 做完回查再记一次")
-        self.assertEqual(tracked[0], ["0"])
-        self.assertEqual(tracked[1], ["1"], "回查必须落成已完成，否则界面一直显示可做")
+        return ok, tracked, out.getvalue(), res
 
 
 # ======================================================================
@@ -3512,7 +3553,9 @@ class TestAuditFixesP0Remaining(unittest.TestCase):
             if key == "task_list":
                 return {"ok": True, "data": [{"id": 11, "taskName": "逛一逛", "taskStatus": "UN_DO", "completeType": "VISIT"}]}
             if key == "fb_tasks":
-                return {"ok": True, "data": [{"id": 22, "taskTitle": "浏览", "taskCycle": 0, "completeStatus": "2"}]}
+                posted = any(p == cmcc_fj.EP["fb_do_task"] for p, _ in post_paths)
+                return {"ok": True, "data": [{"id": 22, "taskTitle": "浏览", "taskCycle": 0,
+                                              "completeStatus": "1" if posted else "2"}]}
             if key == "next_receive":
                 return {"ok": True, "data": {"taskStatus": "RECEIVED"}}
             return {"ok": True, "data": {}}

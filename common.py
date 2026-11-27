@@ -624,6 +624,7 @@ POLICY_DEFAULT = {
     "coupon_world": True,        # 每天做一次「券来世界」访问任务（500 饲料）
     "xunbao": True,              # 每天把「环闽寻宝记」的骰子投完（当天不用就作废）
     "xunbao_tasks": True,        # 顺手报「参与天天大转盘」换骰子（好友助力不报）
+    "sign_claim": True,          # 全国签到后自动领已达成的连签/累计签到奖励（不是空报）
     "bass": {
         "feed": 0,               # 每天自动喂几轮（每轮 250 饲料，0 = 不喂）
         "feed_all": False,       # True = 喂到饲料不足 250 为止，轮数自动算，不用填 feed

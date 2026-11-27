@@ -42,7 +42,7 @@ EP = {
     "feed_reward_claim": "/bass-cultivateGameServer/index/nextReceive",
     # 2026-11-24 18:16 抓包新发现：喂养累计的「轮次任务」（独立于每日三档 nextReceive）。
     # 某轮 taskStatus=COMPLETED 后，doMeet 领掉本轮饲料并解锁下一轮（LOCK→UN_DO）。
-    # 老号 getMeetTask 回 1606「非新人」不适用；仅新人号（如 9243）有这条链。
+    # 新人号才有这条链，老号调用 getMeetTask 会返回 1606「非新人」。
     "meet_task":      "/bass-cultivateGameServer/index/getMeetTask",
     "do_meet":        "/bass-cultivateGameServer/index/doMeet",
     "stage_info":     "/bass-cultivateGameServer/stage/getUserStageInfo",
@@ -486,11 +486,12 @@ def track_fb_tasks(key, tasks):
 
 def _apply_fb(acc, tasks, stamp):
     """把流量银行任务的一次观测合并进某账号的记录（就地修改 acc）。"""
-    rec = acc.setdefault("tasks", {})
+    previous = acc.get("tasks") or {}
+    rec = {}
 
     for t in tasks:
         tid = str(t.get("id"))
-        old = rec.get(tid) or {}
+        old = previous.get(tid) or {}
         status = str(t.get("completeStatus"))
         row = {
             "title": t.get("taskTitle") or "",
@@ -509,6 +510,7 @@ def _apply_fb(acc, tasks, stamp):
             row["last_done"] = None
         rec[tid] = row
 
+    acc["tasks"] = rec
     acc["updated"] = stamp
 
 
@@ -704,26 +706,52 @@ def run_visit_tasks(s, cfg, res) -> bool:
     return all_ok and res.get("token") == "ok"
 
 
-def run_fb_tasks(s, cfg, args, res, key) -> bool:
-    """完成流量银行浏览任务；列表失败或任一请求失败/限流返回 False。"""
+def fb_task_summary(key, tasks) -> str:
+    """优先显示本轮查到的任务数，查询失败时回退到带日期的记录。"""
+    if isinstance(tasks, list):
+        pending = sum(str(t.get("completeStatus")) != "1" for t in tasks)
+        return f"  未完成任务={pending} 个"
+
+    acc = load_json(_gui_path("flowbank_state.json"), {}).get(key) or {}
+    recs = acc.get("tasks")
+    recorded = str(acc.get("updated") or "")[:10]
+    if not isinstance(recs, dict) or not recorded:
+        return "  任务状态未知"
+    pending = sum(str(r.get("status")) != "1" for r in recs.values())
+    suffix = ""
+    if recorded != datetime.date.today().isoformat():
+        suffix = f"（记录于 {recorded}，可能已过期）"
+    return f"  未完成任务={pending} 个{suffix}"
+
+
+def run_fb_tasks(s, cfg, args, res, key, *, tasks=None) -> bool:
+    """完成流量银行浏览任务，所有尝试均需成功且回查确认完成。"""
     # 抓包证实：POST /flowBank/doTask body={appId,timestamp,taskId}，无签名无停留校验。
     # completeStatus: 0=未做 2=进行中 1=已完成。每个任务要点两次（0→2→1）。
     # 有 1006 频控，需间隔。等价于空报浏览，默认关闭。
-    pause()
-    tl = call(s, cfg, "fb_tasks")
     all_ok = True
-    if tl["ok"] and isinstance(tl["data"], list):
-        track_fb_tasks(key, tl["data"])
+    if tasks is None:
+        pause()
+        tl = call(s, cfg, "fb_tasks")
+        if tl["ok"] and isinstance(tl["data"], list):
+            tasks = tl["data"]
+            track_fb_tasks(key, tasks)
+        else:
+            show("流量银行任务列表", tl)
+            _note_token(res, tl)
+            all_ok = False
+    if tasks is not None:
         # 周任务只在周一之后、月任务只在 1 号之后才尝试；没到周期直接跳过，
         # 少打无意义的请求（这个接口有 1006 频控）。
         recs = (load_json(_gui_path("flowbank_state.json"), {}).get(key) or {}).get("tasks") or {}
-        todo, skipped = fb_due_tasks(tl["data"], recs, force=getattr(args, "fb_all", False))
+        todo, skipped = fb_due_tasks(tasks, recs, force=getattr(args, "fb_all", False))
         if skipped:
             print(f"  -  {len(skipped)} 个周/月任务未到周初/月初，跳过"
                   f"（--fb-all 可强制）")
         # completeStatus: 0=未做（要点两次 0→2→1）  2=进行中（再点一次即完成）  1=已完成
         if not todo:
             print("  -  流量银行没有到周期的待做任务")
+        reported = {}
         for t in todo:
             tid, title = t.get("id"), t.get("taskTitle")
             rounds = (1, 2) if str(t.get("completeStatus")) == "0" else (1,)
@@ -731,9 +759,10 @@ def run_fb_tasks(s, cfg, args, res, key) -> bool:
                 time.sleep(random.uniform(3.5, 5.5))  # 避开 1006 频控
                 r = call_post(s, cfg, EP["fb_do_task"], retries=3,
                               extra={"taskId": tid})
-                if show(f"fb任务 {tid} {title} ({round_no}/{len(rounds)})", r):
-                    res["tasks"] += 1
+                if r["ok"]:
+                    reported[str(tid)] = r
                 else:
+                    show(f"fb任务 {tid} {title} ({round_no}/{len(rounds)})", r)
                     all_ok = False
                 _note_token(res, r)
                 if not r["ok"] and str(r.get("code")) == "1006":
@@ -744,16 +773,31 @@ def run_fb_tasks(s, cfg, args, res, key) -> bool:
             # （2026-11-23 实测：任务其实做完了，界面全标未做，误判成漏跑）。
             time.sleep(random.uniform(1.2, 2.0))
             tl2 = call(s, cfg, "fb_tasks")
+            states = {}
             if tl2["ok"] and isinstance(tl2["data"], list):
                 track_fb_tasks(key, tl2["data"])
-                left = [t for t in tl2["data"]
-                        if str(t.get("completeStatus")) != "1"]
-                print(f"     任务状态已刷新：{len(tl2['data']) - len(left)}"
-                      f"/{len(tl2['data'])} 已完成")
-    else:
-        all_ok = False
-        show("流量银行任务列表", tl)
-        _note_token(res, tl)
+                states = {str(t.get("id")): str(t.get("completeStatus")) for t in tl2["data"]}
+                print(f"     任务状态已刷新：{sum(status == '1' for status in states.values())}"
+                      f"/{len(states)} 已完成")
+            else:
+                _note_token(res, tl2)
+            for t in todo:
+                tid = str(t.get("id"))
+                status = states.get(tid)
+                label = f"fb任务 {tid} {t.get('taskTitle')}"
+                if status != "1":
+                    all_ok = False
+                if tid not in reported:
+                    continue
+                if status == "1":
+                    show(label, reported[tid], "，回查已完成")
+                    res["tasks"] += 1
+                elif status is None:
+                    print(f"  -  {label}：上报成功但无法确认任务状态")
+                elif status == str(t.get("completeStatus")):
+                    print(f"  -  {label}：上报成功但任务状态未变化")
+                else:
+                    print(f"  -  {label}：上报成功，回查任务仍未完成")
     # 重新查可兑流量
     time.sleep(1)
     fb2 = call(s, cfg, "fb_index")
@@ -928,16 +972,18 @@ def main():
 
     pause()
     fb = call(s, cfg, "fb_index")
+    fb_tasks = None
     if fb["ok"] and isinstance(fb["data"], dict):
         d = fb["data"]
         res["fb_exchange"] = f"{d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"
-        # 服务端 hasTaskToDo 恒为 True（2026-11-23 实测 7 个任务全完成时仍返回 True），
-        # 不能当判断依据；改按本地记到的任务状态数未完成的个数。
-        recs = (load_json(_gui_path("flowbank_state.json"), {}).get(key) or {}).get("tasks") or {}
-        pending = sum(1 for r in recs.values() if str(r.get("status")) != "1")
-        tail = f"  未完成任务={pending} 个" if recs else "  任务状态未知"
+        # hasTaskToDo 在任务全完成时仍可能为 True，直接读取只读任务列表。
+        pause()
+        tl = call(s, cfg, "fb_tasks")
+        if tl["ok"] and isinstance(tl["data"], list):
+            fb_tasks = tl["data"]
+            track_fb_tasks(key, fb_tasks)
         print(f"  流量银行：可兑 {d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"
-              f"（{d.get('exchangeFlowValue')} 点）{tail}")
+              f"（{d.get('exchangeFlowValue')} 点）{fb_task_summary(key, fb_tasks)}")
 
     if args.dry_run:
         if args.feed_all and res.get("fodder") is not None:
@@ -1013,9 +1059,9 @@ def main():
             if run_visit_tasks(s, cfg, res):
                 _mark_daily_flag(key, "tasks_date")
         if args.fb_tasks and not _daily_flag_done(key, "fb_tasks_date"):
-            if run_fb_tasks(s, cfg, args, res, key):
+            if run_fb_tasks(s, cfg, args, res, key, tasks=fb_tasks):
                 _mark_daily_flag(key, "fb_tasks_date")
-        # 自动策略里开了每日喂养时，就在这一轮顺带喂（run_all 只在 feed_hour 那一轮注入）
+        # run_all 在达到喂养时间且本账号领齐三档时注入喂养参数。
         if want_feed:
             run_feed(s, cfg, args, res, prize_kind, key, track_daily)
         print("\n[daily-only] 结束。")
@@ -1032,7 +1078,7 @@ def main():
 
     # ---------- 可选：流量银行浏览任务 ----------
     if args.fb_tasks:
-        if run_fb_tasks(s, cfg, args, res, key):
+        if run_fb_tasks(s, cfg, args, res, key, tasks=fb_tasks):
             _mark_daily_flag(key, "fb_tasks_date")
 
     # ---------- 可选：阶段奖励 ----------

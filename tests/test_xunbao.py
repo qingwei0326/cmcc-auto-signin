@@ -5,9 +5,13 @@
 这里用假 API 复现那条路径：投到终点 → 开宝箱 → 继续投下一圈。
 """
 
+import io
+import json
 import sys
+import tempfile
 import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _guard  # noqa: F401,E402
 import cmcc_xunbao as X  # noqa: E402
+import common
+import run_all
 
 
 class FakeApi:
@@ -40,9 +46,10 @@ def _init(seq, dice, can_roll, claim=False):
 
 
 class TestEndOfMapResets(unittest.TestCase):
-    def run_with(self, script):
+    def run_with(self, script, **overrides):
         args = types.SimpleNamespace(dry_run=False, tasks=False, invite=False,
                                      did_xxl=False, did_luck=False, max=20)
+        vars(args).update(overrides)
         fake = FakeApi(script)
         with mock.patch.object(X, "Xunbao", lambda tok: fake), \
                 mock.patch.object(X, "save_state", lambda *a, **k: None), \
@@ -105,69 +112,143 @@ class TestEndOfMapResets(unittest.TestCase):
         self.assertEqual(fake.count("dice/roll"), 0)
         self.assertEqual(res["rolls"], 0)
 
+    def test_unauthorized_response_aborts_at_each_stage(self):
+        dead = {"ok": False, "code": 401, "data": {"currentSeq": 1, "diceBalance": 0}}
+        todo = {"ok": True, "data": {"tasks": [{"taskCode": "T", "taskName": "任务"}]}}
+        prize = {"ok": True, "data": {"records": [{"status": 0, "recordNo": "r"}]}}
+        cases = [
+            ({"assist/create": [dead]}, {"invite": True}, "assist/create"),
+            *[({path: [dead]}, {}, path) for path in (
+                "activity/status", "activity/init", "task/list", "prize/list")],
+            ({"task/list": [todo], "task/report": [dead]}, {"tasks": True}, "task/report"),
+            ({"task/list": [todo], "activity/init": [_init(1, 0, False), dead]},
+             {"tasks": True}, "activity/init"),
+            ({"prize/list": [prize, dead]}, {}, "prize/list"),
+            ({"prize/list": [prize], "prize/claim": [dead]}, {}, "prize/claim"),
+            ({"activity/init": [_init(28, 0, False, True)], "treasure/open": [dead]},
+             {}, "treasure/open"),
+            ({"activity/init": [_init(1, 1, True)], "dice/roll": [dead]}, {}, "dice/roll"),
+            ({"activity/init": [_init(1, 1, True), dead]}, {}, "activity/init"),
+        ]
+        for script, overrides, path in cases:
+            with self.subTest(script=script), redirect_stdout(io.StringIO()) as out:
+                fake, res = self.run_with(script, **overrides)
+                self.assertEqual(res, {"tag": "fj1", "skip": True})
+                self.assertEqual(fake.calls[-1], path)
+                self.assertIn("token 失效（401）", out.getvalue())
+                self.assertTrue(common.is_token_dead(out.getvalue()))
+
+    def test_failed_refresh_does_not_turn_into_zero_dice(self):
+        failed = {"ok": False, "code": "-1", "msg": "请求超时"}
+        with redirect_stdout(io.StringIO()) as out:
+            _, res = self.run_with({"activity/init": [_init(1, 1, True), failed]})
+        self.assertEqual(res, {"tag": "fj1", "skip": True})
+        self.assertIn("activity/init 失败", out.getvalue())
+
+    def test_list_failures_other_than_401_do_not_block_rolls(self):
+        """任务 / 奖品列表偶发失败（非 401）不能挡住投骰子。"""
+        failed = {"ok": False, "code": "-1", "msg": "请求超时"}
+        script = {
+            "activity/init": [_init(1, 1, True), _init(2, 0, False)],
+            "task/list": [failed],
+            "prize/list": [failed],
+        }
+        with redirect_stdout(io.StringIO()) as out:
+            fake, res = self.run_with(script)
+        self.assertNotEqual(res.get("skip"), True, out.getvalue())
+        self.assertEqual(fake.count("dice/roll"), 1)
+        self.assertIn("task/list 失败", out.getvalue())
+        self.assertIn("prize/list 失败", out.getvalue())
+
+    def test_main_returns_one_for_expired_task_list(self):
+        api = FakeApi({"task/list": [{"ok": False, "code": "401"}]})
+        with mock.patch.object(X, "collect_targets", return_value=[("fj1", "13800001234", "t")]), \
+                mock.patch.object(X, "Xunbao", return_value=api), \
+                mock.patch.object(sys, "argv", ["cmcc_xunbao.py", "--dry-run"]), \
+                redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(X.main(), 1)
+        self.assertIn("✗ fj1", out.getvalue())
+
 
 class TestMutualAssist(unittest.TestCase):
-    """多号互助力换骰子：调用链正确 + 按号对每天去重。"""
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name) / "state.json"
+        self.targets = [("a", "13800138000", "a"), ("b", "13800001234", "b")]
+        self.apis = {
+            tag: FakeApi({"assist/create": [{"ok": True, "data": {"inviteToken": "tk"}}]})
+            for tag, _, _ in self.targets
+        }
 
-    def test_mutual_assist_calls_create_and_do(self):
-        import tempfile
-        apis = {}
+    def run_assist(self, day):
+        with mock.patch.object(X, "collect_targets", return_value=self.targets), \
+                mock.patch.object(X, "ASSIST_STATE", self.state), \
+                mock.patch.object(X, "Xunbao", side_effect=self.apis.__getitem__), \
+                mock.patch.object(X.time, "strftime", return_value=day), \
+                mock.patch.object(X.time, "sleep"), redirect_stdout(io.StringIO()) as out:
+            res = X.mutual_assist()
+        return res, out.getvalue()
 
-        def make(tok):
-            a = FakeApi({
-                "assist/create": [{"ok": True, "code": "0000",
-                                   "data": {"inviteToken": "tk-" + tok}}],
-                "assist/do": [{"ok": True, "code": "0000", "data": {}}],
-            })
-            apis[tok] = a
-            return a
+    def test_monthly_pair_is_shared_by_both_directions(self):
+        self.assertEqual(self.run_assist("2026-11-27")[0]["success"], 1)
+        self.assertEqual(common.load_json(self.state), {
+            "a|b": "2026-11", "quota:a": "2026-11-27",
+        })
+        res, out = self.run_assist("2026-11-28")
+        self.assertEqual(res["tried"], 0)
+        self.assertIn("已互点，跳过", out)
+        self.assertEqual(sum(api.count("assist/create") for api in self.apis.values()), 1)
+        self.assertEqual(self.run_assist("2026-12-01")[0]["success"], 1)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            (base / "configs_fj").mkdir()
-            for name, tok in (("a", "ta"), ("b", "tb")):
-                (base / "configs_fj" / f"{name}.json").write_text(
-                    __import__("json").dumps({"phone": "1390000" + name + "78",
-                                              "bearer_token": tok}), encoding="utf-8")
-            with mock.patch.object(X, "BASE", base), \
-                 mock.patch.object(X, "CFG_DIR", base / "configs_fj"), \
-                 mock.patch.object(X, "ASSIST_STATE", base / "state.json"), \
-                 mock.patch.object(X, "Xunbao", side_effect=make), \
-                 mock.patch.object(X.time, "sleep"):
-                res = X.mutual_assist()
-        self.assertEqual(res["success"], 2)  # a↔b 两条
-        self.assertEqual(sum(a.count("assist/create") for a in apis.values()), 2)
-        self.assertEqual(sum(a.count("assist/do") for a in apis.values()), 2)
+    def test_legacy_day_only_state_still_applies(self):
+        self.state.write_text(json.dumps({"a": "2026-11-27", "b": "2026-11-27"}))
+        self.assertEqual(self.run_assist("2026-11-27")[0]["tried"], 0)
+        self.assertEqual(self.run_assist("2026-11-28")[0]["success"], 1)
 
-    def test_mutual_assist_skips_same_day(self):
-        import json
-        import tempfile
-        day = X.time.strftime("%Y-%m-%d")
-        apis = {}
+    def test_monthly_rejections_are_cached_without_using_daily_quota(self):
+        self.targets.append(("c", "13900005678", "c"))
+        self.apis["c"] = FakeApi({"assist/create": [{"ok": True, "data": {"inviteToken": "tk"}}]})
+        for msg in ("当月不可为同一人助力。", "本月已接受过"):
+            with self.subTest(msg=msg):
+                self.state.write_text(json.dumps({"quota:b": "2026-11-27", "quota:c": "2026-11-27"}))
+                self.apis["a"].script["assist/do"] = [
+                    {"ok": False, "code": -100, "msg": msg},
+                    {"ok": False, "code": -100, "msg": "您今日助力次数已用尽"},
+                ]
+                self.assertEqual(self.run_assist("2026-11-27")[0]["tried"], 2)
+                state = common.load_json(self.state)
+                self.assertEqual(state["a|b"], "2026-11")
+                self.assertEqual(state["quota:a"], "2026-11-27")
+                self.assertNotIn("a|c", state)
+                self.assertEqual(self.run_assist("2026-11-27")[0]["tried"], 0)
 
-        def make(tok):
-            a = FakeApi({"assist/create": [{"ok": True, "data": {"inviteToken": "tk"}}],
-                         "assist/do": [{"ok": True, "data": {}}]})
-            apis[tok] = a
-            return a
+    def test_assist_reports_expired_owner_and_helper(self):
+        dead = {"ok": False, "code": "401"}
+        for endpoint, token in (("assist/create", "b"), ("assist/do", "a")):
+            with self.subTest(endpoint=endpoint), mock.patch.dict(
+                    self.apis[token].script, {endpoint: [dead]}):
+                res, out = self.run_assist("2026-11-27")
+                self.assertEqual(res["expired"], [token])
+                self.assertIn(f"{token} token 失效（401）", out)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            (base / "configs_fj").mkdir()
-            for name, tok in (("a", "ta"), ("b", "tb")):
-                (base / "configs_fj" / f"{name}.json").write_text(
-                    json.dumps({"phone": "1390000" + name + "78",
-                                "bearer_token": tok}), encoding="utf-8")
-            (base / "state.json").write_text(
-                json.dumps({"a": day, "b": day}), encoding="utf-8")
-            with mock.patch.object(X, "BASE", base), \
-                 mock.patch.object(X, "CFG_DIR", base / "configs_fj"), \
-                 mock.patch.object(X, "ASSIST_STATE", base / "state.json"), \
-                 mock.patch.object(X, "Xunbao", side_effect=make), \
-                 mock.patch.object(X.time, "sleep"):
-                res = X.mutual_assist()
-        self.assertEqual(res["success"], 0)
-        self.assertEqual(sum(a.count("assist/create") for a in apis.values()), 0)
+    def test_assist_do_does_not_retry_terminal_rejection(self):
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"code": -100, "msg": "当月不可为同一人助力。"}
+        with mock.patch.object(X, "make_session") as make, mock.patch.object(X.time, "sleep"):
+            make.return_value.post.return_value = response
+            self.assertEqual(str(X.Xunbao("t").call("assist/do")["code"]), "-100")
+            make.return_value.post.assert_called_once()
+
+    def test_run_all_notes_in_process_expiry(self):
+        directory = self.state.parent
+        (directory / "a.json").write_text('{"phone":"13800138000"}', encoding="utf-8")
+        with mock.patch.dict(run_all.PLATFORMS, {"bass": {"dir": directory}}), \
+                mock.patch.object(X, "mutual_assist", return_value={"expired": ["a"]}), \
+                mock.patch.object(run_all, "run_script", return_value=("...8000", True, 0, "")), \
+                mock.patch.object(run_all, "TOKEN_DEAD_ACCOUNTS", []), redirect_stdout(io.StringIO()):
+            run_all.run_xunbao(dry_run=False, mutual=True)
+            self.assertEqual(run_all.TOKEN_DEAD_ACCOUNTS, ["...8000"])
 
 
 if __name__ == "__main__":

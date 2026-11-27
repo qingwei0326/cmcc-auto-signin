@@ -112,20 +112,15 @@ def collect_targets(key=None):
 
 
 def mutual_assist(dry_run=False):
-    """用 configs_fj 下的多个号互相点「好友助力」加骰子。
-
-    实测（2026-11-23）：owner 调 assist/create 拿 inviteToken → helper 调
-    assist/do {inviteToken} → owner 骰子 +1。服务端限制的是**每个号每天只能当
-    一次 helper**（第三个号再帮就回「您今日助力次数已用尽」），所以按
-    「日期 + 助力者」记进 xunbao_assist_state.json：每个号每天只帮一个别的号，
-    当天不再重复；服务端次数用尽也写状态，避免白跑接口。三个号一天约多 3 骰。
-    """
+    """按号对记录当月助力，按助力者记录当天额度，返回遇到 401 的配置名。"""
     targets = collect_targets()
+    expired = set()
     if len(targets) < 2:
         print("多号互助力：至少需要两个福建账号，跳过。")
-        return {"tried": 0, "success": 0}
+        return {"tried": 0, "success": 0, "expired": []}
     sessions = [(tag, phone, Xunbao(tok)) for tag, phone, tok in targets]
     day = time.strftime("%Y-%m-%d")
+    month = day[:7]
 
     tried = success = 0
     with file_lock(ASSIST_STATE):
@@ -133,40 +128,65 @@ def mutual_assist(dry_run=False):
         changed = False
         print(f"\n环闽寻宝 · 多号互助力（{len(sessions)} 个号）")
         for hi, (helper, _hp, hapi) in enumerate(sessions):
-            if state.get(helper) == day:
+            if helper in expired:
+                continue
+            quota_key = f"quota:{helper}"
+            # 旧状态只有助力者和日期，仍可用于当天的额度判断。
+            if state.get(quota_key) == day or state.get(helper) == day:
                 print(f"  - {helper} 今天已帮过，跳过")
                 continue
             # 轮着挑被助力方，避免每次都帮同一个号
             owners = [s for j, s in enumerate(sessions) if j != hi]
             owners = owners[hi % len(owners):] + owners[:hi % len(owners)]
             for owner, _op, oapi in owners:
+                pair_key = "|".join(sorted((helper, owner)))
+                if state.get(pair_key) == month:
+                    print(f"  - {helper} 与 {owner} {month} 已互点，跳过")
+                    continue
+                if owner in expired:
+                    continue
                 tried += 1
                 if dry_run:
                     print(f"  [dry-run] {helper} 帮 {owner}")
                     break
                 cr = oapi.call("assist/create")
-                tk = (cr.get("data") or {}).get("inviteToken") or ""
+                if str(cr.get("code")) == "401":
+                    print(f"  - {owner} token 失效（401），跳过")
+                    expired.add(owner)
+                    continue
+                tk = (cr.get("data") or {}).get("inviteToken") if cr.get("ok") else None
                 if not tk:
                     print(f"  - {owner} 生成助力码失败 code={cr.get('code')}，换下一个")
                     continue
                 hr = hapi.call("assist/do", {"inviteToken": tk})
+                code = str(hr.get("code"))
                 msg = str(hr.get("msg") or "")
+                if code == "401":
+                    print(f"  - {helper} token 失效（401），跳过")
+                    expired.add(helper)
+                    break
                 if hr.get("ok"):
                     print(f"  ✓ {helper} 帮 {owner}（{owner} +1 骰）")
-                    state[helper] = day
+                    state[pair_key] = month
+                    state[quota_key] = day
                     changed = True
                     success += 1
                     break
-                if "次数已用尽" in msg or "已助力" in msg:
+                if code == "-100" and ("当月不可为同一人助力" in msg or "已接受过" in msg):
+                    print(f"  - {helper} 与 {owner} 本月已互点，跳过")
+                    state[pair_key] = month
+                    changed = True
+                    continue
+                if "次数已用尽" in msg:
                     print(f"  - {helper} 今日助力次数已用尽")
-                    state[helper] = day
+                    state[quota_key] = day
                     changed = True
                     break
                 print(f"  ✗ {helper} 帮 {owner}: code={hr.get('code')} {msg[:30]}")
                 time.sleep(random.uniform(0.6, 1.1))
         if changed:
             atomic_write_json(ASSIST_STATE, state)
-    return {"tried": tried, "success": success}
+    return {"tried": tried, "success": success, "expired": sorted(expired)}
 
 
 def save_state(phone, info, rolls=0, prizes=0):
@@ -211,17 +231,37 @@ class Xunbao:
         body = {"appId": 0, "timestamp": int(time.time() * 1000)}
         if data:
             body.update(data)
-        return api_post(self.s, API + path, body, retries=1)
+        retry_codes = ("1006",) if path == "assist/do" else ("-100", "1006")
+        return api_post(self.s, API + path, body, retries=1, retry_codes=retry_codes)
+
+
+class XunbaoRequestError(Exception):
+    """无法继续当前账号的寻宝流程。"""
 
 
 def run_one(tag, phone_hint, tok, args):
     api = Xunbao(tok)
     print("\n" + "-" * 62)
     print(f"【{tag}】{mask_phone(phone_hint)}")
+    try:
+        return _run_activity(api, tag, phone_hint, args)
+    except XunbaoRequestError as e:
+        print(f"  {e}")
+        return {"tag": tag, "skip": True}
+
+
+def _run_activity(api, tag, phone_hint, args):
+    def call(path, data=None, *, required=False):
+        r = api.call(path) if data is None else api.call(path, data)
+        if str(r.get("code")) == "401":
+            raise XunbaoRequestError(f"{path}：token 失效（401），请重新抓包更新该号 bearer。")
+        if required and not r.get("ok"):
+            raise XunbaoRequestError(f"{path} 失败：{r.get('code')} {r.get('msg') or ''}")
+        return r
 
     if args.invite:
         # 好友助力要真人点链接，程序只负责生成链接，剩下交给朋友
-        r = api.call("assist/create")
+        r = call("assist/create")
         tk = (r.get("data") or {}).get("inviteToken") if r.get("ok") else ""
         if tk:
             print(f"  助力链接（发给好友，点「去助力」即可）：\n"
@@ -230,20 +270,11 @@ def run_one(tag, phone_hint, tok, args):
             print(f"  生成助力链接失败：{r.get('code')} {r.get('msg')}")
         return {"tag": tag, "phone": phone_hint, "skip": not bool(tk), "invite": True}
 
-    st = api.call("activity/status")
-    if str(st.get("code")) == "401":
-        print("  token 失效（401），跳过。请重新抓包更新该号 bearer。")
-        return {"tag": tag, "skip": True}
-    if not st.get("ok"):
-        print(f"  activity/status 失败：{st.get('code')} {st.get('msg')}")
-        return {"tag": tag, "skip": True}
+    st = call("activity/status", required=True)
     act = st.get("data") or {}
     print(f"  活动期 {act.get('activityPeriod')}  {act.get('startTime')} ~ {act.get('endTime')}")
 
-    init = api.call("activity/init")
-    if not init.get("ok"):
-        print(f"  activity/init 失败：{init.get('code')} {init.get('msg')}")
-        return {"tag": tag, "skip": True}
+    init = call("activity/init", required=True)
     d = init.get("data") or {}
     board = d.get("board") or []
     total = max((c.get("seq") or 0) for c in board) if board else 0
@@ -260,8 +291,11 @@ def run_one(tag, phone_hint, tok, args):
           + ("　★ 宝箱待开启" if claim_req else ""))
 
     # ---- 任务 ----
-    tl = api.call("task/list")
+    # 任务和奖品列表只是附带信息：401 照样按失效处理，其它失败不挡投骰子
+    tl = call("task/list")
     tasks = ((tl.get("data") or {}).get("tasks") or []) if tl.get("ok") else []
+    if not tl.get("ok"):
+        print(f"  task/list 失败：{tl.get('code')} {tl.get('msg') or ''}（本轮不报任务）")
     if tasks:
         print("  加骰子任务：")
         for t in tasks:
@@ -275,17 +309,17 @@ def run_one(tag, phone_hint, tok, args):
                   f"  {t.get('limitType')}×{t.get('limitCount')}{note}")
 
     # ---- 我的奖品 ----
-    prize_state = {}
-    pl = api.call("prize/list", {"page": 1, "size": 20})
+    pl = call("prize/list", {"page": 1, "size": 20})
+    pd = (pl.get("data") or {}) if pl.get("ok") else {}
+    recs = pd.get("records") or []
+    pending = [r for r in recs if str(r.get("status")) == "0"]
     if pl.get("ok"):
-        pd = pl.get("data") or {}
-        recs = pd.get("records") or []
-        pending = [r for r in recs if str(r.get("status")) == "0"]
-        prize_state = {"total": pd.get("total"), "pending": len(pending)}
         print(f"  我的奖品：共 {pd.get('total')} 个，待领取 {len(pending)} 个")
-        if recs:
-            top = recs[0]
-            print(f"    最近：{top.get('winTime')} {top.get('prizeName')}")
+    else:
+        print(f"  prize/list 失败：{pl.get('code')} {pl.get('msg') or ''}")
+    if recs:
+        top = recs[0]
+        print(f"    最近：{top.get('winTime')} {top.get('prizeName')}")
 
     if args.dry_run:
         save_state(phone, {
@@ -294,8 +328,8 @@ def run_one(tag, phone_hint, tok, args):
             "tasks": [{"code": t.get("taskCode"), "name": t.get("taskName"),
                        "done": str(t.get("status")) == "1", "dice": t.get("rewardDice")}
                       for t in tasks],
-            "prizes_total": prize_state.get("total"),
-            "prizes_pending": prize_state.get("pending"),
+            "prizes_total": pd.get("total"),
+            "prizes_pending": len(pending),
         })
         return {"tag": tag, "phone": phone, "seq": seq, "total": total, "dice": dice,
                 "rolls": 0, "prizes": 0}
@@ -311,26 +345,26 @@ def run_one(tag, phone_hint, tok, args):
         for t in todo:
             # task/report 只递 taskCode，服务端按 activity 配置发骰子；
             # 「好友助力」「打开消息提醒」不在 SKIP_TASKS 之外的名单里，不报。
-            r = api.call("task/report", {"taskCode": t.get("taskCode")})
+            r = call("task/report", {"taskCode": t.get("taskCode")})
             ok = r.get("ok")
             print(f"    {'OK ' if ok else '!! '} {t.get('taskName')}  "
                   f"code={r.get('code')} {'' if ok else (r.get('msg') or '')}")
             time.sleep(random.uniform(1.2, 2.0))
         if todo:
             time.sleep(1.2)
-            d = (api.call("activity/init").get("data") or {})
+            d = call("activity/init", required=True).get("data") or {}
             dice = int(d.get("diceBalance") or 0)
             can_roll = bool(d.get("canRoll"))
             print(f"    上报后骰子 {dice} 个")
 
     # ---- 领取待领取奖品 ----
     new_prizes = []
-    if prize_state.get("pending"):
-        pl2 = api.call("prize/list", {"page": 1, "size": 20})
+    if pending:
+        pl2 = call("prize/list", {"page": 1, "size": 20})
         for r in ((pl2.get("data") or {}).get("records") or []):
             if str(r.get("status")) != "0":
                 continue
-            rc = api.call("prize/claim", {"recordNo": r.get("recordNo")})
+            rc = call("prize/claim", {"recordNo": r.get("recordNo")})
             ok = rc.get("ok")
             print(f"  [领奖] {'OK ' if ok else '!! '}{r.get('prizeName')}  code={rc.get('code')}")
             if ok:
@@ -347,12 +381,12 @@ def run_one(tag, phone_hint, tok, args):
     opened = set()          # 已经开过箱的 (圈内位置)，防止服务端延迟时反复开箱
 
     def read_state():
-        d3 = (api.call("activity/init").get("data") or {})
+        d3 = call("activity/init", required=True).get("data") or {}
         return (int(d3.get("currentSeq") or 0), int(d3.get("diceBalance") or 0),
                 bool(d3.get("canRoll")), bool(d3.get("treasureClaimRequired")))
 
     def open_treasure():
-        r = api.call("treasure/open")
+        r = call("treasure/open")
         if not r.get("ok"):
             print(f"  [宝箱] 失败 code={r.get('code')} {r.get('msg')}")
             return ""
@@ -379,11 +413,11 @@ def run_one(tag, phone_hint, tok, args):
             continue
         if rolls >= args.max or not can_roll or dice <= 0:
             break
-        r = api.call("dice/roll")
+        r = call("dice/roll")
         code = str(r.get("code"))
         if not r.get("ok"):
             print(f"    [{rolls + 1}] 投掷失败 code={code} {r.get('msg')}")
-            if code in ("401", "-1"):
+            if code == "-1":
                 break
             time.sleep(2.0)
             continue
@@ -454,14 +488,14 @@ def main():
     ap.add_argument("--max", type=int, default=20, help="每号本次最多投几次，默认 20")
     ap.add_argument("--invite", action="store_true", help="只生成好友助力链接，不投骰子")
     ap.add_argument("--mutual-assist", action="store_true",
-                    help="多号互相点好友助力换骰子（按号对每天一次）")
+                    help="多号互相点好友助力换骰子（同一号对每月一次）")
     args = ap.parse_args()
 
     if args.mutual_assist:
-        mutual_assist(dry_run=args.dry_run)
+        result = mutual_assist(dry_run=args.dry_run)
         if args.dry_run:
             print("\n（--dry-run，未真点助力）")
-        return 0
+        return 1 if result["expired"] else 0
 
     targets = collect_targets(args.key)
     if not targets:

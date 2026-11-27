@@ -273,7 +273,7 @@ def run_once(cfg=None) -> int:
         saved = INBOX_DIR / f"{int(time.time())}_{uid_s}_{safe_name(fn)}"
         saved.write_text(text, encoding="utf-8")
         print(f"收到 HAR：{fn}（{len(text)} 字符）→ {saved.name}")
-        report = HI.apply(text)
+        report = HI.apply(text, source_path=saved)
         for line in report:
             print("  " + line)
         mark_seen(uid_s)

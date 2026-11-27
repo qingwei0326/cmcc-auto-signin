@@ -129,6 +129,7 @@ class TestPolicy(unittest.TestCase):
             platforms["qwhd"]["dir"] = Path(tmp) / "configs"
             platforms["bass"]["dir"] = Path(tmp) / "configs_fj"
             with mock.patch.object(run_all, "PLATFORMS", platforms), \
+                 mock.patch.object(run_all, "mark_today_done"), \
                  mock.patch.object(run_all.subprocess, "run", fake), \
                  mock.patch.object(sys, "argv", ["run_all.py", "--daily-only"]), \
                  mock.patch.object(run_all, "notify"), \

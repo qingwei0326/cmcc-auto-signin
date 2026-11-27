@@ -26,7 +26,7 @@ token 说明：
     python cmcc_luck.py --dry-run       # 只看剩余次数和任务，不抽
     python cmcc_luck.py --key fj2       # 只跑某一个配置
     python cmcc_luck.py --no-tasks      # 不刷任务，只抽现有次数
-    python cmcc_luck.py --skip-assist   # 刷任务，但跳过「请好友帮忙」
+    python cmcc_luck.py --report-assist # 显式上报「请好友帮忙」
     python cmcc_luck.py --max 5         # 每号最多抽 5 次
     python cmcc_luck.py --har x.har     # 改用 HAR 里的会话（兜底）
 """
@@ -165,16 +165,16 @@ def save_state(phone, info, draws=0, wins=0):
 
 # ---------------------------------------------------------------- 加次数任务
 
-TASK_ASSIST = 3          # taskType=3 请好友帮忙（没有对端账号，只能空报）
+TASK_ASSIST = 3          # taskType=3 请好友帮忙，实际次数由好友在小程序助力后增加
 
 
-def do_tasks(get, visit, tasks, skip_assist=False):
+def do_tasks(get, visit, tasks, skip_assist=True):
     """把「加抽奖次数」的任务做掉。返回 {"done", "skip", "expired"}。
 
     设计取舍：
     · complete=true 的跳过 —— 服务端已经记过账，再报一次也不会多给次数
     · 带 taskUrl 的先真打开一次页面再上报，尽量走和真人一样的路径
-    · 不带 taskUrl 的（请好友帮忙 / APP 中参与）只能直接上报，实测同样 0000
+    · 「请好友帮忙」默认跳过，自己上报返回 0000 也不会增加抽奖次数
     · 碰到 401 立刻收手 —— 后面抽奖也一定失败，别把次数白耗在重试上
     """
     done, skip, expired = [], [], False
@@ -280,7 +280,7 @@ def run_one(tag, phone_hint, tok, args):
     # ---- 刷任务（加抽奖次数）----
     if tasks and not args.no_tasks:
         print("  [刷任务]")
-        rep = do_tasks(get, visit, tasks, skip_assist=args.skip_assist)
+        rep = do_tasks(get, visit, tasks, skip_assist=not args.report_assist)
         for name in rep["done"]:
             print(f"    OK  {name}")
         for name, why in rep["skip"]:
@@ -292,9 +292,20 @@ def run_one(tag, phone_hint, tok, args):
                     "draws": 0, "wins": 0, "skip": True}
         if rep["done"]:
             time.sleep(1.5)
-            d2 = get("index").get("data") or {}
-            surplus = int(d2.get("surplusLuckCount") or 0)
-            print(f"    刷完 {len(rep['done'])} 个任务，剩余次数 {surplus}")
+            refresh = get("index")
+            if str(refresh.get("code")) == "401":
+                print("  token 失效（401），停止。请更新该号 bearer。")
+                return {"tag": tag, "skip": True}
+            if str(refresh.get("code")) == "0000":
+                d2 = refresh.get("data") or {}
+                updated_surplus = int(d2.get("surplusLuckCount") or 0)
+                if updated_surplus <= surplus:
+                    print(f"    上报 {len(rep['done'])} 个任务但抽奖次数未增加："
+                          + "、".join(rep["done"]))
+                surplus = updated_surplus
+                print(f"    刷完 {len(rep['done'])} 个任务，剩余次数 {surplus}")
+            else:
+                print(f"    刷任务后查询次数失败：{refresh.get('code')} {refresh.get('msg') or ''}")
 
     if surplus <= 0:
         print("  没有可抽次数，结束。")
@@ -356,8 +367,9 @@ def main():
     ap.add_argument("--har", default=None, help="用 HAR 里的会话（兜底），不指定则读配置里的 bearer")
     ap.add_argument("--dry-run", action="store_true", help="只查状态，不做任务不抽奖")
     ap.add_argument("--no-tasks", action="store_true", help="不刷任务，只抽现有次数")
-    ap.add_argument("--skip-assist", action="store_true",
-                    help="刷任务，但跳过「请好友帮忙」（没有对端账号，只能空报）")
+    ap.add_argument("--report-assist", action="store_true",
+                    help="也上报「请好友帮忙」（自己上报不增加抽奖次数）")
+    ap.add_argument("--skip-assist", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--max", type=int, default=20, help="每个号最多抽几次，默认 20")
     args = ap.parse_args()
 

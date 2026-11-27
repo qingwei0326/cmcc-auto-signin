@@ -3,11 +3,13 @@
 2026-11-22 实测：`index.taskList` 里那 4 个任务（请好友帮忙 / 逛移动爱购商城 /
 中国移动APP中参与 / 浏览调研页面）逐个 `doTask` 全回 `0000`，剩余次数 0 → 2。
 但 `run_all.run_luck` 一直写死传 `--no-tasks`，等于每天白扔两次抽奖机会。
-这里把这套判定钉住，顺带钉住「已完成的任务不要重复报」和「401 立刻收手」。
+好友助力由好友在小程序完成，自己上报不增加次数。
 """
 
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -44,7 +46,7 @@ class PhonePickingTest(unittest.TestCase):
 
 
 class DoTasksTest(unittest.TestCase):
-    def test_reports_every_unfinished_task(self):
+    def test_reports_every_unfinished_non_assist_task_by_default(self):
         tasks = [
             {"taskName": "请好友帮忙", "taskType": 3, "id": "a", "complete": False},
             {"taskName": "逛移动爱购商城", "taskType": 5, "id": "b", "complete": False,
@@ -60,11 +62,10 @@ class DoTasksTest(unittest.TestCase):
         with _no_sleep():
             rep = L.do_tasks(get, visited.append, tasks)
 
-        self.assertEqual(rep["done"], ["请好友帮忙", "逛移动爱购商城", "浏览调研页面"])
-        self.assertEqual(rep["skip"], [])
+        self.assertEqual(rep["done"], ["逛移动爱购商城", "浏览调研页面"])
+        self.assertEqual(rep["skip"], [("请好友帮忙", "好友助力，已跳过")])
         self.assertFalse(rep["expired"])
-        self.assertEqual(calls, ["doTask/3/a", "doTask/5/b", "doTask/5/c"])
-        # 只有带 taskUrl 的才去真打开页面；其余两个没有落地页
+        self.assertEqual(calls, ["doTask/5/b", "doTask/5/c"])
         self.assertEqual(visited, ["https://shop/1"])
 
     def test_already_complete_is_skipped(self):
@@ -86,8 +87,7 @@ class DoTasksTest(unittest.TestCase):
         self.assertEqual(rep["done"], ["浏览调研页面"])
         self.assertIn(("中国移动APP中参与", "服务端已记完成"), rep["skip"])
 
-    def test_skip_assist_leaves_friend_task_alone(self):
-        """「请好友帮忙」没有对端账号，只能空报；不想空报时给个开关。"""
+    def test_opt_in_reports_assist_task(self):
         tasks = [{"taskName": "请好友帮忙", "taskType": 3, "id": "a", "complete": False}]
         calls = []
 
@@ -96,16 +96,15 @@ class DoTasksTest(unittest.TestCase):
             return {"code": "0000"}
 
         with _no_sleep():
-            rep = L.do_tasks(get, lambda u: None, tasks, skip_assist=True)
+            rep = L.do_tasks(get, lambda u: None, tasks, skip_assist=False)
 
-        self.assertEqual(calls, [])
-        self.assertEqual(rep["done"], [])
-        self.assertIn(("请好友帮忙", "好友助力，已跳过"), rep["skip"])
+        self.assertEqual(calls, ["doTask/3/a"])
+        self.assertEqual(rep["done"], ["请好友帮忙"])
 
     def test_401_stops_immediately(self):
         """刷任务途中票失效：后面的任务和抽奖都一定失败，别继续耗。"""
         tasks = [
-            {"taskName": "请好友帮忙", "taskType": 3, "id": "a", "complete": False},
+            {"taskName": "中国移动APP中参与", "taskType": 2, "id": "a", "complete": False},
             {"taskName": "浏览调研页面", "taskType": 5, "id": "c", "complete": False},
         ]
         calls = []
@@ -135,6 +134,31 @@ class DoTasksTest(unittest.TestCase):
         self.assertEqual(rep["done"], ["乙"])
         self.assertEqual(rep["skip"], [("甲", "code=-100 任务类型有误")])
         self.assertFalse(rep["expired"])
+
+
+class LuckTaskRefreshTest(unittest.TestCase):
+    def test_cli_opt_in_and_reports_no_chance_increase(self):
+        task = {"taskName": "请好友帮忙", "taskType": 3, "id": "a"}
+        for flags in ([], ["--skip-assist"], ["--report-assist"]):
+            with self.subTest(flags=flags):
+                initial = {"code": "0000", "data": {"surplusLuckCount": 0, "taskList": [task]}}
+                refreshed = {"code": "0000", "data": {"surplusLuckCount": 0}}
+                replies = [initial, {"code": "0000"}, {"code": "0000"}, refreshed]
+                with mock.patch.object(L, "collect_targets", return_value=[
+                        ("fj1", "13800001234", "token")]), \
+                        mock.patch.object(L.requests, "Session") as session, \
+                        mock.patch.object(L, "save_state"), _no_sleep(), \
+                        mock.patch.object(sys, "argv", ["cmcc_luck.py", *flags]), \
+                        redirect_stdout(io.StringIO()) as out:
+                    get = session.return_value.get
+                    get.side_effect = [mock.Mock(json=mock.Mock(return_value=r)) for r in replies]
+                    self.assertEqual(L.main(), 0)
+                paths = [call.args[0].removeprefix(L.API) for call in get.call_args_list]
+                if flags == ["--report-assist"]:
+                    self.assertEqual(paths, ["index", "qrySubscription", "doTask/3/a", "index"])
+                    self.assertIn("上报 1 个任务但抽奖次数未增加：请好友帮忙", out.getvalue())
+                else:
+                    self.assertEqual(paths, ["index", "qrySubscription"])
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
 PHONE_RE = re.compile(r"1[3-9]\d{9}")
 # 脱敏号码，如 173****4167
 MASKED_RE = re.compile(r"1[3-9]\d\*\*\*\*\d{4}")
+# 没写进任何凭证时对源 HAR 的统一说明
+KEPT_HINT = "保留文件以便重试"
 
 
 def _headers(req):
@@ -430,16 +432,43 @@ def notify_import_problem(report):
     return notify(title, "\n".join(safe_lines) or "没有找到可导入的凭证。")
 
 
-def apply(text, key=None):
-    """解析并验证候选票据，再更新对应配置。"""
+def _finish_with_source(report, source_path, success):
+    """导入结束后处理源 HAR：写进了凭证、或里面一个凭证都没有，就删；
+    找到了凭证却没写进去（验证失败 / 写配置失败）、解析失败，才保留以便重试。
+
+    success 只认「至少一份凭证真正写进 configs/ 或 configs_fj/」——
+    由 report_outcome() 的 ✓ 行判定；状态标记失败等 ✗ 不影响这个结论。
+    删除失败只写报告、不抛异常：不加 ✗ 前缀，避免把已成功的导入误报成失败。
+    """
+    if not source_path:
+        return report
+    if not success:
+        report.append(KEPT_HINT)
+        return report
+    source = Path(source_path)
+    try:
+        source.unlink()
+    except OSError:
+        report.append(f"抓包文件 {source.name} 删除失败（可能被占用），请手动删除")
+    else:
+        report.append(f"已删除抓包文件 {source.name}")
+    return report
+
+
+def apply(text, key=None, source_path=None):
+    """解析并验证候选票据，再更新对应配置。
+
+    source_path 不为空时：至少一份凭证真正写入就删除该 HAR 源文件；
+    解析失败 / 没抓到可用 token / 写配置失败则保留文件，并在报告里说明。
+    """
     try:
         p = parse_har_text(text)
     except (ValueError, AttributeError, TypeError):
-        return ["✗ HAR 解析失败，请重新导出"]
+        return _finish_with_source(["✗ HAR 解析失败，请重新导出"], source_path, False)
     try:
         _assert_writable()
     except (RuntimeError, OSError):
-        return ["✗ 项目配置目录不可写"]
+        return _finish_with_source(["✗ 项目配置目录不可写"], source_path, False)
 
     report = []
     _import_national(p, report)
@@ -448,7 +477,10 @@ def apply(text, key=None):
         report.append("qwhdhub 无可用 token（未抓到 App 登录票据）")
     if not p["bass_candidates"]:
         report.append("BASS 无可用 token（未抓到福建 Bearer）")
-    return report
+    # 一个凭证都没有的 HAR 留着也没用，还带着手机号等隐私，直接删
+    no_creds = not p["qwhd"] and not p["bass_candidates"]
+    return _finish_with_source(report, source_path,
+                               report_outcome(report)[0] or no_creds)
 
 
 def scan_dir(directory=None):
@@ -484,15 +516,17 @@ def scan_files(files):
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
             p = parse_har_text(text)
-        except Exception as e:
+        except Exception:
             lines.append("✗ HAR 解析失败，请重新导出")
+            lines.append(KEPT_HINT)
             continue
         if not p["qwhd"] and not p["bass"]:
             lines.append(f"{f.name}：未含目标请求，跳过")
+            _finish_with_source(lines, f, True)
             continue
         used += 1
         lines.append(f"—— {f.name} ——")
-        lines.extend(apply(text))
+        lines.extend(apply(text, source_path=f))
     return lines, used
 
 

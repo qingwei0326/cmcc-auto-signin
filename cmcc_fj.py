@@ -205,8 +205,10 @@ def prize_id_for(stage, kind):
     return max(int(stage or 0), 0) * 3 + off
 
 
-FB_STATE = BASE / "gui_data" / "flowbank_state.json"
-DAILY_STATE = BASE / "gui_data" / "daily_state.json"
+def _gui_path(name: str) -> Path:
+    return BASE / "gui_data" / name
+
+
 CYCLE_NAME = {1: "每月一次", 2: "每周一次", 0: "不限次"}
 
 
@@ -239,7 +241,7 @@ def _parse_feed_reward(r):
 
 def handle_feed_reward(s, cfg, key, res, dry_run):
     """查询并按需领取昨日投喂奖励，同一配置的查询和领取串行执行。"""
-    lock_path = DAILY_STATE.with_name(f"feed_reward.{key}")
+    lock_path = _gui_path("daily_state.json").with_name(f"feed_reward.{key}")
     try:
         with file_lock(lock_path):
             reply = call(s, cfg, "next_receive")
@@ -307,7 +309,7 @@ def handle_meet(s, cfg, key, res, dry_run):
 
     与投喂累计奖励同属领奖动作，串行加锁避免多进程重复领。
     """
-    lock_path = DAILY_STATE.with_name(f"meet.{key}")
+    lock_path = _gui_path("daily_state.json").with_name(f"meet.{key}")
     try:
         with file_lock(lock_path):
             pending, checked, probe = meet_state(s, cfg)
@@ -354,7 +356,7 @@ def track_daily(key, daily_list=None, lucky=None, sign=None,
                      feed_reward, feed_reward_checked)
 
     try:
-        update_json(DAILY_STATE, mutate)
+        update_json(_gui_path("daily_state.json"), mutate)
     except Exception:
         pass
 
@@ -429,7 +431,7 @@ def daily_nothing_to_do(key, *, need_feed=False, need_tasks=False, need_fb_tasks
     """
     if need_feed:
         return False
-    acc = (load_json(DAILY_STATE, {}) or {}).get(key) or {}
+    acc = (load_json(_gui_path("daily_state.json"), {}) or {}).get(key) or {}
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     if (acc.get("tiers_date") != today or acc.get("feed_reward_date") != today
             or acc.get("feed_reward")):
@@ -448,7 +450,7 @@ def daily_nothing_to_do(key, *, need_feed=False, need_tasks=False, need_fb_tasks
 
 def _daily_flag_done(key, field) -> bool:
     """今天是否已成功执行过指定分支（如 tasks_date / fb_tasks_date）。"""
-    acc = (load_json(DAILY_STATE, {}) or {}).get(key) or {}
+    acc = (load_json(_gui_path("daily_state.json"), {}) or {}).get(key) or {}
     return acc.get(field) == datetime.date.today().isoformat()
 
 
@@ -456,7 +458,7 @@ def _mark_daily_flag(key, field) -> None:
     """记录当天已完成某分支，避免每小时轮询重复打接口。"""
     today = datetime.date.today().isoformat()
     try:
-        update_json(DAILY_STATE, lambda st: st.setdefault(key, {}).__setitem__(field, today))
+        update_json(_gui_path("daily_state.json"), lambda st: st.setdefault(key, {}).__setitem__(field, today))
     except Exception as e:
         print(f"  [警告] 每日标记写入失败（{field}）：{e}")
 
@@ -477,7 +479,7 @@ def track_fb_tasks(key, tasks):
         _apply_fb(st.setdefault(key, {}), tasks, stamp)
 
     try:
-        update_json(FB_STATE, mutate)
+        update_json(_gui_path("flowbank_state.json"), mutate)
     except Exception:
         pass
 
@@ -714,7 +716,7 @@ def run_fb_tasks(s, cfg, args, res, key) -> bool:
         track_fb_tasks(key, tl["data"])
         # 周任务只在周一之后、月任务只在 1 号之后才尝试；没到周期直接跳过，
         # 少打无意义的请求（这个接口有 1006 频控）。
-        recs = (load_json(FB_STATE, {}).get(key) or {}).get("tasks") or {}
+        recs = (load_json(_gui_path("flowbank_state.json"), {}).get(key) or {}).get("tasks") or {}
         todo, skipped = fb_due_tasks(tl["data"], recs, force=getattr(args, "fb_all", False))
         if skipped:
             print(f"  -  {len(skipped)} 个周/月任务未到周初/月初，跳过"
@@ -931,7 +933,7 @@ def main():
         res["fb_exchange"] = f"{d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"
         # 服务端 hasTaskToDo 恒为 True（2026-11-23 实测 7 个任务全完成时仍返回 True），
         # 不能当判断依据；改按本地记到的任务状态数未完成的个数。
-        recs = (load_json(FB_STATE, {}).get(key) or {}).get("tasks") or {}
+        recs = (load_json(_gui_path("flowbank_state.json"), {}).get(key) or {}).get("tasks") or {}
         pending = sum(1 for r in recs.values() if str(r.get("status")) != "1")
         tail = f"  未完成任务={pending} 个" if recs else "  任务状态未知"
         print(f"  流量银行：可兑 {d.get('exchangeFlow')}{d.get('exchangeFlowUnit')}"

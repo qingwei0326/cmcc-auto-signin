@@ -117,12 +117,14 @@ class TestDailyShortcut(unittest.TestCase):
     def setUp(self):
         import cmcc_fj
         self.F = cmcc_fj
-        self.tmp = Path(tempfile.mkdtemp()) / "daily_state.json"
-        self._orig = cmcc_fj.DAILY_STATE
-        cmcc_fj.DAILY_STATE = self.tmp
-
-    def tearDown(self):
-        self.F.DAILY_STATE = self._orig
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        patch_base = mock.patch.object(cmcc_fj, "BASE", base)
+        patch_base.start()
+        self.addCleanup(patch_base.stop)
+        self.tmp = base / "gui_data" / "daily_state.json"
+        self.tmp.parent.mkdir()
 
     def _write(self, obj):
         self.tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
@@ -464,18 +466,14 @@ class TestMailWatch(unittest.TestCase):
         导致导入成功后邮件没标记已读、下次重复导入。守住这个 bug。"""
         import tempfile
         import mail_watch as mw
-        with tempfile.TemporaryDirectory() as td:
-            real = mw.STATE
-            mw.STATE = Path(td) / "mail_state.json"
-            try:
-                mw.mark_seen("12345")
-                st = json.loads(mw.STATE.read_text(encoding="utf-8"))
-                self.assertIn("12345", st.get("seen", []))
-                mw.mark_seen("67890")
-                st = json.loads(mw.STATE.read_text(encoding="utf-8"))
-                self.assertEqual(set(st["seen"]), {"12345", "67890"})
-            finally:
-                mw.STATE = real
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(mw, "BASE", Path(td)):
+            path = Path(td) / "gui_data" / "mail_state.json"
+            mw.mark_seen("12345")
+            st = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIn("12345", st.get("seen", []))
+            mw.mark_seen("67890")
+            st = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(st["seen"]), {"12345", "67890"})
 
     def test_run_once_notifies_on_success(self):
         """用户明确要求：导入成功也要推通知（不只失败时）。守住这条链路。"""
@@ -495,7 +493,7 @@ class TestMailWatch(unittest.TestCase):
         cfg = {"enabled": True, "host": "imap.test", "user": "u@t",
                "password": "p", "sender": "", "subject_keyword": "HAR"}
         with tempfile.TemporaryDirectory() as td, \
-             mock.patch.object(mw, "INBOX_DIR", Path(td)), \
+             mock.patch.object(mw, "BASE", Path(td)), \
              mock.patch.object(mw, "conf", return_value=cfg), \
              mock.patch.object(mw, "should_check", return_value=True), \
              mock.patch.object(mw, "load_state", return_value={}), \

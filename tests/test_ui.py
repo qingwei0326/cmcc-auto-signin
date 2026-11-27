@@ -599,27 +599,22 @@ class TestHumanFacing(unittest.TestCase):
 
 class TestFeedOncePerDay(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.real_feed = run_all.FEED_STATE
-        self.real_base = run_all.BASE
-        self.real_daily = run_all.DAILY_STATE
-        run_all.FEED_STATE = Path(self.tmp.name) / "feed_state.json"
-        run_all.DAILY_STATE = Path(self.tmp.name) / "daily_state.json"
-        run_all.BASE = Path(self.tmp.name)
-        d = run_all.BASE / "configs_fj"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        patch_base = mock.patch.object(run_all, "BASE", base)
+        patch_base.start()
+        self.addCleanup(patch_base.stop)
+        self.daily_state = base / "gui_data" / "daily_state.json"
+        self.daily_state.parent.mkdir()
+        d = base / "configs_fj"
         d.mkdir()
         (d / "1234.json").write_text("{}", encoding="utf-8")
         self.set_tiers()
 
-    def tearDown(self):
-        run_all.FEED_STATE = self.real_feed
-        run_all.BASE = self.real_base
-        run_all.DAILY_STATE = self.real_daily
-        self.tmp.cleanup()
-
     def set_tiers(self, statuses=("RECEIVED", "RECEIVED", "RECEIVED")):
         today = datetime.now().date().isoformat()
-        run_all.DAILY_STATE.write_text(json.dumps({
+        self.daily_state.write_text(json.dumps({
             "1234": {"tiers_date": today,
                      "tiers": [{"status": s} for s in statuses]},
         }), encoding="utf-8")

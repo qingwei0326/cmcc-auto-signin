@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _guard  # noqa: F401,E402
+import common  # noqa: E402
 import cmcc_luck as L  # noqa: E402
 
 
@@ -159,6 +160,62 @@ class LuckTaskRefreshTest(unittest.TestCase):
                     self.assertIn("上报 1 个任务但抽奖次数未增加：请好友帮忙", out.getvalue())
                 else:
                     self.assertEqual(paths, ["index", "qrySubscription"])
+
+
+class SubscriptionStatusTest(unittest.TestCase):
+    """index 可能「假活」：bearer 失效时它照样回 0000，只有 qrySubscription 回 401。
+
+    光看 index 会把失效号当成正常号（dry-run 也报 ✓），必须靠订阅状态查询兜底。
+    """
+
+    def _run_dry(self, replies, phone):
+        """复用现有 mock 方式：打桩 Session.get 的 json()，不碰网络也不写状态。"""
+        with mock.patch.object(L.requests, "Session") as session, \
+                mock.patch.object(L, "save_state"), \
+                redirect_stdout(io.StringIO()) as out:
+            get = session.return_value.get
+            get.side_effect = [mock.Mock(json=mock.Mock(return_value=r)) for r in replies]
+            res = L.run_one("fj", phone, "token", mock.Mock(dry_run=True))
+        return res, out.getvalue()
+
+    def test_401_from_subscription_is_dead_even_in_dry_run(self):
+        res, text = self._run_dry([
+            {"code": "0000", "data": {"surplusLuckCount": 1, "taskList": []}},
+            {"code": "401", "msg": "未登陆", "data": None},
+        ], "13800138000")
+        self.assertTrue(res["skip"])
+        self.assertIn("token 失效（401）", text)
+        self.assertTrue(common.is_token_dead(text))
+
+    def test_401_as_integer_is_also_dead(self):
+        res, text = self._run_dry([
+            {"code": "0000", "data": {"surplusLuckCount": 1, "taskList": []}},
+            {"code": 401, "msg": "未登陆"},
+        ], "13900005678")
+        self.assertTrue(res["skip"])
+        self.assertIn("token 失效（401）", text)
+        self.assertTrue(common.is_token_dead(text))
+
+    def test_other_subscription_error_does_not_mark_dead(self):
+        res, text = self._run_dry([
+            {"code": "0000", "data": {"surplusLuckCount": 2, "taskList": []}},
+            {"code": -1, "msg": "查询异常"},
+        ], "13800001234")
+        self.assertFalse(res.get("skip"))
+        self.assertEqual(res["surplus"], 2)
+        self.assertIn("订阅状态查询失败：-1 查询异常", text)
+        self.assertFalse(common.is_token_dead(text))
+
+    def test_normal_subscription_dry_run_unchanged(self):
+        res, text = self._run_dry([
+            {"code": "0000", "data": {"surplusLuckCount": 3, "taskList": []}},
+            {"code": "0000", "data": {"subscriptionStatus": False, "first": True}},
+        ], "13800001234")
+        self.assertFalse(res.get("skip"))
+        self.assertEqual(res["surplus"], 3)
+        self.assertEqual(res["draws"], 0)
+        self.assertIn("subscriptionStatus=False  first=True", text)
+        self.assertFalse(common.is_token_dead(text))
 
 
 if __name__ == "__main__":

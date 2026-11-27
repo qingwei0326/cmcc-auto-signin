@@ -33,7 +33,11 @@ from common import (RotatingLog, Tee, app_base, atomic_write_json, child_cmd,
                     update_json)   # 导入即固定 UTF-8 输出
 
 BASE = app_base()
-RUNS_FILE = BASE / "gui_data" / "runs.json"
+
+
+def _gui_path(name: str) -> Path:
+    return BASE / "gui_data" / name
+
 
 # 这一轮里「凭证过期」的账号。它们不是真的执行失败，只是票过期了，
 # 汇总成一条通知就行；每小时一轮的每日奖励任务不该一小时骂一次。
@@ -85,7 +89,7 @@ def today_finished(awards=None, runs=None, today=None, results=None, dry_run=Fal
             if ok and str(key) not in ("check", "dryrun", "query", "config"):
                 return True
 
-    runs = load_json(RUNS_FILE, default=[]) if runs is None else runs
+    runs = load_json(_gui_path("runs.json"), default=[]) if runs is None else runs
     readonly_marks = ("只读", "dry-run", "查询", "配置", "刷新全部账号状态")
     for r in runs or []:
         if not str(r.get("ts", "")).startswith(today) or not r.get("ok"):
@@ -97,19 +101,11 @@ def today_finished(awards=None, runs=None, today=None, results=None, dry_run=Fal
     return False
 
 
-# 每日自动喂养的「今天已喂过」标记，防止计划任务补跑时重复消耗饲料
-FEED_STATE = BASE / "gui_data" / "feed_state.json"
-# 三档饲料的领取状态（由 cmcc_fj 写入），用来判断能不能「领齐再一起喂」
-DAILY_STATE = BASE / "gui_data" / "daily_state.json"
-# 邮箱收 HAR 的触发标记：只有「票确实失效且今天任务没全做完」才去查邮箱
-MAIL_NEED = BASE / "gui_data" / "mail_need.json"
-
-
 # 消消乐当天运行记录：11:45 的 MobileSignIn 单独跑消消乐，每小时的 MobileDailyReward
 # 单独跑寻宝（强制 xxl=False）。寻宝的「参与消消乐换骰子」任务需要知道今天有没有跑过
 # 消消乐，跨进程只能靠这个文件，不能只看本轮 results。
 def _xxl_daily_path() -> Path:
-    return BASE / "gui_data" / "xxl_daily_state.json"
+    return _gui_path("xxl_daily_state.json")
 
 
 def all_tiers_claimed() -> bool:
@@ -118,7 +114,7 @@ def all_tiers_claimed() -> bool:
     档位之间要隔 60 分钟，全领完至少要约 3 小时。用户要求先把饲料领完
     再一次性喂，而不是到点就先喂一部分，所以喂养必须等这个条件。
     """
-    st = load_json(DAILY_STATE, default={}) or {}
+    st = load_json(_gui_path("daily_state.json"), default={}) or {}
     today = datetime.date.today().isoformat()
     confs = sorted((BASE / "configs_fj").glob("*.json"))
     if not confs:
@@ -149,7 +145,7 @@ def feed_due(pol: dict) -> bool:
         return False
     if not all_tiers_claimed():
         return False
-    st = load_json(FEED_STATE, default={}) or {}
+    st = load_json(_gui_path("feed_state.json"), default={}) or {}
     return st.get("date") != datetime.date.today().isoformat()
 
 
@@ -165,12 +161,12 @@ def mark_mail_needed(accounts) -> None:
         prev["at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         prev["accounts"] = merged
 
-    update_json(MAIL_NEED, mutate, default={}, indent=1)
+    update_json(_gui_path("mail_need.json"), mutate, default={}, indent=1)
 
 
 def mark_today_done() -> None:
     """今天所有任务都跑顺了：邮箱监听就不必再查。"""
-    path = BASE / "gui_data" / "today_done.json"
+    path = _gui_path("today_done.json")
     atomic_write_json(path, {"date": datetime.date.today().isoformat()}, indent=1)
 
 
@@ -187,8 +183,7 @@ def should_mark_done(platform: str, good: int, total: int) -> bool:
 
 
 def mark_fed() -> None:
-    FEED_STATE.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(FEED_STATE, {
+    atomic_write_json(_gui_path("feed_state.json"), {
         "date": datetime.date.today().isoformat(),
         "at": datetime.datetime.now().strftime("%H:%M:%S"),
     }, indent=1)
@@ -226,6 +221,10 @@ def xxl_ran_today(name=None) -> bool:
     accounts = st.get("accounts") or []
     if name is None:
         return bool(accounts)
+    return _account_recorded(name, accounts)
+
+
+def _account_recorded(name, accounts) -> bool:
     if name in accounts:
         return True
     # 配置名与脚本回传名可能一个尾号一个全号，做一次宽松匹配
@@ -514,12 +513,10 @@ def run_wed(dry_run: bool) -> list:
 
 
 def run_xunbao(dry_run: bool, tasks: bool = False,
-               did_xxl: bool = False, did_luck: bool = False,
-               mutual: bool = False) -> list:
+               mutual: bool = False, *, luck_accounts=()) -> list:
     """环闽寻宝记：投掉现有骰子、开宝箱，中奖写进到账台账。
 
-    `did_xxl` / `did_luck` 表示本轮已经玩过消消乐 / 抽过大转盘：
-    寻宝的加骰子任务里有这两项，只有真做过才允许上报换骰子。
+    消消乐查该账号的当天状态，转盘查该账号在本轮的成功记录。
     """
     confs = sorted(PLATFORMS["bass"]["dir"].glob("*.json"))
     if not confs:
@@ -540,18 +537,18 @@ def run_xunbao(dry_run: bool, tasks: bool = False,
                 note_token_dead(label_of(PLATFORMS["bass"]["dir"] / f"{tag}.json", "phone"))
         except Exception as e:
             print(f"  [xunbao] 互助力异常：{e}")
-    args = []
-    if tasks:
-        # 只报这一轮真做过的任务；好友助力永远不报
-        args.append("--tasks")
-        if did_xxl:
-            args.append("--did-xxl")
-        if did_luck:
-            args.append("--did-luck")
-    if dry_run:
-        args.append("--dry-run")
     results = []
     for index, conf in enumerate(confs, 1):
+        args = []
+        if tasks:
+            args.append("--tasks")
+            name = label_of(conf, "phone")
+            if xxl_ran_today(name):
+                args.append("--did-xxl")
+            if _account_recorded(name, luck_accounts):
+                args.append("--did-luck")
+        if dry_run:
+            args.append("--dry-run")
         # 寻宝是顺手多拿一次，挂了不能把整轮签到判成失败
         try:
             name, ok, sec, text = run_script(
@@ -775,13 +772,9 @@ def main():
     # 注意两个计划任务是分开的：11:45 只跑消消乐，每小时只跑寻宝（xxl=False），
     # 所以消消乐的「做过」不能只看本轮 results，还要读当天状态文件（mark_xxl_ran 写的）。
     if args.xunbao:
-        # 只认当天状态文件：run_xxl 只把真玩成 ≥1 局的号写进去，
-        # 退出码 0 但一局没玩（体力用尽）的不算「参与过消消乐」
-        did_xxl = xxl_ran_today()
-        did_luck = any(k == "luck" and ok for k, _n, ok, _s in results)
+        luck_accounts = [name for key, name, ok, _sec in results if key == "luck" and ok]
         results.extend(run_xunbao(args.dry_run, tasks=args.xunbao_tasks,
-                                  did_xxl=did_xxl, did_luck=did_luck,
-                                  mutual=args.xunbao_mutual))
+                                  mutual=args.xunbao_mutual, luck_accounts=luck_accounts))
 
     if args.seckill:
         results.extend(run_seckill(args.dry_run, args.seckill_at))

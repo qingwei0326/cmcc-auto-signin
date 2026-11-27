@@ -45,7 +45,7 @@ from pathlib import Path
 
 import requests
 
-from common import app_base, mask_phone, record_award, setup_utf8, update_json
+from common import app_base, record_award, setup_utf8, update_json
 
 setup_utf8()
 

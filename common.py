@@ -147,7 +147,9 @@ def file_lock(path, timeout=20.0):
                 break
             except OSError:
                 if time.time() >= deadline:
-                    raise TimeoutError(f"等待文件锁超时：{lock_path}")
+                    # 刻意保留隐式异常上下文；改成 raise ... from e / from None
+                    # 会改变 __cause__/__context__ 与调用方看到的 traceback。
+                    raise TimeoutError(f"等待文件锁超时：{lock_path}")  # noqa: B904
                 time.sleep(0.05)
         try:
             yield

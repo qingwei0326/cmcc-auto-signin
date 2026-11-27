@@ -708,8 +708,7 @@ class TestVerifiedHarImport(unittest.TestCase):
         """有效票在 sign_info 回 1600（前置任务未完成）时不能被误判为失效。"""
         import cmcc_fj as FJ
         cfg = {"bearer_token": "12345678-1234-1234-1234-123456789abc"}
-        with mock.patch.object(FJ, "new_session") as new_session:
-            session = new_session.return_value.__enter__.return_value
+        with mock.patch.object(FJ, "new_session"):
             with mock.patch.object(FJ, "call", side_effect=lambda s, c, key, **kw: (
                     {"ok": True, "code": "0000"} if key == "index_info"
                     else {"ok": False, "code": "1600", "msg": "前置任务未完成"})) as call:
@@ -1254,7 +1253,6 @@ class TestFrozenPathGuards(unittest.TestCase):
 
     def test_find_har_files_covers_wechat(self):
         """微信接收目录必须被纳入搜索范围（抓包文件常从微信直接拖过来）。"""
-        import common
         src = (ROOT / "common.py").read_text(encoding="utf-8")
         self.assertIn("msg/file", src)
         self.assertIn("xwechat_files", src)
@@ -1287,7 +1285,6 @@ class TestFrozenPathGuards(unittest.TestCase):
             }), encoding="utf-8")
 
             real_base = har_import.BASE
-            real_apply = har_import.apply
             try:
                 har_import.BASE = Path(d)
                 har = {"log": {"entries": [{
@@ -1331,7 +1328,6 @@ class TestContinuousStage(unittest.TestCase):
 
     def test_flag_exists_and_is_exclusive(self):
         """--continue-stage 与 --auto-claim 互斥，两个都传必须报错退出。"""
-        import cmcc_fj
         src = (ROOT / "cmcc_fj.py").read_text(encoding="utf-8")
         self.assertIn('--continue-stage', src)
         self.assertIn("参数冲突", src)
@@ -2213,7 +2209,6 @@ class TestFlowbankCycleGate(unittest.TestCase):
     def test_weekly_task_due_after_monday(self):
         import cmcc_fj as FJ
         # 本周五完成 → 本周内都不该再试
-        fri = datetime(2026, 11, 20, 0, 55)
         self.assertFalse(FJ.fb_due(2, "2026-11-20 00:55", datetime(2026, 11, 20, 19, 0)))
         self.assertFalse(FJ.fb_due(2, "2026-11-20 00:55", datetime(2026, 11, 22, 23, 0)))
         # 下周一 → 新周期，可做
@@ -2846,7 +2841,6 @@ class TestFeedMeet(unittest.TestCase):
     """喂养轮次链：COMPLETED 轮次 doMeet 领奖+解锁，老号不误碰。"""
 
     def _meet(self, tasks):
-        import cmcc_fj as FJ
         return {"ok": True, "code": "0000", "data": {"taskDtoList": tasks}}
 
     def test_completed_current_round_is_claimable(self):
@@ -2981,7 +2975,6 @@ class TestXunbaoTaskReport(unittest.TestCase):
     def test_bass_button_carries_xunbao(self):
         """「只跑福建活动」必须带寻宝；只跑全国签到不能带（福建号才有的活动）。"""
         import dashboard
-        import types
         captured = []
 
         def fake_start(label, cmd, **kw):

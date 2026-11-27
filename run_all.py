@@ -29,7 +29,7 @@ from pathlib import Path
 
 from common import (RotatingLog, Tee, app_base, atomic_write_json, child_cmd, file_lock,
                     collect_notify_settings, is_token_dead, load_awards,
-                    load_json, load_policy, notify, notify_once, parse_result,
+                    load_json, load_policy, notify, notify_once, parse_result,  # noqa: F401  测试用 mock.patch.object 按字符串引用 run_all.notify，须保留
                     update_json)   # 导入即固定 UTF-8 输出
 
 BASE = app_base()

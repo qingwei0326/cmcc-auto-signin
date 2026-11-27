@@ -22,7 +22,6 @@ import importlib.util
 import io
 import json
 import os
-import queue
 import re
 import subprocess
 import sys
@@ -36,8 +35,8 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from common import (PLAT_STATS_FIELDS, assert_safe_url, atomic_write_json, child_cmd,
-                    is_token_dead, load_global_settings, load_policy, parse_result,
-                    pushplus_token_ok, save_global_settings, save_policy, script_path,
+                    load_global_settings, load_policy, parse_result,
+                    pushplus_token_ok, save_global_settings, save_policy,
                     seed_platform_stats, stats_key, update_json)
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）

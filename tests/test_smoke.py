@@ -453,7 +453,7 @@ class TestIsolation(unittest.TestCase):
         曾经 `cmcc_extra.run_lottery` 抽中会调 record_award，而 _guard 只隔离了
         全局设置、没隔离台账，每跑一次测试就往真实台账塞 3 条无账号的假记录。
         """
-        import _guard  # noqa: F401  触发隔离
+        import _guard  # noqa: F401,F811  触发隔离（刻意重复导入，见 tests/_guard.py）
         import common
         real = Path(__file__).resolve().parent.parent / "gui_data" / "awards.json"
         self.assertNotEqual(Path(common.AWARDS_FILE).resolve(), real.resolve(),

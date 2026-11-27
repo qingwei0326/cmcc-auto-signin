@@ -8,9 +8,7 @@ probe_fj.py —— 探测 BASS 平台各接口的返回结构（全部只读，�
 
 import argparse
 import json
-import sys
 import time
-from pathlib import Path
 
 import requests
 

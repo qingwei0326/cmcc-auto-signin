@@ -36,7 +36,6 @@ import random
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 
 from common import (api_post, app_base, atomic_write_json, file_lock, load_json,
                     make_session, mask_phone, record_award, setup_utf8, update_json)

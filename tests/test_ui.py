@@ -599,52 +599,85 @@ class TestHumanFacing(unittest.TestCase):
 
 class TestFeedOncePerDay(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.real_feed = run_all.FEED_STATE
-        self.real_base = run_all.BASE
-        self.real_daily = run_all.DAILY_STATE
-        run_all.FEED_STATE = Path(self.tmp.name) / "feed_state.json"
-        run_all.DAILY_STATE = Path(self.tmp.name) / "daily_state.json"
-        run_all.BASE = Path(self.tmp.name)
-        d = run_all.BASE / "configs_fj"
-        d.mkdir()
-        (d / "1234.json").write_text("{}", encoding="utf-8")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        patch_base = mock.patch.object(run_all, "BASE", base)
+        patch_base.start()
+        self.addCleanup(patch_base.stop)
+        self.daily_state = base / "gui_data" / "daily_state.json"
+        self.daily_state.parent.mkdir()
+        self.feed_state = self.daily_state.with_name("feed_state.json")
+        self.confs = [base / "1234.json", base / "5678.json"]
         self.set_tiers()
-
-    def tearDown(self):
-        run_all.FEED_STATE = self.real_feed
-        run_all.BASE = self.real_base
-        run_all.DAILY_STATE = self.real_daily
-        self.tmp.cleanup()
 
     def set_tiers(self, statuses=("RECEIVED", "RECEIVED", "RECEIVED")):
         today = datetime.now().date().isoformat()
-        run_all.DAILY_STATE.write_text(json.dumps({
-            "1234": {"tiers_date": today,
-                     "tiers": [{"status": s} for s in statuses]},
+        self.daily_state.write_text(json.dumps({
+            key: {"tiers_date": today, "tiers": [{"status": s} for s in account_statuses]}
+            for key, account_statuses in (("1234", statuses),
+                                           ("5678", ("RECEIVED", "PENDING", "PENDING")))
         }), encoding="utf-8")
 
     def test_due_only_after_configured_hour(self):
         hour = datetime.now().hour
-        self.assertTrue(run_all.feed_due({"feed_hour": hour}))
+        self.assertTrue(run_all.feed_due({"feed_hour": hour}, "1234"))
         if hour < 23:
-            self.assertFalse(run_all.feed_due({"feed_hour": hour + 1}))
+            self.assertFalse(run_all.feed_due({"feed_hour": hour + 1}, "1234"))
 
     def test_not_due_until_all_tiers_claimed(self):
         """三档没领齐不能先喂，用户要求领完再一起喂。"""
         self.set_tiers(("RECEIVED", "RECEIVED", "PENDING"))
-        self.assertFalse(run_all.feed_due({"feed_hour": 0}))
+        self.assertFalse(run_all.feed_due({"feed_hour": 0}, "1234"))
         self.set_tiers()
-        self.assertTrue(run_all.feed_due({"feed_hour": 0}))
+        self.assertTrue(run_all.feed_due({"feed_hour": 0}, "1234"))
 
     def test_second_run_same_day_is_skipped(self):
         """计划任务补跑不能重复烧饲料。"""
-        self.assertTrue(run_all.feed_due({"feed_hour": 0}))
-        run_all.mark_fed()
-        self.assertFalse(run_all.feed_due({"feed_hour": 0}))
+        self.assertTrue(run_all.feed_due({"feed_hour": 0}, "1234"))
+        run_all.mark_fed("1234")
+        self.assertFalse(run_all.feed_due({"feed_hour": 0}, "1234"))
 
     def test_bad_hour_never_due(self):
-        self.assertFalse(run_all.feed_due({}))
+        self.assertFalse(run_all.feed_due({}, "1234"))
+
+    def test_legacy_marker_covers_every_account_only_on_its_date(self):
+        today = datetime.now().date().isoformat()
+        with mock.patch.object(run_all, "all_tiers_claimed", return_value=True):
+            for date, expected in ((today, False), ("2000-01-01", True)):
+                self.feed_state.write_text(json.dumps({"date": date}), encoding="utf-8")
+                for conf in self.confs:
+                    self.assertEqual(run_all.feed_due({"feed_hour": 0}, conf.stem), expected)
+
+    def test_only_eligible_account_gets_feed_and_only_actual_feed_is_recorded(self):
+        args_by_account = {}
+        feeds = 0
+
+        def fake_run_one(key, conf, dry_run, args, idx, total):
+            args_by_account[conf.stem] = args
+            count = feeds if "--feed-all" in args and not dry_run else 0
+            return (conf.stem, True, 0, '@@RESULT ' + json.dumps({"feeds": count}))
+
+        def run_round(dry_run=False):
+            run_all.run_platform("bass", self.confs, dry_run, ["--daily-only"],
+                                 feed_policy={"feed_hour": 0}, feed_args=["--feed-all"])
+
+        with mock.patch.object(run_all, "run_one", side_effect=fake_run_one), \
+                redirect_stdout(io.StringIO()):
+            run_round()
+            self.assertIn("--feed-all", args_by_account["1234"])
+            self.assertNotIn("--feed-all", args_by_account["5678"])
+            self.assertFalse(self.feed_state.exists(), "退出成功但实际未喂，须留待补跑")
+            feeds = 1
+            run_round(dry_run=True)
+            self.assertIn("--feed-all", args_by_account["1234"])
+            self.assertFalse(self.feed_state.exists())
+            run_round()
+            self.assertIn("--feed-all", args_by_account["1234"])
+            self.assertEqual(set(json.loads(self.feed_state.read_text(encoding="utf-8"))["accounts"]),
+                             {"1234"})
+            run_round()
+            self.assertNotIn("--feed-all", args_by_account["1234"])
 
 
 class TestFrontendOptimization(unittest.TestCase):

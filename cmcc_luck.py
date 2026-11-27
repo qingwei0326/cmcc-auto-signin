@@ -269,7 +269,14 @@ def run_one(tag, phone_hint, tok, args):
         if not todo:
             print("  加次数任务今天已经做完了")
 
-    sub = get("qrySubscription").get("data") or {}
+    sub_resp = get("qrySubscription")
+    sub_code = str(sub_resp.get("code"))
+    if sub_code == "401":
+        print("  token 失效（401），跳过。请更新该号 bearer，或用 --har 指定新抓的包。")
+        return {"tag": tag, "skip": True}
+    if sub_code != "0000":
+        print(f"  订阅状态查询失败：{sub_resp.get('code')} {sub_resp.get('msg') or ''}")
+    sub = sub_resp.get("data") or {}
     print(f"  订阅状态 subscriptionStatus={sub.get('subscriptionStatus')}  first={sub.get('first')}")
 
     if args.dry_run:

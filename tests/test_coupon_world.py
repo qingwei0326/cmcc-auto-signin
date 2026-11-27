@@ -84,7 +84,7 @@ class TestCouponWorldFlow(unittest.TestCase):
             return {"ok": True, "code": "0000", "msg": "成功", "data": None}
 
         with tempfile.TemporaryDirectory() as td, \
-             mock.patch.object(F, "DAILY_STATE", Path(td) / "daily_state.json"), \
+             mock.patch.object(F, "BASE", Path(td)), \
              mock.patch.object(F, "call", fake_call), \
              mock.patch.object(F, "call_post", fake_post), \
              mock.patch.object(F, "pause", lambda *a, **k: None), \

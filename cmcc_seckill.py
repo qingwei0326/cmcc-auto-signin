@@ -37,7 +37,6 @@ import logging
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from cmcc_sign import (
     API_MARK,

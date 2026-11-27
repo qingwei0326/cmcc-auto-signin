@@ -42,12 +42,11 @@ from common import (RotatingLog, Tee, app_base, atomic_write_json, load_json,
 setup_utf8()
 
 BASE = app_base()
-DATA = BASE / "gui_data"
-SETTINGS = DATA / "mail_settings.json"
-STATE = DATA / "mail_state.json"
-MAIL_NEED = DATA / "mail_need.json"
-TODAY_DONE = DATA / "today_done.json"
-INBOX_DIR = BASE / "incoming_har"
+
+
+def _gui_path(name: str) -> Path:
+    return BASE / "gui_data" / name
+
 
 PROVIDERS = {
     "gmail": {"host": "imap.gmail.com", "port": 993,
@@ -74,7 +73,7 @@ DEFAULTS = {
 
 def conf():
     s = dict(DEFAULTS)
-    s.update(load_json(SETTINGS, default={}) or {})
+    s.update(load_json(_gui_path("mail_settings.json"), default={}) or {})
     p = PROVIDERS.get(str(s.get("provider") or "gmail").lower())
     if p and not str(s.get("host") or "").strip():
         s["host"] = p["host"]
@@ -83,7 +82,7 @@ def conf():
 
 
 def load_state() -> dict:
-    return load_json(STATE, default={}) or {}
+    return load_json(_gui_path("mail_state.json"), default={}) or {}
 
 
 def should_check() -> bool:
@@ -96,10 +95,10 @@ def should_check() -> bool:
     跑完（比如凌晨跑过一波消消乐写了 today_done），11:45 那张新票也得有人去收，
     否则用户发了 HAR 也永远等不到导入。today_done 只用来省掉「没事干时的空扫描」。
     """
-    need = load_json(MAIL_NEED, default={}) or {}
+    need = load_json(_gui_path("mail_need.json"), default={}) or {}
     if need.get("needed"):
         return True
-    done = load_json(TODAY_DONE, default={}) or {}
+    done = load_json(_gui_path("today_done.json"), default={}) or {}
     if done.get("date") == datetime.date.today().isoformat():
         print("今天的任务已全部完成，不查邮箱")
         return False
@@ -108,7 +107,7 @@ def should_check() -> bool:
 
 
 def clear_need():
-    atomic_write_json(MAIL_NEED, {
+    atomic_write_json(_gui_path("mail_need.json"), {
         "needed": False,
         "cleared_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }, indent=1)
@@ -120,7 +119,7 @@ def mark_seen(uid: str):
         seen.add(str(uid))
         st["seen"] = sorted(seen)[-500:]
         st["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    update_json(STATE, mutate, default={})
+    update_json(_gui_path("mail_state.json"), mutate, default={})
 
 
 def connect(cfg):
@@ -253,7 +252,8 @@ def run_once(cfg=None) -> int:
 
     import har_import as HI
 
-    INBOX_DIR.mkdir(exist_ok=True)
+    inbox_dir = BASE / "incoming_har"
+    inbox_dir.mkdir(exist_ok=True)
     ok = 0
     pending = []
     for uid in uids:
@@ -270,7 +270,7 @@ def run_once(cfg=None) -> int:
         if not found:
             continue
         fn, text = found
-        saved = INBOX_DIR / f"{int(time.time())}_{uid_s}_{safe_name(fn)}"
+        saved = inbox_dir / f"{int(time.time())}_{uid_s}_{safe_name(fn)}"
         saved.write_text(text, encoding="utf-8")
         print(f"收到 HAR：{fn}（{len(text)} 字符）→ {saved.name}")
         report = HI.apply(text, source_path=saved)

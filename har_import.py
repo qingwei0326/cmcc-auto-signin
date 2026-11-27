@@ -11,7 +11,9 @@ har_import.py —— 从 HAR 里同时提取 qwhdhub app_token 与 BASS Bearer t
 """
 
 import json
+import os
 import re
+import stat
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -432,6 +434,15 @@ def notify_import_problem(report):
     return notify(title, "\n".join(safe_lines) or "没有找到可导入的凭证。")
 
 
+def _unlink_even_readonly(path):
+    """删除文件；微信接收目录里的 HAR 带只读属性，Windows 上要先去掉只读再删。"""
+    try:
+        path.unlink()
+    except PermissionError:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        path.unlink()
+
+
 def _finish_with_source(report, source_path, success):
     """导入结束后处理源 HAR：写进了凭证、或里面一个凭证都没有，就删；
     找到了凭证却没写进去（验证失败 / 写配置失败）、解析失败，才保留以便重试。
@@ -447,7 +458,7 @@ def _finish_with_source(report, source_path, success):
         return report
     source = Path(source_path)
     try:
-        source.unlink()
+        _unlink_even_readonly(source)
     except OSError:
         report.append(f"抓包文件 {source.name} 删除失败（可能被占用），请手动删除")
     else:

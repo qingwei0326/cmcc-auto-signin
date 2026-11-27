@@ -22,7 +22,6 @@ import importlib.util
 import io
 import json
 import os
-import queue
 import re
 import subprocess
 import sys
@@ -36,8 +35,8 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from common import (PLAT_STATS_FIELDS, assert_safe_url, atomic_write_json, child_cmd,
-                    is_token_dead, load_global_settings, load_policy, parse_result,
-                    pushplus_token_ok, save_global_settings, save_policy, script_path,
+                    load_global_settings, load_policy, parse_result,
+                    pushplus_token_ok, save_global_settings, save_policy,
                     seed_platform_stats, stats_key, update_json)
 
 # PyInstaller 冻结后 __file__ 指向临时解压目录，BASE 改用 exe 所在目录（项目根）
@@ -45,10 +44,12 @@ if getattr(sys, "frozen", False):
     BASE = Path(sys.executable).resolve().parent
 else:
     BASE = Path(__file__).resolve().parent
-DATA = Path(os.environ.get("CMCC_DASHBOARD_DATA") or BASE / "gui_data")
-DATA.mkdir(exist_ok=True)
-STATS_FILE = DATA / "stats.json"
-RUNS_FILE = DATA / "runs.json"
+
+
+def _data_dir() -> Path:
+    return Path(os.environ.get("CMCC_DASHBOARD_DATA") or BASE / "gui_data")
+
+
 # 估算口径：一次人工签到（开App/切号/点任务/领奖励）约 5 分钟，自动化跑一轮即节省该时间
 MANUAL_MIN_PER_RUN = 5
 PORT = int(os.environ.get("CMCC_DASH_PORT", "8765"))
@@ -141,7 +142,7 @@ def _start(label, cmd, parser=None, shell=False, need_py=True) -> dict:
 
 def load_stats() -> dict:
     try:
-        return json.loads(STATS_FILE.read_text(encoding="utf-8"))
+        return json.loads((_data_dir() / "stats.json").read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -151,7 +152,7 @@ RUNS_LOCK = threading.Lock()
 
 def load_runs() -> list:
     try:
-        return json.loads(RUNS_FILE.read_text(encoding="utf-8"))
+        return json.loads((_data_dir() / "runs.json").read_text(encoding="utf-8"))
     except Exception:
         return []
 
@@ -162,7 +163,7 @@ def append_run(label: str, sec: float, ok: bool):
                      "label": label, "sec": round(sec, 1), "ok": ok})
         del runs[:-500]
     with RUNS_LOCK:
-        update_json(RUNS_FILE, mutate, default=[], indent=0)
+        update_json(_data_dir() / "runs.json", mutate, default=[], indent=0)
 
 
 def efficiency() -> dict:
@@ -201,7 +202,7 @@ def update_stats(key: str, **kw):
     不加锁会整份互相覆盖（原子写只防半截文件，不防丢更新）。
     """
     with STATS_LOCK:
-        update_json(STATS_FILE, lambda st: seed_platform_stats(st, key).update(kw))
+        update_json(_data_dir() / "stats.json", lambda st: seed_platform_stats(st, key).update(kw))
 
 
 def bump_daily(key: str, flow_mb: float = 0, tasks: int = 0, feeds: int = 0):
@@ -225,7 +226,7 @@ def bump_daily(key: str, flow_mb: float = 0, tasks: int = 0, feeds: int = 0):
         if feeds:
             a["feeds_total"] = a.get("feeds_total", 0) + feeds
     with STATS_LOCK:
-        update_json(STATS_FILE, mutate)
+        update_json(_data_dir() / "stats.json", mutate)
 
 
 # ======================================================================
@@ -634,7 +635,8 @@ class TaskRunner:
         return True
 
 
-RUNNER = TaskRunner(DATA / "console.log")
+_data_dir().mkdir(exist_ok=True)
+RUNNER = TaskRunner(_data_dir() / "console.log")
 
 
 def py(*args):
@@ -1247,7 +1249,7 @@ def do_action(body: dict):
     if act == "mail_save":
         # Gmail 收 HAR：授权码单独存 gui_data/mail_settings.json，不进 git
         m = body.get("mail") or {}
-        old = _load_json_safe(DATA / "mail_settings.json") or {}
+        old = _load_json_safe(_data_dir() / "mail_settings.json") or {}
         pwd = str(m.get("password") or "").strip()
         cfg = {
             "enabled": bool(m.get("enabled", old.get("enabled", False))),
@@ -1261,7 +1263,7 @@ def do_action(body: dict):
         }
         if cfg["enabled"] and (not cfg["user"] or not cfg["password"]):
             return {"ok": False, "err": "启用收件前要填邮箱地址和应用专用密码"}
-        atomic_write_json(DATA / "mail_settings.json", cfg, indent=1)
+        atomic_write_json(_data_dir() / "mail_settings.json", cfg, indent=1)
         return {"ok": True, "msg": "邮箱收件设置已保存"}
 
     if act == "mail_test":
@@ -1511,10 +1513,10 @@ def build_state():
         "eff": efficiency(),
         "task": {"running": RUNNER.running, "label": RUNNER.label},
         "bass_files": [str(f.relative_to(BASE)) for f in sorted((BASE / "configs_fj").glob("*.json"))] if (BASE / "configs_fj").exists() else [],
-        "flowbank": _load_json_safe(DATA / "flowbank_state.json"),
-        "daily": _load_json_safe(DATA / "daily_state.json"),
-        "luck": _load_json_safe(DATA / "luck_state.json"),
-        "xunbao": _load_json_safe(DATA / "xunbao_state.json"),
+        "flowbank": _load_json_safe(_data_dir() / "flowbank_state.json"),
+        "daily": _load_json_safe(_data_dir() / "daily_state.json"),
+        "luck": _load_json_safe(_data_dir() / "luck_state.json"),
+        "xunbao": _load_json_safe(_data_dir() / "xunbao_state.json"),
         "awards": _awards_view(),
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
@@ -1525,8 +1527,8 @@ def build_state():
         "env": {"ok": env_ok, "msg": env_msg},
         "policy": load_policy(),
         "settings": load_global_settings(),
-        "mail": {**(_load_json_safe(DATA / "mail_settings.json") or {}),
-                 "password": "******" if (_load_json_safe(DATA / "mail_settings.json") or {}).get("password") else ""},
+        "mail": {**(_load_json_safe(_data_dir() / "mail_settings.json") or {}),
+                 "password": "******" if (_load_json_safe(_data_dir() / "mail_settings.json") or {}).get("password") else ""},
         # 被吞掉的异常计数：排障时先看这里，就知道「是哪一处静默失败」
         "diagnostics": {"swallowed": dict(SWALLOWED)},
     }
@@ -1679,7 +1681,7 @@ def _list_token_life() -> list:
     前端据此改回落「上次跑任务」的结论，并对同样过期的那份再判一次陈旧。
     """
     out = []
-    d = DATA / "token_life"
+    d = _data_dir() / "token_life"
     if not d.exists():
         return out
     for f in sorted(d.glob("*.json")):
@@ -1830,7 +1832,7 @@ def _list_seckill_sessions() -> list:
     会话实测寿命 2 小时，所以同时算出剩余时间——这决定能不能赶上 12 点开抢。
     """
     out = []
-    for f in sorted(DATA.glob("seckill_session_*.json")):
+    for f in sorted(_data_dir().glob("seckill_session_*.json")):
         try:
             o = load_json(f) or {}
             at = o.get("at") or ""

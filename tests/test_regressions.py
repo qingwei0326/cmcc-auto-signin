@@ -68,8 +68,20 @@ def _dashboard_status(path, *, body=b"", headers=None):
 
 class TestProjectDataIsolation(unittest.TestCase):
     def test_dashboard_console_is_outside_project_data(self):
-        self.assertEqual(dashboard.DATA, Path(os.environ["CMCC_DASHBOARD_DATA"]))
-        self.assertFalse(dashboard.DATA.is_relative_to(ROOT))
+        self.assertEqual(dashboard._data_dir(), Path(os.environ["CMCC_DASHBOARD_DATA"]))
+        self.assertFalse(dashboard._data_dir().is_relative_to(ROOT))
+
+    def test_dashboard_stats_and_runs_follow_current_base_without_override(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(dashboard, "BASE", Path(tmp)), \
+                mock.patch.dict(os.environ, {"CMCC_DASHBOARD_DATA": ""}):
+            dashboard.update_stats("test", sign_days=1)
+            dashboard.append_run("签到", 1, True)
+            data = Path(tmp) / "gui_data"
+            self.assertEqual(dashboard.load_stats(), common.load_json(data / "stats.json"))
+            self.assertEqual(dashboard.load_stats()["test"]["sign_days"], 1)
+            self.assertEqual(dashboard.load_runs(), common.load_json(data / "runs.json"))
+            self.assertEqual(dashboard.load_runs()[0]["label"], "签到")
 
     def test_project_writes_are_blocked_before_touching_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,6 +166,20 @@ class TestRunAllRouting(unittest.TestCase):
                                                           lambda: policy))
                 run_all.main()
         return cmds
+
+    def test_sign_claims_rewards_by_default(self):
+        """计划任务签到要带 --claim 领连签奖励；保活不带；策略关掉也不带。"""
+        cmds = self._run([], policy={})
+        qwhd = [c for c in cmds if any("cmcc_sign.py" in str(x) for x in c)]
+        self.assertTrue(qwhd)
+        self.assertTrue(all("--claim" in c for c in qwhd), qwhd)
+        keep = [c for c in self._run(["--keepalive"], policy={})
+                if any("cmcc_sign.py" in str(x) for x in c)]
+        self.assertTrue(keep)
+        self.assertFalse(any("--claim" in c for c in keep), keep)
+        off = [c for c in self._run([], policy={"sign_claim": False})
+               if any("cmcc_sign.py" in str(x) for x in c)]
+        self.assertFalse(any("--claim" in c for c in off), off)
 
     def test_keepalive_passes_login_only(self):
         """保活必须只登录不签到：extra 曾只透传给 bass，qwhd 的 --login-only 被丢掉。"""
@@ -411,7 +437,7 @@ class TestSessionExpiry(unittest.TestCase):
                 "at": now.isoformat(timespec="seconds"),
                 "expires_at": (now + timedelta(minutes=90)).isoformat(timespec="seconds"),
             }), encoding="utf-8")
-            with mock.patch.object(dashboard, "DATA", d):
+            with mock.patch.object(dashboard, "_data_dir", return_value=d):
                 out = dashboard._list_seckill_sessions()
             self.assertEqual(len(out), 1)
             self.assertIsNotNone(out[0]["left_min"])
@@ -499,7 +525,7 @@ class TestTokenLifeProbe(unittest.TestCase):
                 "updated": (now - timedelta(minutes=900)).isoformat(timespec="seconds"),
                 "samples": [{"at": "z", "ok": False, "kind": "expired"}],
             }), encoding="utf-8")
-            with mock.patch.object(dashboard, "DATA", root):
+            with mock.patch.object(dashboard, "_data_dir", return_value=root):
                 out = {o["key"]: o for o in dashboard._list_token_life()}
             self.assertEqual(out["5678"]["state"], "stale")
             self.assertEqual(out["5678"]["raw_state"], "alive")   # 原始结论仍可查
@@ -682,8 +708,7 @@ class TestVerifiedHarImport(unittest.TestCase):
         """有效票在 sign_info 回 1600（前置任务未完成）时不能被误判为失效。"""
         import cmcc_fj as FJ
         cfg = {"bearer_token": "12345678-1234-1234-1234-123456789abc"}
-        with mock.patch.object(FJ, "new_session") as new_session:
-            session = new_session.return_value.__enter__.return_value
+        with mock.patch.object(FJ, "new_session"):
             with mock.patch.object(FJ, "call", side_effect=lambda s, c, key, **kw: (
                     {"ok": True, "code": "0000"} if key == "index_info"
                     else {"ok": False, "code": "1600", "msg": "前置任务未完成"})) as call:
@@ -776,6 +801,25 @@ class TestHarSourceFileDeletion(unittest.TestCase):
                 lines = har_import.apply(text, source_path=src)
             self.assertTrue(src.exists(), "凭证没写进去时源文件必须保留")
             self.assertIn(har_import.KEPT_HINT, lines)
+
+    def test_readonly_source_file_is_deleted(self):
+        """微信接收的 HAR 是只读的：也要能删掉，不能报「删除失败」。"""
+        import stat as _stat
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "configs").mkdir()
+            src = base / "readonly.har"
+            src.write_text(self._har("JSESSIONID=NEW; UID=1; ticketID=x",
+                                     "2026-11-20T04:00:00Z"), encoding="utf-8")
+            os.chmod(src, _stat.S_IREAD)
+            try:
+                with mock.patch.object(har_import, "BASE", base),                      mock.patch.object(har_import, "_verify_national"),                      mock.patch.object(PT, "mark_issued"):
+                    lines = har_import.apply(src.read_text(encoding="utf-8"), source_path=src)
+            finally:
+                if src.exists():
+                    os.chmod(src, _stat.S_IWRITE | _stat.S_IREAD)
+            self.assertFalse(src.exists(), lines)
+            self.assertTrue(any("已删除抓包文件 readonly.har" in line for line in lines), lines)
 
     def test_delete_oserror_does_not_fail_import(self):
         """删除抛 OSError（被占用）时导入仍成功，只在报告里提示。"""
@@ -904,7 +948,7 @@ class TestStructuredResults(unittest.TestCase):
             text = ("当前累计签到 999 天，今日已签\n"
                     '@@RESULT {"plat":"qwhd","token":"ok","sign_days":12,'
                     '"today_signed":true,"flow_mb":100,"last_reward":"100MB"}')
-            with mock.patch.object(dashboard, "STATS_FILE", sf):
+            with mock.patch.object(dashboard, "_data_dir", return_value=sf.parent):
                 dashboard.parse_qwhd_output("k", text)
             st = json.loads(sf.read_text(encoding="utf-8"))["k"]
             self.assertEqual(st["sign_days"], 12)        # 不是日志里的 999
@@ -918,7 +962,7 @@ class TestStructuredResults(unittest.TestCase):
                     '"stage":"第2阶 250/5000","fb_exchange":"1.5GB",'
                     '"today_signed":true,"flow_mb":500,"tasks":3,"feeds":2,'
                     '"last_reward":"500MB月包券"}')
-            with mock.patch.object(dashboard, "STATS_FILE", sf):
+            with mock.patch.object(dashboard, "_data_dir", return_value=sf.parent):
                 dashboard.parse_bass_output("k", text)
             st = json.loads(sf.read_text(encoding="utf-8"))["k"]
             self.assertEqual(st["fodder"], 750)
@@ -932,7 +976,7 @@ class TestStructuredResults(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sf = Path(tmp) / "stats.json"
             text = '@@RESULT {"plat":"bass","token":"ok","idle":true,"today_signed":true}'
-            with mock.patch.object(dashboard, "STATS_FILE", sf):
+            with mock.patch.object(dashboard, "_data_dir", return_value=sf.parent):
                 dashboard.parse_bass_output("k", text)
             st = json.loads(sf.read_text(encoding="utf-8"))["k"]
             self.assertNotIn("token_bass", st)
@@ -940,7 +984,7 @@ class TestStructuredResults(unittest.TestCase):
     def test_legacy_fallback_still_works(self):
         with tempfile.TemporaryDirectory() as tmp:
             sf = Path(tmp) / "stats.json"
-            with mock.patch.object(dashboard, "STATS_FILE", sf):
+            with mock.patch.object(dashboard, "_data_dir", return_value=sf.parent):
                 dashboard.parse_qwhd_output("k", "当前累计签到 7 天，今日已签\n活动会话建立成功")
             st = json.loads(sf.read_text(encoding="utf-8"))["k"]
             self.assertEqual(st["sign_days"], "7")
@@ -988,6 +1032,7 @@ class TestEndToEndResult(unittest.TestCase):
                            "feedFodders": 250},
             "fb_index": {"exchangeFlow": 1.5, "exchangeFlowUnit": "GB",
                          "exchangeFlowValue": 1536, "hasTaskToDo": False},
+            "fb_tasks": [{"id": 12, "completeStatus": "0"}],
             "next_receive": {"taskName": "喂养累计", "taskStatus": "COMPLETED",
                              "fodder": 950, "recordId": 499520178,
                              "expireTime": "2999-01-01 00:00:00"},
@@ -1008,16 +1053,19 @@ class TestEndToEndResult(unittest.TestCase):
                                        "phone": "13800001234"}), encoding="utf-8")
             sf = d / "stats.json"
             with mock.patch.object(cmcc_fj, "call", fake_call), \
+                 mock.patch.object(cmcc_fj, "call_post", side_effect=AssertionError("只读总览禁止上报")), \
                  mock.patch.object(cmcc_fj, "new_session", lambda c: object()), \
                  mock.patch.object(cmcc_fj, "pause", lambda *a, **k: None), \
-                 mock.patch.object(cmcc_fj, "DAILY_STATE", d / "daily.json"), \
-                 mock.patch.object(cmcc_fj, "FB_STATE", d / "fb.json"), \
-                 mock.patch.object(dashboard, "STATS_FILE", sf), \
+                 mock.patch.object(cmcc_fj, "BASE", d), \
+                 mock.patch.object(dashboard, "_data_dir", return_value=sf.parent), \
                  mock.patch.object(sys, "argv", ["cmcc_fj.py", "--config", str(cfg), "--dry-run"]), \
                  redirect_stdout(buf):
                 rc = cmcc_fj.main()
                 self.assertEqual(rc, 0)
                 text = buf.getvalue()
+                self.assertIn("未完成任务=1 个", text)
+                fb_state = json.loads((d / "gui_data" / "flowbank_state.json").read_text(encoding="utf-8"))
+                self.assertEqual(fb_state["fj1"]["tasks"]["12"]["status"], "0")
                 r = common.parse_result(text)
                 self.assertIsNotNone(r, "main() 必须输出 @@RESULT 行")
                 self.assertEqual(r["plat"], "bass")
@@ -1205,7 +1253,6 @@ class TestFrozenPathGuards(unittest.TestCase):
 
     def test_find_har_files_covers_wechat(self):
         """微信接收目录必须被纳入搜索范围（抓包文件常从微信直接拖过来）。"""
-        import common
         src = (ROOT / "common.py").read_text(encoding="utf-8")
         self.assertIn("msg/file", src)
         self.assertIn("xwechat_files", src)
@@ -1238,7 +1285,6 @@ class TestFrozenPathGuards(unittest.TestCase):
             }), encoding="utf-8")
 
             real_base = har_import.BASE
-            real_apply = har_import.apply
             try:
                 har_import.BASE = Path(d)
                 har = {"log": {"entries": [{
@@ -1282,7 +1328,6 @@ class TestContinuousStage(unittest.TestCase):
 
     def test_flag_exists_and_is_exclusive(self):
         """--continue-stage 与 --auto-claim 互斥，两个都传必须报错退出。"""
-        import cmcc_fj
         src = (ROOT / "cmcc_fj.py").read_text(encoding="utf-8")
         self.assertIn('--continue-stage', src)
         self.assertIn("参数冲突", src)
@@ -2164,7 +2209,6 @@ class TestFlowbankCycleGate(unittest.TestCase):
     def test_weekly_task_due_after_monday(self):
         import cmcc_fj as FJ
         # 本周五完成 → 本周内都不该再试
-        fri = datetime(2026, 11, 20, 0, 55)
         self.assertFalse(FJ.fb_due(2, "2026-11-20 00:55", datetime(2026, 11, 20, 19, 0)))
         self.assertFalse(FJ.fb_due(2, "2026-11-20 00:55", datetime(2026, 11, 22, 23, 0)))
         # 下周一 → 新周期，可做
@@ -2215,6 +2259,30 @@ class TestFlowbankCycleGate(unittest.TestCase):
         2026-11-23 实测：任务其实全部完成、奖励已到账，但状态文件停在开工前的
         快照（completeStatus=0），控制台一直显示「可做」，被误判成漏跑。
         """
+        ok, tracked, output, res = self._run_fb_task_with_final_status("1")
+        self.assertTrue(ok)
+        self.assertEqual(tracked, [["0"], ["1"]])
+        self.assertIn("回查已完成", output)
+        self.assertEqual(res["tasks"], 1)
+
+    def test_fb_report_success_with_no_status_change_remains_pending(self):
+        ok, tracked, output, res = self._run_fb_task_with_final_status("0")
+        self.assertFalse(ok)
+        self.assertEqual(tracked, [["0"], ["0"]])
+        self.assertIn("上报成功但任务状态未变化", output)
+        self.assertNotIn("✓", output)
+        self.assertEqual(res["tasks"], 0)
+
+    def test_fb_summary_uses_live_list_or_dates_the_old_cache(self):
+        import cmcc_fj as FJ
+
+        cached = {"fj1": {"updated": "2000-01-01 08:00", "tasks": {"12": {"status": "0"}}}}
+        with mock.patch.object(FJ, "load_json", return_value=cached):
+            self.assertEqual(FJ.fb_task_summary("fj1", []), "  未完成任务=0 个")
+            self.assertEqual(FJ.fb_task_summary("fj1", None),
+                             "  未完成任务=1 个（记录于 2000-01-01，可能已过期）")
+
+    def _run_fb_task_with_final_status(self, final_status):
         import argparse
         import cmcc_fj as FJ
 
@@ -2224,7 +2292,7 @@ class TestFlowbankCycleGate(unittest.TestCase):
             if key == "fb_tasks":
                 calls["fb_tasks"] += 1
                 # 第一次：开工前未做；第二次：做完后回查应为已完成
-                st = "0" if calls["fb_tasks"] == 1 else "1"
+                st = "0" if calls["fb_tasks"] == 1 else final_status
                 return {"ok": True, "data": [
                     {"id": 12, "taskCycle": 2, "taskTitle": "浏览领券中心",
                      "taskFlow": "50", "taskFlowUnit": "M", "completeStatus": st}]}
@@ -2234,6 +2302,8 @@ class TestFlowbankCycleGate(unittest.TestCase):
             return {"ok": True, "data": {}}
 
         tracked = []
+        res = {"tasks": 0, "token": "ok"}
+        out = io.StringIO()
         with mock.patch.object(FJ, "pause", lambda *a, **k: None), \
              mock.patch.object(FJ, "call", fake_call), \
              mock.patch.object(FJ, "call_post",
@@ -2241,16 +2311,12 @@ class TestFlowbankCycleGate(unittest.TestCase):
              mock.patch.object(FJ, "load_json", lambda *a, **k: {}), \
              mock.patch.object(FJ, "track_fb_tasks",
                                lambda key, tasks: tracked.append([t["completeStatus"] for t in tasks])), \
-             mock.patch.object(FJ, "show", lambda *a, **k: True), \
              mock.patch.object(FJ, "_note_token", lambda *a, **k: None), \
-             mock.patch.object(FJ.time, "sleep", lambda *a, **k: None):
-            ok = FJ.run_fb_tasks(None, {}, argparse.Namespace(fb_all=False),
-                                 {"tasks": 0, "token": "ok"}, "fj1")
+             mock.patch.object(FJ.time, "sleep", lambda *a, **k: None), \
+             redirect_stdout(out):
+            ok = FJ.run_fb_tasks(None, {}, argparse.Namespace(fb_all=False), res, "fj1")
 
-        self.assertTrue(ok)
-        self.assertEqual(len(tracked), 2, "开工前记一次 + 做完回查再记一次")
-        self.assertEqual(tracked[0], ["0"])
-        self.assertEqual(tracked[1], ["1"], "回查必须落成已完成，否则界面一直显示可做")
+        return ok, tracked, out.getvalue(), res
 
 
 # ======================================================================
@@ -2718,7 +2784,7 @@ class TestFeedReward(unittest.TestCase):
     def test_query_failure_keeps_state_and_logs_response(self):
         failure = {"ok": False, "code": -1, "msg": "查询超时"}
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()) as out, \
-                mock.patch.object(cmcc_fj, "DAILY_STATE", Path(tmp) / "daily_state.json"), \
+                mock.patch.object(cmcc_fj, "BASE", Path(tmp)), \
                 mock.patch.object(cmcc_fj, "call", return_value=failure), \
                 mock.patch.object(cmcc_fj, "track_daily") as track:
             cmcc_fj.handle_feed_reward(None, {}, "test", {}, dry_run=False)
@@ -2733,8 +2799,8 @@ class TestFeedReward(unittest.TestCase):
         failure = {"ok": False, "code": -1, "msg": "超时", "data": None}
         success = {"ok": True, "code": "0000", "data": None}
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            path = Path(tmp) / "daily_state.json"
-            with mock.patch.object(FJ, "DAILY_STATE", path), \
+            path = Path(tmp) / "gui_data" / "daily_state.json"
+            with mock.patch.object(FJ, "BASE", Path(tmp)), \
                  mock.patch.object(FJ, "call", side_effect=[
                     pending, pending, failure, pending, success,
                  ]) as call:
@@ -2775,7 +2841,6 @@ class TestFeedMeet(unittest.TestCase):
     """喂养轮次链：COMPLETED 轮次 doMeet 领奖+解锁，老号不误碰。"""
 
     def _meet(self, tasks):
-        import cmcc_fj as FJ
         return {"ok": True, "code": "0000", "data": {"taskDtoList": tasks}}
 
     def test_completed_current_round_is_claimable(self):
@@ -2817,7 +2882,7 @@ class TestFeedMeet(unittest.TestCase):
                   "expireTime": "2999-01-01 00:00:00"}]
         success = {"ok": True, "code": "0000", "data": {"taskName": "第三轮"}}
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            with mock.patch.object(FJ, "DAILY_STATE", Path(tmp) / "daily.json"), \
+            with mock.patch.object(FJ, "BASE", Path(tmp)), \
                  mock.patch.object(FJ, "pause", lambda *a, **k: None), \
                  mock.patch.object(FJ, "call", side_effect=[self._meet(tasks), success]) as call:
                 res = {}
@@ -2832,7 +2897,7 @@ class TestFeedMeet(unittest.TestCase):
                   "currentTask": True, "fodder": 550,
                   "expireTime": "2999-01-01 00:00:00"}]
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            with mock.patch.object(FJ, "DAILY_STATE", Path(tmp) / "daily.json"), \
+            with mock.patch.object(FJ, "BASE", Path(tmp)), \
                  mock.patch.object(FJ, "call", return_value=self._meet(tasks)) as call:
                 res = {}
                 FJ.handle_meet(None, {}, "test", res, dry_run=True)
@@ -2910,7 +2975,6 @@ class TestXunbaoTaskReport(unittest.TestCase):
     def test_bass_button_carries_xunbao(self):
         """「只跑福建活动」必须带寻宝；只跑全国签到不能带（福建号才有的活动）。"""
         import dashboard
-        import types
         captured = []
 
         def fake_start(label, cmd, **kw):
@@ -3019,27 +3083,18 @@ class TestMailWatchGate(unittest.TestCase):
 
     def test_expired_token_always_wakes_watcher(self):
         import mail_watch as MW
-        import datetime
-        with mock.patch.object(MW, "load_json") as lj:
-            def fake(path, default=None):
-                if path == MW.MAIL_NEED:
-                    return {"needed": True, "accounts": ["a"]}
-                if path == MW.TODAY_DONE:
-                    return {"date": datetime.date.today().isoformat()}
-                return default or {}
-            lj.side_effect = fake
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(MW, "BASE", Path(tmp)), \
+                mock.patch.object(run_all, "BASE", Path(tmp)):
+            run_all.mark_today_done()
+            run_all.mark_mail_needed(["a"])
             self.assertTrue(MW.should_check())
+            MW.clear_need()
+            self.assertFalse(MW.should_check())
 
     def test_no_need_and_no_done_stays_quiet(self):
         import mail_watch as MW
-        with mock.patch.object(MW, "load_json") as lj:
-            def fake(path, default=None):
-                if path == MW.MAIL_NEED:
-                    return {"needed": False}
-                if path == MW.TODAY_DONE:
-                    return {}
-                return default or {}
-            lj.side_effect = fake
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(MW, "BASE", Path(tmp)):
             self.assertFalse(MW.should_check())
 
     def test_partial_run_is_not_today_done(self):
@@ -3134,8 +3189,8 @@ class TestMailNeedUnion(unittest.TestCase):
         import json
         from pathlib import Path
         tmp = Path(self.enterContext_tmp())
-        need = tmp / "mail_need.json"
-        with mock.patch.object(R, "MAIL_NEED", need):
+        need = tmp / "gui_data" / "mail_need.json"
+        with mock.patch.object(R, "BASE", tmp):
             R.mark_mail_needed(["3239"])
             R.mark_mail_needed(["4167"])
             data = json.loads(need.read_text(encoding="utf-8"))
@@ -3452,8 +3507,9 @@ class TestAuditFixesP0Remaining(unittest.TestCase):
             "sign": {"today": True},
         }
         with tempfile.TemporaryDirectory() as td:
-            ds = Path(td) / "daily_state.json"
-            with mock.patch.object(cmcc_fj, "DAILY_STATE", ds):
+            ds = Path(td) / "gui_data" / "daily_state.json"
+            ds.parent.mkdir()
+            with mock.patch.object(cmcc_fj, "BASE", Path(td)):
                 ds.write_text(json.dumps({"fj1": dict(base_acc)}), encoding="utf-8")
                 self.assertTrue(cmcc_fj.daily_nothing_to_do("fj1"))
                 self.assertFalse(cmcc_fj.daily_nothing_to_do("fj1", need_feed=True))
@@ -3490,7 +3546,9 @@ class TestAuditFixesP0Remaining(unittest.TestCase):
             if key == "task_list":
                 return {"ok": True, "data": [{"id": 11, "taskName": "逛一逛", "taskStatus": "UN_DO", "completeType": "VISIT"}]}
             if key == "fb_tasks":
-                return {"ok": True, "data": [{"id": 22, "taskTitle": "浏览", "taskCycle": 0, "completeStatus": "2"}]}
+                posted = any(p == cmcc_fj.EP["fb_do_task"] for p, _ in post_paths)
+                return {"ok": True, "data": [{"id": 22, "taskTitle": "浏览", "taskCycle": 0,
+                                              "completeStatus": "1" if posted else "2"}]}
             if key == "next_receive":
                 return {"ok": True, "data": {"taskStatus": "RECEIVED"}}
             return {"ok": True, "data": {}}
@@ -3506,8 +3564,8 @@ class TestAuditFixesP0Remaining(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            ds = base / "daily_state.json"
-            fb = base / "flowbank_state.json"
+            ds = base / "gui_data" / "daily_state.json"
+            ds.parent.mkdir()
             ds.write_text(json.dumps({"fj": {
                 "tiers_date": today, "feed_reward_date": today, "feed_reward": None,
                 "tiers": [{"status": "RECEIVED"}] * 3, "sign": {"today": True},
@@ -3515,8 +3573,6 @@ class TestAuditFixesP0Remaining(unittest.TestCase):
             cfg = {"bearer_token": "x" * 36, "app_id": "0", "phone": "13800001234"}
             argv = ["cmcc_fj.py", "--config", "fj.json", "--daily-only", "--feed", "2", "--tasks", "--fb-tasks"]
             with mock.patch.object(cmcc_fj, "BASE", base), \
-                 mock.patch.object(cmcc_fj, "DAILY_STATE", ds), \
-                 mock.patch.object(cmcc_fj, "FB_STATE", fb), \
                  mock.patch.object(cmcc_fj, "load_config", lambda p: cfg), \
                  mock.patch.object(cmcc_fj, "new_session", lambda c: object()), \
                  mock.patch.object(cmcc_fj, "call", fake_call), \
@@ -3532,15 +3588,13 @@ class TestAuditFixesP0Remaining(unittest.TestCase):
             self.assertEqual(fed, [("fj", 2)])
             self.assertTrue(any("/task/doTask/11" in p for p, _ in post_paths))
             self.assertTrue(any(p == cmcc_fj.EP["fb_do_task"] for p, _ in post_paths))
-            with mock.patch.object(cmcc_fj, "DAILY_STATE", ds):
+            with mock.patch.object(cmcc_fj, "BASE", base):
                 self.assertTrue(cmcc_fj.daily_nothing_to_do("fj", need_tasks=True, need_fb_tasks=True))
 
             # 次轮仅带 --tasks --fb-tasks（不带 --feed）时应直接 1 秒短路，不再触发接口
             post_paths.clear()
             argv2 = ["cmcc_fj.py", "--config", "fj.json", "--daily-only", "--tasks", "--fb-tasks"]
             with mock.patch.object(cmcc_fj, "BASE", base), \
-                 mock.patch.object(cmcc_fj, "DAILY_STATE", ds), \
-                 mock.patch.object(cmcc_fj, "FB_STATE", fb), \
                  mock.patch.object(cmcc_fj, "load_config", lambda p: cfg), \
                  mock.patch.object(cmcc_fj, "new_session", lambda c: object()), \
                  mock.patch.object(cmcc_fj, "call", side_effect=AssertionError("不应再发请求")), \
@@ -3580,9 +3634,7 @@ class TestAuditFixesP0Remaining(unittest.TestCase):
                     return True
 
             with mock.patch.object(dashboard, "BASE", base), \
-                 mock.patch.object(dashboard, "DATA", data), \
-                 mock.patch.object(dashboard, "STATS_FILE", sf), \
-                 mock.patch.object(dashboard, "RUNS_FILE", data / "runs.json"), \
+                 mock.patch.object(dashboard, "_data_dir", return_value=sf.parent), \
                  mock.patch.object(dashboard, "RUNNER", FakeRunner()), \
                  mock.patch.object(dashboard, "preflight", return_value=(True, "ok")), \
                  mock.patch.object(dashboard, "_sched_state", return_value=[]):

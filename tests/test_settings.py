@@ -6,7 +6,6 @@
   2. 推送再加一条 PushPlus 通道。
 这两件都要保证「配一次就长期生效」，且优先级明确。
 """
-import json
 import os
 import tempfile
 import unittest

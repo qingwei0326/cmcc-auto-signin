@@ -251,5 +251,42 @@ class TestMutualAssist(unittest.TestCase):
             self.assertEqual(run_all.TOKEN_DEAD_ACCOUNTS, ["...8000"])
 
 
+class TestRunAllXunbaoAccountTasks(unittest.TestCase):
+    def test_main_passes_activity_flags_only_for_the_matching_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            configs = base / "configs_fj"
+            configs.mkdir()
+            (configs / "a.json").write_text('{"phone":"13800138000"}', encoding="utf-8")
+            (configs / "b.json").write_text('{"phone":"13800001234"}', encoding="utf-8")
+            (base / "cmcc_xunbao.py").touch()
+            (base / "cmcc_luck.py").touch()
+
+            def child(script, conf, args, timeout, **kwargs):
+                success = script.name == "cmcc_xunbao.py" or conf.stem == "b"
+                return run_all.label_of(conf, "phone"), success, 0, ""
+
+            argv = ["run_all.py", "--platform", "none", "--luck", "--xunbao",
+                    "--xunbao-tasks", "--no-notify"]
+            with mock.patch.object(run_all, "BASE", base), \
+                    mock.patch.dict(run_all.PLATFORMS, {"bass": {"dir": configs}}), \
+                    mock.patch.object(run_all, "run_script", side_effect=child) as run, \
+                    mock.patch.object(run_all, "load_policy", return_value={}), \
+                    mock.patch.object(run_all, "TOKEN_DEAD_ACCOUNTS", []), \
+                    mock.patch.dict(run_all.os.environ), mock.patch.object(sys, "argv", argv), \
+                    redirect_stdout(io.StringIO()):
+                run_all.mark_xxl_ran(["...8000"])
+                self.assertEqual(run_all.main(), 1)  # a 的转盘失败
+
+            xunbao_args = {
+                call.args[1].stem: call.args[2]
+                for call in run.call_args_list if call.args[0].name == "cmcc_xunbao.py"
+            }
+            self.assertEqual(xunbao_args, {
+                "a": ["--tasks", "--did-xxl"],
+                "b": ["--tasks", "--did-luck"],
+            })
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -48,7 +48,7 @@ from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 
-from common import (LOCAL_HOSTNAMES, app_base, assert_safe_url, atomic_write_json,
+from common import (app_base, assert_safe_url, atomic_write_json,
                     emit_result, load_global_settings, load_json,
                     notify as _common_notify, record_award, setup_utf8)
 

@@ -1,0 +1,23 @@
+# Conservative lint configuration. Only "real bug" rule families are enabled;
+# style rules (including E501 line-length) are deliberately NOT selected, so
+# there is effectively no line-length limit.
+[tool.ruff]
+target-version = "py39"
+
+# Add to ruff's default excludes (keeps .git, __pycache__, .pytest_cache, ...).
+extend-exclude = [
+    "build",
+    "dist",
+    "gui_data",
+    "configs",
+    "configs_fj",
+    "logs",
+    "_archive",
+    ".venv",
+]
+
+[tool.ruff.lint]
+# E9/F63/F7/F82: syntax errors, undefined names, malformed constructs
+# F401/F811/F841: unused imports, redefinitions, unused locals
+# B006/B904: mutable default args, raise-without-from inside except
+select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841", "B006", "B904"]

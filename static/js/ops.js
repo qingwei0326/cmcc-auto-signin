@@ -1,46 +1,52 @@
+import {
+  $, V, store, hooks, numVal, html, joinHtml, setHtml, setHidden,
+  colorize, copyText, toast, showErr, clearErr, askConfirm, openModal, act,
+} from './core.js';
+
 // ---------------- 定时任务：真实状态表 & 日志弹层 ----------------
-const SCHED=[
+export const SCHED=[
   {kind:'morning',   cn:'晨间一站式',  name:'MobileMorning',        bat:'run_morning.bat',        desc:'签到 + 消消乐 + 拓展 + 豆苗 + 领券 + 秒杀（一张票跑完）'},
   {kind:'daily',     cn:'每日奖励',    name:'MobileDailyReward',    bat:'run_daily_reward.bat',   desc:'每小时补签到 + 领三档奖励（间隔 60 分钟）', interval:'每小时'},
   {kind:'mail',      cn:'邮箱收 HAR',  name:'MobileMailWatch',      bat:'run_mail_watch.bat',     desc:'每 10 分钟查收 HAR 邮件并自动导入', interval:'每10分'}
 ];
-const SCHED_PLAN=[["morning","11:40"],["daily","06:00"],["mail","00:00"]];
-let _pendingSchedRefresh=false;
+export const SCHED_PLAN=[["morning","11:40"],["daily","06:00"],["mail","00:00"]];
 
-function codeText(c,kind){
-  if(c===0)return '<span style="color:var(--ok)">成功</span>';
-  if(c===267011)return '<span style="color:var(--warn)">从未运行</span>';
-  if(c===267009)return '<span style="color:var(--acc)">运行中</span>';
-  if(c===267014)return '<span style="color:var(--sub)">已中止</span>';
-  if(c===267010)return '<span style="color:var(--sub)">已禁用</span>';
+export function codeText(c,kind){
+  if(c===0)return html`<span class="tone-ok">成功</span>`;
+  if(c===267011)return html`<span class="tone-warn">从未运行</span>`;
+  if(c===267009)return html`<span class="tone-acc">运行中</span>`;
+  if(c===267014)return html`<span class="tone-sub">已中止</span>`;
+  if(c===267010)return html`<span class="tone-sub">已禁用</span>`;
   if(c==null)return '—';
-  const link=kind?` <a href="javascript:void(0)" onclick="openLog('${kind}')">看日志</a>`:'';
-  return c===1?`<span style="color:var(--bad)" title="退出码 1：多为票据失效">失败</span>${link}`
-    :`<span style="color:var(--bad)">异常 ${c}</span>${link}`;
+  const link=kind?html` <button type="button" class="link-btn" data-nobusy data-act="open-log" data-kind="${kind}">看日志</button>`:'';
+  return c===1?html`<span class="tone-bad" title="退出码 1：多为票据失效">失败</span>${link}`
+    :html`<span class="tone-bad">异常 ${c}</span>${link}`;
 }
 
-function buildSched(){
+export function buildSched(){
   const box=$('schedBox'); if(!box||box.dataset.done)return;
-  box.innerHTML='<div class="tablewrap"><table class="stab"><thead><tr><th>任务</th>'+
-    '<th style="width:108px">触发时刻</th><th style="width:76px">状态</th>'+
-    '<th style="width:112px">下次运行</th><th style="width:172px">上次结果</th><th style="width:236px">操作</th></tr></thead><tbody>'+
-    SCHED.map(t=>`<tr>
-      <td><div class="nm">${t.cn}${t.interval?`<span class="sched-tag" title="重复型任务：触发时刻表示起点">${t.interval}</span>`:''}</div><div class="sub">${t.desc}</div>
+  setHtml(box,html`<div class="tablewrap"><table class="stab"><thead><tr><th>任务</th>
+    <th class="col-time">触发时刻</th><th class="col-state">状态</th>
+    <th class="col-next">下次运行</th><th class="col-last">上次结果</th><th class="col-ops">操作</th></tr></thead><tbody>${
+    SCHED.map(t=>html`<tr>
+      <td><div class="nm">${t.cn}${t.interval?html`<span class="sched-tag" title="重复型任务：触发时刻表示起点">${t.interval}</span>`:''}</div><div class="sub">${t.desc}</div>
           <div class="sub" title="Windows 计划任务名与启动脚本">${t.name} · ${t.bat}</div></td>
-      <td><input class="inp inp-sm" id="st_${t.kind}" placeholder="HH:MM"
+      <td><input class="inp inp-sm sched-inp" id="st_${t.kind}" placeholder="HH:MM"
                  title="${t.interval?'起点时刻（注册若已过会自动从当前+2分钟开始重复）':'每日定时触发时刻 HH:MM'}"
-                 oninput="this.dataset.dirty='1'"></td>
+                 data-input="sched-dirty"></td>
       <td id="sc_${t.kind}">—</td>
       <td id="sn_${t.kind}">—</td>
       <td id="sl_${t.kind}">—</td>
-      <td><button type="button" class="btn pri sm" onclick="regSched('${t.kind}')">注册/更新</button>
-          <button type="button" class="btn sm" data-nobusy onclick="openLog('${t.kind}')">日志</button>
-          <button type="button" class="btn sm danger" onclick="cf('注销「${t.cn}」？注销后它不再自动运行。',()=>unregSched('${t.name}'))">注销</button></td>
-    </tr>`).join('')+'</tbody></table></div>';
+      <td class="col-ops"><button type="button" class="btn pri sm" data-act="reg-sched" data-kind="${t.kind}">注册/更新</button>
+          <button type="button" class="btn sm" data-nobusy data-act="open-log" data-kind="${t.kind}">日志</button>
+          <button type="button" class="btn sm danger" data-act="unreg-sched" data-name="${t.name}" data-cn="${t.cn}">注销</button></td>
+    </tr>`)
+  }</tbody></table></div>`);
   box.dataset.done='1';
 }
 
-function updSched(){
+export function updSched(){
+  const STATE=store.state||{};
   buildSched();
   const list=STATE.sched||[];
   SCHED.forEach(t=>{
@@ -48,92 +54,97 @@ function updSched(){
     const e=$('st_'+t.kind);
     if(e&&!e.dataset.dirty&&document.activeElement!==e&&s&&s.time&&e.value!==s.time)e.value=s.time;
     const c=$('sc_'+t.kind), n=$('sn_'+t.kind), l=$('sl_'+t.kind);
-    if(c)c.innerHTML=s?(s.state==='Disabled'?'<span style="color:var(--warn)">已禁用</span>':'<span style="color:var(--ok)">已注册</span>')
-      :(STATE.sched_read_ok==null?'<span style="color:var(--sub)">读取中</span>':'<span style="color:var(--bad)">未注册</span>');
+    if(c)setHtml(c,s?(s.state==='Disabled'?html`<span class="tone-warn">已禁用</span>`:html`<span class="tone-ok">已注册</span>`)
+      :(STATE.sched_read_ok==null?html`<span class="tone-sub">读取中</span>`:html`<span class="tone-bad">未注册</span>`));
     if(n)n.textContent=s&&s.next?s.next:'—';
-    if(l)l.innerHTML=s?(s.last?`<div class="sub">${esc(s.last)}</div><div>${codeText(s.code,t.kind)}</div>`:codeText(s.code,t.kind)):'—';
+    if(l)setHtml(l,s?(s.last?html`<div class="sub">${s.last}</div><div>${codeText(s.code,t.kind)}</div>`:codeText(s.code,t.kind)):'—');
   });
   const box=$('schedBox'); if(!box)return;
   let tip=box.querySelector('.schedtip');
-  let html='';
+  let tipCls='', tipContent=null;
   if(!list.length){
-    if(STATE.sched_read_ok===false)
-      html='<div class="warnbox schedtip">读不到任务状态（PowerShell 可能被策略拦或超时）。点上方「刷新状态」重试；不影响已注册的任务照常运行。</div>';
-    else if(STATE.sched_read_ok==null)
-      html='<div class="infobox schedtip">正在读取计划任务状态…（首次要几秒，读到后自动更新）</div>';
-    else
-      html='<div class="infobox schedtip">还没有注册任何计划任务 —— 点上方「一键配置全部（推荐方案）」一次配好 8 个，电脑才会每天自动跑。</div>';
+    if(STATE.sched_read_ok===false){
+      tipCls='warnbox schedtip';
+      tipContent=html`读不到任务状态（PowerShell 可能被策略拦或超时）。点上方「刷新状态」重试；不影响已注册的任务照常运行。`;
+    }else if(STATE.sched_read_ok==null){
+      tipCls='infobox schedtip';
+      tipContent=html`正在读取计划任务状态…（首次要几秒，读到后自动更新）`;
+    }else{
+      tipCls='infobox schedtip';
+      tipContent=html`还没有注册任何计划任务 —— 点上方「一键配置全部（推荐方案）」一次配好 ${SCHED.length} 个，电脑才会每天自动跑。`;
+    }
   }
-  if(!html){if(tip)tip.remove();return;}
-  if(tip)tip.outerHTML=html;
-  else box.insertAdjacentHTML('beforeend',html);
+  if(!tipContent){if(tip)tip.remove();return;}
+  if(!tip){tip=document.createElement('div');box.appendChild(tip);}
+  tip.className=tipCls;
+  setHtml(tip,tipContent);
 }
 
-async function refreshSched(silent){
+export async function refreshSched(silent){
   const r=await act({action:'sched_refresh'});
-  if(r&&r.sched&&STATE){STATE.sched=r.sched;updSched();if(!silent)toast('已刷新任务状态');}
+  if(r&&r.sched&&store.state){store.state.sched=r.sched;updSched();if(!silent)toast('已刷新任务状态');}
 }
 
-async function applyAllSched(){
+export async function applyAllSched(){
   const cn=k=>(SCHED.find(x=>x.kind===k)||{}).cn||k;
   const desc=SCHED_PLAN.map(([k,t])=>`${cn(k)}　${t}`).join('\n');
-  if(!await askConfirm('将按推荐方案重新注册 8 个计划任务，会覆盖当前触发时刻：\n\n'+desc+
-              '\n\n注意：「每天签到」那一趟含消消乐（伪造通关成绩）。\n\n继续吗？',{okText:'全部注册'}))return;
+  if(!await askConfirm(`将按推荐方案重新注册 ${SCHED.length} 个计划任务，会覆盖当前触发时刻：\n\n`+desc+
+              '\n\n注意：「晨间一站式」那一趟含消消乐（伪造通关成绩）。\n\n继续吗？',{okText:'全部注册'}))return;
   const r=await act({action:'sched_apply_all',plan:SCHED_PLAN});
-  if(r&&r.ok)_pendingSchedRefresh=true;
+  if(r&&r.ok)store.pendingSchedRefresh=true;
 }
-async function unregAllSched(){
+export async function unregAllSched(){
   const r=await act({action:'sched_unreg_all'});
-  if(r&&r.ok)_pendingSchedRefresh=true;
+  if(r&&r.ok)store.pendingSchedRefresh=true;
 }
-async function regSched(kind){
+export async function regSched(kind){
   const el=$('st_'+kind), t=el?el.value.trim():'';
   const m=/^(\d{1,2}):(\d{2})$/.exec(t);
   if(!m||+m[1]>23||+m[2]>59){toast('触发时刻格式应为 HH:MM（00:00~23:59）',true);return;}
   el.dataset.dirty='';
   const r=await act({action:'sched_reg',kind:kind,time:t});
-  if(r&&r.ok)_pendingSchedRefresh=true;
+  if(r&&r.ok)store.pendingSchedRefresh=true;
 }
-async function unregSched(name){
+export async function unregSched(name){
   const r=await act({action:'sched_unreg',name:name});
-  if(r&&r.ok)_pendingSchedRefresh=true;
+  if(r&&r.ok)store.pendingSchedRefresh=true;
 }
 
-let _modalLogKind='', _modalLogLines=[], _modalLogErrOnly=false;
-function renderModalLogLines(){
+let _modalLogLines=[], _modalLogErrOnly=false;
+export function renderModalLogLines(){
   const pre=$('modalLogPre');if(!pre)return;
   const shown=_modalLogErrOnly?_modalLogLines.filter(l=>colorize(l)==='err'):_modalLogLines;
-  pre.innerHTML=shown.length
-    ? shown.map(l=>{const c=colorize(l);return `<span class="${c}">${esc(l)}</span>`;}).join('\n')
-    : '（没有符合条件的日志行）';
+  setHtml(pre,shown.length
+    ? joinHtml(shown.map(l=>html`<span class="${colorize(l)}">${l}</span>`),'\n')
+    : '（没有符合条件的日志行）');
   const box=pre.parentElement;if(box)box.scrollTop=box.scrollHeight;
 }
-function toggleModalErr(){
+export function toggleModalErr(){
   _modalLogErrOnly=!_modalLogErrOnly;
   const btn=$('mErrBtn');if(btn)btn.classList.toggle('on',_modalLogErrOnly);
   renderModalLogLines();
 }
-function copyModalLog(){copyText(_modalLogLines.join('\n'),'已复制任务日志');}
-async function openLog(kind){
+export function copyModalLog(){copyText(_modalLogLines.join('\n'),'已复制任务日志');}
+export async function openLog(kind){
+  const STATE=store.state;
   const name=(STATE&&STATE.sched_logs||{})[kind];
   if(!name){toast('不知道这个任务对应哪个日志',true);return;}
-  _modalLogKind=kind;_modalLogErrOnly=false;
-  openModal('任务日志 · '+name,'<div class="infobox">正在读取…</div>');
+  _modalLogErrOnly=false;
+  openModal('任务日志 · '+name,html`<div class="infobox">正在读取…</div>`);
   let r;
   try{r=await(await fetch('/api/tasklog?name='+encodeURIComponent(name)+'&tail=300')).json();}
   catch(e){r={err:String(e&&e.message||e)};}
-  if(r.err){$('mBody').innerHTML='<div class="warnbox">读取失败：'+esc(r.err)+'</div>';return;}
-  if(r.missing){$('mBody').innerHTML='<div class="warnbox">还没有这个日志文件 —— 该任务尚未运行过。'+
-    '可以在「定时任务」页点该行「注册/更新」，或等它到点自动跑。</div>';return;}
+  if(r.err){setHtml('mBody',html`<div class="warnbox">读取失败：${r.err}</div>`);return;}
+  if(r.missing){setHtml('mBody',html`<div class="warnbox">还没有这个日志文件 —— 该任务尚未运行过。可以在「定时任务」页点该行「注册/更新」，或等它到点自动跑。</div>`);return;}
   _modalLogLines=r.lines||[];
-  $('mBody').innerHTML=`<div class="frow" style="margin-bottom:10px">
-    <span class="fbhead" style="margin:0">显示最后 ${_modalLogLines.length} 行（共 ${Math.round((r.size||0)/1024)} KB）· logs\\${esc(name)}</span>
-    <div style="margin-left:auto;display:flex;gap:6px">
-      <button type="button" class="btn sm flt" id="mErrBtn" data-nobusy onclick="toggleModalErr()">只看错误</button>
-      <button type="button" class="btn sm" data-nobusy onclick="copyModalLog()">复制</button>
-      <button type="button" class="btn sm" data-nobusy onclick="openLog(${jsArg(kind)})">刷新</button>
+  setHtml('mBody',html`<div class="frow mb-10">
+    <span class="fbhead m-0">显示最后 ${_modalLogLines.length} 行（共 ${Math.round((r.size||0)/1024)} KB）· logs\\${name}</span>
+    <div class="modal-log-ops">
+      <button type="button" class="btn sm flt" id="mErrBtn" data-nobusy data-act="toggle-modal-err">只看错误</button>
+      <button type="button" class="btn sm" data-nobusy data-act="copy-modal-log">复制</button>
+      <button type="button" class="btn sm" data-nobusy data-act="open-log" data-kind="${kind}">刷新</button>
     </div></div>
-    <div class="log-pre"><pre id="modalLogPre"></pre></div>`;
+    <div class="log-pre"><pre id="modalLogPre"></pre></div>`);
   renderModalLogLines();
 }
 
@@ -141,7 +152,7 @@ async function openLog(kind){
 const _dirtyForms={policy:false,settings:false,mail:false};
 const _dirtyBadges={policy:'pDirty',settings:'sDirty',mail:'mDirty'};
 
-function markFormDirty(form,on){
+export function markFormDirty(form,on){
   _dirtyForms[form]=!!on;
   const b=$(_dirtyBadges[form]);
   if(b)b.classList.toggle('on',!!on);
@@ -152,7 +163,7 @@ function _isEditingPanel(panelId){
   return !!(p&&document.activeElement&&p.contains(document.activeElement));
 }
 
-(function bindDirtyForms(){
+export function initDirtyForms(){
   const groups={
     settings:['sBark','sSendkey','sPushplus'],
     mail:['mEnabled','mUser','mPass','mProvider','mHost','mPort','mKeyword','mSender'],
@@ -161,14 +172,16 @@ function _isEditingPanel(panelId){
   };
   Object.entries(groups).forEach(([form,ids])=>{
     ids.forEach(id=>{
-      const el=$(id); if(!el)return;
+      const el=$(id); if(!el||el.dataset.dirtyBound)return;
+      el.dataset.dirtyBound='1';
       const ev=(el.type==='checkbox'||el.tagName==='SELECT')?'change':'input';
       el.addEventListener(ev,()=>markFormDirty(form,true));
     });
   });
-})();
+}
 
-function renderPolicy(){
+export function renderPolicy(){
+  const STATE=store.state;
   const p=(STATE&&STATE.policy)||{}, b=p.bass||{};
   if(!$('pFeed'))return;
   if(!_dirtyForms.policy&&!_isEditingPanel('panelSetPolicy')){
@@ -208,14 +221,14 @@ function renderPolicy(){
       : '已保存：不自动喂养（只领三档奖励）');
 }
 
-function feedAllToggle(p){
+export function feedAllToggle(p){
   const all=$(p+'FeedAll'), num=$(p+'Feed');
   if(!all||!num)return;
   num.disabled=all.checked;
   if(all.checked)num.value=0;
 }
 
-async function savePolicy(){
+export async function savePolicy(){
   const body={action:'policy_save',
     luck:($('pLuck')?$('pLuck').checked:true),
     luck_tasks:($('pLuckTasks')?$('pLuckTasks').checked:true),
@@ -232,13 +245,14 @@ async function savePolicy(){
     seckill:{at:($('sAt')?V('sAt'):'')}};
   const r=await act(body);
   if(r&&r.ok&&r.policy){
-    STATE.policy=r.policy;
+    if(store.state)store.state.policy=r.policy;
     markFormDirty('policy',false);
     renderPolicy();
   }
 }
 
-function renderSettings(){
+export function renderSettings(){
+  const STATE=store.state;
   const st=(STATE&&STATE.settings)||{};
   if(!$('sBark'))return;
   if(!_dirtyForms.settings&&!_isEditingPanel('panelSetPush')){
@@ -256,23 +270,24 @@ function renderSettings(){
   renderMail();
 }
 
-async function saveSettings(){
+export async function saveSettings(){
   const push={bark_url:V('sBark'),serverchan_sendkey:V('sSendkey'),pushplus_token:V('sPushplus')};
   const r=await act({action:'settings_save',push:push});
   if(r&&r.ok){
-    if(STATE)STATE.settings=push;
+    if(store.state)store.state.settings=push;
     markFormDirty('settings',false);
     renderSettings();
   }
 }
 
 const MAIL_PRESETS={gmail:['imap.gmail.com',993],qq:['imap.qq.com',993],'163':['imap.163.com',993],'139':['imap.139.com',993]};
-function mailProvider(){
+export function mailProvider(){
   const p=MAIL_PRESETS[$('mProvider').value];
   if(p){$('mHost').value=p[0];$('mPort').value=p[1];}
 }
 
-function renderMail(){
+export function renderMail(){
+  const STATE=store.state;
   const m=(STATE&&STATE.mail)||{};
   if(!$('mUser'))return;
   if(!_dirtyForms.mail&&!_isEditingPanel('panelSetMail')){
@@ -290,37 +305,31 @@ function renderMail(){
     +(m.password?' · 授权码已保存':' · 尚未保存授权码');
 }
 
-async function saveMail(){
+export async function saveMail(){
   const r=await act({action:'mail_save',mail:{
     enabled:$('mEnabled').checked,provider:$('mProvider').value,
     host:V('mHost'),port:Number(V('mPort'))||993,
     user:V('mUser'),password:V('mPass'),sender:V('mSender'),subject_keyword:V('mKeyword')}});
-  if(r&&r.ok&&STATE){
-    STATE.mail={...(STATE.mail||{}),enabled:$('mEnabled').checked,
+  if(r&&r.ok&&store.state){
+    store.state.mail={...(store.state.mail||{}),enabled:$('mEnabled').checked,
       provider:$('mProvider').value,host:V('mHost'),port:Number(V('mPort'))||993,user:V('mUser'),
-      sender:V('mSender'),subject_keyword:V('mKeyword'),password:V('mPass')?1:STATE.mail.password};
+      sender:V('mSender'),subject_keyword:V('mKeyword'),password:V('mPass')?1:(store.state.mail&&store.state.mail.password)};
     if($('mPass'))$('mPass').value='';
     markFormDirty('mail',false);
     renderMail();
   }
 }
 
-function gotoSettings(){
-  const b=document.querySelector('nav button[data-p="settings"]');
-  if(b)nav(b);
-}
+export function gotoSettings(){hooks.navTo('settings');}
 
 // ---------------- HAR 拖拽 & XHR 二进制直传进度 ----------------
-function afterHar(r){
+export function afterHar(r){
   const el=$('harOut'); if(!el)return;
   const rep=(r&&r.report)||[];
   const err=r&&r.err;
-  if(!rep.length&&!err){el.style.display='none';return;}
-  el.style.display='block';
-  let html='';
-  if(err) html+=`<div style="color:var(--bad)">✗ ${esc(err)}</div>`;
-  html+=rep.map(t=>`<div>${esc(t)}</div>`).join('');
-  el.innerHTML=html;
+  if(!rep.length&&!err){setHidden(el,true);return;}
+  setHidden(el,false);
+  setHtml(el,html`${err?html`<div class="tone-bad">✗ ${err}</div>`:''}${rep.map(t=>html`<div>${t}</div>`)}`);
 }
 
 let harBusy=false,_droppedHarFile=null;
@@ -342,9 +351,10 @@ function pickHarFile(f){
   const info=$('harFileInfo');
   if(info)info.textContent=`已选择：${f.name}（${(f.size/1048576).toFixed(2)} MB）— 点「导入所选文件」开始`;
 }
-(function initHarDrop(){
+export function initHarDrop(){
   const dz=$('harDrop'), inp=$('harFile');
-  if(!dz||!inp)return;
+  if(!dz||!inp||dz.dataset.dropBound)return;
+  dz.dataset.dropBound='1';
   dz.addEventListener('click',e=>{if(e.target!==inp)inp.click();});
   dz.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click();}});
   inp.addEventListener('change',()=>{if(inp.files&&inp.files[0])pickHarFile(inp.files[0]);});
@@ -358,9 +368,9 @@ function pickHarFile(f){
     }catch(_){}
     pickHarFile(f);
   });
-})();
+}
 
-function importHar(){
+export function importHar(){
   const inp=$('harFile');
   const f=(inp&&inp.files&&inp.files[0])||_droppedHarFile;
   if(!f){toast('先选择一个抓包文件（.har）',true);return;}
@@ -369,7 +379,7 @@ function importHar(){
   _setHarBtnBusy(true);
   const mb=(f.size/1048576).toFixed(1);
   const el=$('harOut');
-  if(el){el.style.display='block';el.innerHTML=`<div class="muted">正在上传 ${esc(f.name)}（${mb}MB）…导入后会实测登录一次，请稍候</div>`;}
+  if(el){setHidden(el,false);setHtml(el,html`<div class="muted">正在上传 ${f.name}（${mb}MB）…导入后会实测登录一次，请稍候</div>`);}
   setHarProgress(0,`准备上传 ${f.name}（${mb} MB）…`);
 
   const xhr=new XMLHttpRequest();
@@ -391,7 +401,7 @@ function importHar(){
     if(!r.ok){const m=r.err||'HAR 导入失败';toast(m,true);showErr(m);}
     else{clearErr();if(r.msg)toast(r.msg);}
     afterHar(r);
-    pullLogs();pullState(!0);
+    hooks.pullLogs();hooks.pullState(true);
   };
   xhr.onerror=()=>{
     harBusy=false;

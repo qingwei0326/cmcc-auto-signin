@@ -53,6 +53,20 @@ setup_utf8()
 
 BASE = app_base()
 ASSIST_STATE = BASE / "gui_data" / "xxl_assist_state.json"
+
+
+def save_xxl_state(key: str, patch: dict) -> None:
+    """持久化单账号消消乐状态到 gui_data/xxl_state.json，供控制台展示。"""
+    path = BASE / "gui_data" / "xxl_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock(path):
+        data = load_json(path, default={})
+        if not isinstance(data, dict):
+            data = {}
+        prev = data.get(key) if isinstance(data.get(key), dict) else {}
+        merged = {**prev, **patch}
+        data[key] = merged
+        atomic_write_json(path, data)
 HOST = "https://wap.fj.10086.cn"
 API = HOST + "/bass-commonAreaServer/H5Api/eliminate/"
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
@@ -270,6 +284,7 @@ def do_coin_tasks(s: requests.Session) -> dict:
         gold -= cost
         bought += 1
     print(f"  金币任务完成 {done} 项，兑换体力 {bought} 点（{cost} 金币/点），剩余金币 {gold}。")
+    info["_summary"] = {"gold": gold, "exchanged": bought, "tasks_done": done}
     return info
 
 
@@ -315,24 +330,56 @@ def main() -> int:
     print(f"账号配置: {args.config}")
     print("=" * 56)
 
+    coin_summary = {}
     if args.tasks:
         print("\n金币任务 / 体力兑换：")
         if not args.skip_mutual:
             mutual_assist()
-        do_coin_tasks(s)
+        coin_res = do_coin_tasks(s)
+        coin_summary = (coin_res or {}).get("_summary") or {}
 
     lim0 = show_limit(s)
+    lim0_d = lim0.get("data") or {}
+    today_play = lim0_d.get("todayPlayCount")
+    reached_limit = bool(lim0_d.get("reachedLimit"))
 
     # 每次都现读真实关卡。写死关卡会导致「次数扣了、关卡不动」——
     # 项目早期 49/63 用了一阵，账号涨到 51/64 后就是这么废掉几天次数的。
     detected, home = current_level(s)
+    hd = (home.get("data") or {}) if isinstance(home, dict) else {}
+    stamina = hd.get("physicalPower")
+    gold = hd.get("gold") if hd.get("gold") is not None else coin_summary.get("gold")
+    exchanged = coin_summary.get("exchanged", 0)
+    today_str = time.strftime("%Y-%m-%d")
+
     if detected is not None:
         print(f"  当前真实关卡: {detected}（indexInfo.gameLevel）")
     elif str(home.get("code")) != "0000":
         print(f"  读取真实关卡失败: code={home.get('code')} msg={home.get('msg')!r}")
 
+    def _persist(rounds_list):
+        patch = {
+            "phone": str(cfg.get("phone") or ""),
+            "level": detected if detected is not None else args.level,
+            "stamina": stamina,
+            "today_play": today_play,
+            "reached_limit": reached_limit,
+            "gold": gold,
+            "exchanged": exchanged,
+            "day": today_str,
+            "updated": time.strftime("%Y-%m-%d %H:%M"),
+        }
+        if rounds_list:
+            existing = load_json(BASE / "gui_data" / "xxl_state.json", default={}) or {}
+            prev_acc = existing.get(cfg_path.stem) if isinstance(existing, dict) else None
+            prev_rounds = (prev_acc.get("last_rounds") or []) if (isinstance(prev_acc, dict) and prev_acc.get("day") == today_str) else []
+            patch["last_rounds"] = (prev_rounds + rounds_list)[-10:]
+        save_xxl_state(cfg_path.stem, patch)
+
     if args.dry_run:
         print("\n--dry-run：仅查看，未玩游戏。")
+        if str(lim0.get("code")) == "0000":
+            _persist([])
         return 0 if str(lim0.get("code")) == "0000" else 1
 
     level = detected if detected is not None else args.level
@@ -344,18 +391,27 @@ def main() -> int:
 
     got = 0
     played = 0
+    rounds = []
     fail_streak = 0
     hard_fail = False   # 真失败（token/网关/参数），退出码 1
     soft_stop = False   # 预期内收尾（体力或次数用尽），退出码 0
     for i in range(args.times):
         # 每局都现读关卡：上一局通关会 +1，写死关卡正是之前卡住的原因
-        lv_now, _ = current_level(s)
+        lv_now, home_now = current_level(s)
         if lv_now is not None:
             level = lv_now
+            detected = lv_now
+            hd_now = (home_now.get("data") or {}) if isinstance(home_now, dict) else {}
+            if hd_now.get("physicalPower") is not None:
+                stamina = hd_now.get("physicalPower")
+            if hd_now.get("gold") is not None:
+                gold = hd_now.get("gold")
             print(f"  本局关卡: {level}")
         # 每局重新取一次性 token
         lim = post(s, "getDailyPlayLimit")
         ld = lim.get("data") or {}
+        if ld.get("todayPlayCount") is not None:
+            today_play = ld.get("todayPlayCount")
         lcode = str(lim.get("code"))
         if lcode == "401":
             print(f"[{i + 1}] token 失效（401），停止。请更新该号 bearer_token。")
@@ -363,6 +419,7 @@ def main() -> int:
             break
         if ld.get("reachedLimit"):
             print(f"[{i + 1}] 今日次数已用完，停止。")
+            reached_limit = True
             soft_stop = True
             break
         if lcode != "0000":
@@ -375,6 +432,7 @@ def main() -> int:
             hard_fail = True
             break
 
+        round_level = level
         body = {
             "gameLevel": aes_encode(str(level)),
             "score": aes_encode(str(args.star)),
@@ -388,7 +446,18 @@ def main() -> int:
         won = bool(pn) and "谢谢参与" not in pn
         if code == "0000":
             played += 1
+            if isinstance(today_play, int):
+                today_play += 1
+            if isinstance(stamina, int) and stamina > 0:
+                stamina -= 1
             fail_streak = 0
+            rounds.append({
+                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "level": round_level,
+                "star": args.star,
+                "prize": pn or "谢谢参与",
+                "won": won,
+            })
             if won:
                 got += 1
                 print(f"[{i + 1}] ✓ 完成  level={level} star={args.star}  →  中奖：{pn}")
@@ -398,11 +467,17 @@ def main() -> int:
                 print(f"[{i + 1}] ✓ 完成  level={level} star={args.star}  →  未中奖（谢谢参与）")
             # 关卡必须真的往前走，否则说明又在打旧关，继续跑只是白扣次数
             time.sleep(1)
-            new_level, _ = current_level(s)
+            new_level, home_after = current_level(s)
             if new_level is not None:
+                hd_after = (home_after.get("data") or {}) if isinstance(home_after, dict) else {}
+                if hd_after.get("physicalPower") is not None:
+                    stamina = hd_after.get("physicalPower")
+                if hd_after.get("gold") is not None:
+                    gold = hd_after.get("gold")
                 if new_level > level:
                     print(f"    关卡推进 {level} → {new_level}")
                     level = new_level
+                    detected = new_level
                 else:
                     print(f"    关卡没动（仍是 {new_level}）——这次上报被判成旧关，"
                           f"先停，不再消耗今天的次数。")
@@ -415,6 +490,10 @@ def main() -> int:
             # 服务端对体力不足有明确文案，命中就直接收手，别再试探
             if "体力" in msg or "次数" in msg:
                 print(f"    体力/次数不足，直接停止（今日已玩 {ld.get('todayPlayCount')} 次）。")
+                if "体力" in msg:
+                    stamina = 0
+                if "次数" in msg:
+                    reached_limit = True
                 soft_stop = True
                 break
             if code == "401":
@@ -444,6 +523,8 @@ def main() -> int:
     else:
         print(f"奖品查询：code={pr.get('code')} msg={pr.get('msg')!r}")
     print(f"@@XXL_PLAYED {played}")
+    if str(lim0.get("code")) == "0000" or played > 0:
+        _persist(rounds)
 
     if hard_fail:
         return 1

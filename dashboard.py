@@ -310,8 +310,11 @@ def _apply_qwhd_result(key: str, r: dict):
         upd["token_qwhd"] = r["token"]
     update_stats(key, **upd)
     flow = float(r.get("flow_mb") or 0)
-    if flow > 0 and r.get("today_signed"):
-        bump_daily(key, flow_mb=flow)
+    if not (flow > 0 and r.get("today_signed")):
+        flow = 0.0  # 流量仅在今日已签到时计入
+    tasks = max(int(r.get("tasks") or 0), 0)  # AI豆 + 拓展活动真实完成数，与签到状态无关
+    if flow > 0 or tasks > 0:
+        bump_daily(key, flow_mb=flow, tasks=tasks)
 
 
 def _apply_bass_result(key: str, r: dict):
@@ -1576,6 +1579,7 @@ def build_state():
         "daily": _load_json_safe(_data_dir() / "daily_state.json"),
         "luck": _load_json_safe(_data_dir() / "luck_state.json"),
         "xunbao": _load_json_safe(_data_dir() / "xunbao_state.json"),
+        "xxl": _load_json_safe(_data_dir() / "xxl_state.json"),
         "awards": _awards_view(),
         "seckill_sessions": _list_seckill_sessions(),
         "token_life": _list_token_life(),
@@ -2080,8 +2084,14 @@ STATIC_FILES = {
     "js/dash.js": "application/javascript; charset=utf-8",
     "js/activities.js": "application/javascript; charset=utf-8",
     "js/ops.js": "application/javascript; charset=utf-8",
+    "js/runner.js": "application/javascript; charset=utf-8",
+    "js/logs.js": "application/javascript; charset=utf-8",
+    "js/update.js": "application/javascript; charset=utf-8",
 }
-STATIC_JS_FILES = ("js/core.js", "js/dash.js", "js/activities.js", "js/ops.js", "app.js")
+STATIC_JS_FILES = (
+    "js/core.js", "js/dash.js", "js/activities.js", "js/ops.js",
+    "js/runner.js", "js/logs.js", "js/update.js", "app.js",
+)
 
 
 def _static_path(name: str):

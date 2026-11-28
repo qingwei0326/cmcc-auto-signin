@@ -63,10 +63,10 @@ with sync_playwright() as p:
     page.wait_for_timeout(600)
     check("无 JS 运行时错误（首屏）", not errors, errors[:3])
 
-    has_acct = page.evaluate("()=>(STATE.raw_accounts||[]).length>0")
+    has_acct = page.evaluate("()=>(__cmcc.state.raw_accounts||[]).length>0")
     check("待办条有内容", page.eval_on_selector("#todoBox", "e=>e.innerText.trim().length") > 10)
     check("KPI 六张", page.eval_on_selector_all("#sumbar .kpi", "e=>e.length") == 6)
-    check("定时任务表已建", page.eval_on_selector_all("#schedBox .stab tbody tr", "e=>e.length") == 8)
+    check("定时任务表已建", page.eval_on_selector_all("#schedBox .stab tbody tr", "e=>e.length") == 3)
     if has_acct:
         check("账号卡渲染", page.eval_on_selector_all("#cards .acct", "e=>e.length") >= 1)
         check("卡片带数据时间", "数据截至" in page.inner_text("#cards"))
@@ -86,34 +86,34 @@ with sync_playwright() as p:
         const e=document.getElementById(id);return e?e.getBoundingClientRect().top:-1;})""")
     check("总览区块顺序正确", order[0] <= order[1] < order[2], order)
     # 台账折叠 / 筛选：只改前端状态，不触发任何任务
-    total = page.evaluate("()=>((STATE.awards||{}).recent||[]).length")
+    total = page.evaluate("()=>((__cmcc.state.awards||{}).recent||[]).length")
     shown = page.eval_on_selector_all("#awTab tr", "e=>e.length")
     check("台账默认折叠为 8 条", shown <= 9, "rows=%d total=%d" % (shown - 1, total))
     btn_shown = page.eval_on_selector("#awMoreBtn", "e=>getComputedStyle(e).display!=='none'")
     check("展开按钮按数据量显隐", btn_shown == (total > 8), "total=%d" % total)
     if total > 8:
-        page.evaluate("()=>{awExpanded=true;renderAwTable();}")
+        page.click("#awMoreBtn")
         check("展开后显示全部", page.eval_on_selector_all("#awTab tr", "e=>e.length") == total + 1)
         check("按钮变为收起", "收起" in page.inner_text("#awMoreBtn"))
-        page.evaluate("()=>{awExpanded=false;renderAwTable();}")
+        page.click("#awMoreBtn")
         check("收起后恢复 8 条", page.eval_on_selector_all("#awTab tr", "e=>e.length") == 9)
     acct_opts = page.eval_on_selector_all("#awAcct option", "es=>es.map(e=>e.value)")
     src_opts = page.eval_on_selector_all("#awSource option", "es=>es.map(e=>e.value)")
     check("号码/来源筛选含全部项", acct_opts[:1] == [""] and src_opts[:1] == [""],
           (acct_opts[:3], src_opts[:3]))
     if total > 0:
-        picked = page.evaluate("""()=>{const r=((STATE.awards||{}).recent||[])[0];
-            const a=r&&r.account;if(!a)return '';
-            const s=document.getElementById('awAcct');s.value=a;onAwFilter();
-            return a;}""")
+        picked = page.evaluate("""()=>{const r=((__cmcc.state.awards||{}).recent||[])[0];
+            return r&&r.account?r.account:'';}""")
         if picked:
-            expect = page.evaluate("a=>((STATE.awards||{}).recent||[]).filter(r=>r.account===a).length", picked)
+            page.select_option("#awAcct", picked)
+            expect = page.evaluate("a=>((__cmcc.state.awards||{}).recent||[]).filter(r=>r.account===a).length", picked)
             got = page.eval_on_selector_all("#awTab tr", "e=>e.length")
             check("按号码筛选生效", min(got - 1, 8) == min(expect, 8), "got=%d expect=%d" % (got - 1, expect))
-            page.evaluate("()=>{document.getElementById('awAcct').value='';onAwFilter();}")
+            page.select_option("#awAcct", "")
     page.screenshot(path=str(OUT / "shot_dash.png"), full_page=True)
 
-    for key, title in [("token", "凭证与账号"), ("bass", "福建活动"), ("xxl", "消消乐"),
+    check("侧边栏已移除独立消消乐", page.eval_on_selector_all('nav button[data-p="xxl"]', "e=>e.length") == 0)
+    for key, title in [("token", "凭证与账号"), ("bass", "福建活动"),
                        ("seckill", "秒杀抢券"), ("games", "拓展活动"),
                        ("sched", "定时任务"), ("logs", "日志"), ("settings", "设置")]:
         page.click('nav button[data-p="%s"]' % key)
@@ -124,13 +124,13 @@ with sync_playwright() as p:
 
     # 定时任务页：提示条不堆叠（连渲染 5 次）
     page.click('nav button[data-p="sched"]')
-    page.evaluate("()=>{for(let i=0;i<5;i++)render();}")
+    page.evaluate("()=>{for(let i=0;i<5;i++)__cmcc.render();}")
     n = page.eval_on_selector_all("#schedBox .schedtip", "e=>e.length")
     check("提示条最多一条", n <= 1, "count=%d" % n)
     page.screenshot(path=str(OUT / "shot_sched.png"), full_page=True)
 
     # 日志弹层（只读本地文件）
-    page.click('#schedBox button[onclick="openLog(\'sign\')"]')
+    page.click('#schedBox button[data-act="open-log"][data-kind="morning"]')
     page.wait_for_timeout(700)
     check("日志弹层打开", page.eval_on_selector("#modal", "e=>e.classList.contains('on')"))
     check("日志有内容或明确说明", len(page.inner_text("#mBody")) > 10)
@@ -141,10 +141,10 @@ with sync_playwright() as p:
 
     # 新建账号：非法手机号必须被挡住，且不落盘
     page.click('nav button[data-p="token"]')
-    page.click('button[onclick="openNewAccount()"]')
+    page.click('button[data-act="open-new-account"]')
     page.wait_for_timeout(200)
     page.fill("#naPhone", "123")
-    page.click('button[onclick="saveNewAccount()"]')
+    page.click('button[data-act="save-new-account"]')
     page.wait_for_timeout(600)
     check("非法手机号被拒", "11 位" in page.inner_text("#errBox"), page.inner_text("#errBox")[:60])
     check("错误条可见（不只 toast）",
@@ -161,31 +161,34 @@ with sync_playwright() as p:
 
     # 空闲时停止按钮置灰；直接调接口也要有明确反馈
     check("停止按钮空闲时禁用", page.eval_on_selector("#btnStop", "e=>e.disabled"))
-    page.evaluate("()=>act({action:'stop'})")
+    page.evaluate("()=>__cmcc.act({action:'stop'})")
     page.wait_for_timeout(600)
     check("空闲停止有反馈", "没有正在运行" in page.inner_text("#toast"), page.inner_text("#toast"))
 
     # 忙态：按钮置灰 + 顶栏 pill（不真的跑任务）
-    page.evaluate("()=>setBusy(true,'测试任务')")
+    page.evaluate("()=>__cmcc.setBusy(true,'测试任务')")
     dis = page.eval_on_selector_all('.content .btn:not([data-nobusy])', "es=>es.filter(e=>e.disabled).length")
     tot = page.eval_on_selector_all('.content .btn:not([data-nobusy])', "es=>es.length")
     check("忙时动作按钮全部置灰", dis == tot and tot > 5, "%d/%d" % (dis, tot))
     check("顶栏显示运行中", "运行中" in page.inner_text("#taskPillTop"))
     check("忙时停止可点", not page.eval_on_selector("#btnStop", "e=>e.disabled"))
-    page.evaluate("()=>setBusy(false,'')")
+    page.evaluate("()=>__cmcc.setBusy(false,'')")
     check("空闲后恢复可点",
           page.eval_on_selector_all('.content .btn:not([data-nobusy])', "es=>es.every(e=>!e.disabled)"))
 
-    # 消消乐：关卡改为自动读取，页面只展示参数与执行结果区
-    page.click('nav button[data-p="xxl"]')
+    # 消消乐（已并入福建活动子标签）：关卡改为自动读取，展示参数、结果区与状态卡片
+    page.click('nav button[data-p="bass"]')
+    page.wait_for_timeout(150)
+    page.click('#bassTabs button[data-bt="xxl"]')
     page.wait_for_timeout(200)
     check("消消乐参数区显示自动读取", "关卡自动读取" in page.inner_text("#xxlParams"))
     check("不再保留手填关卡输入框", page.eval_on_selector_all("#xLevel", "e=>e.length") == 0)
     check("消消乐结果区存在", page.eval_on_selector_all("#xxlBox", "e=>e.length") == 1)
+    check("消消乐状态卡片区存在", page.eval_on_selector_all("#xxlCards", "e=>e.length") == 1)
+    page.click('#bassTabs button[data-bt="all"]')
 
     # 喂到用完：勾上就置灰轮数框，不用手填
-    page.click('nav button[data-p="bass"]')
-    page.wait_for_timeout(200)
+    page.wait_for_timeout(150)
     page.check("#bFeedAll")
     check("喂到用完置灰轮数框", page.eval_on_selector("#bFeed", "e=>e.disabled"))
     page.uncheck("#bFeedAll")
@@ -211,9 +214,9 @@ with sync_playwright() as p:
     # 动态内容转义：伪造一份带 HTML 的 STATE，只重绘，不触发任何任务。
     # 注入的 img 若被当成元素插入，onerror 会置 window.__xss。
     page.evaluate("""() => {
-        window.__origState = JSON.parse(JSON.stringify(STATE));
+        window.__origState = JSON.parse(JSON.stringify(__cmcc.state));
         const bad = '<img id="xss-probe" src="x" onerror="window.__xss=1">';
-        const S = JSON.parse(JSON.stringify(STATE));
+        const S = JSON.parse(JSON.stringify(__cmcc.state));
         const k = (S.raw_accounts && S.raw_accounts[0] && S.raw_accounts[0].key) || 'probe';
         S.eff = S.eff || {};
         S.eff.recent = [{ts: bad, label: bad, sec: 1, ok: true}];
@@ -234,19 +237,19 @@ with sync_playwright() as p:
         S.accounts = [{phone: '13800001234', plats: {qwhdhub: {
             key: 'probe', file: 'configs/probe.json', plat: 'qwhdhub',
             phone: '13800001234', stats: S.stats[k]}}}];
-        STATE = S;
-        render();
+        __cmcc.state = S;
+        __cmcc.render();
     }""")
     check("动态文本不会注入 HTML",
           page.evaluate("()=>!document.getElementById('xss-probe') && !window.__xss"))
     check("转义后原文仍完整可见",
           '<img id="xss-probe"' in page.inner_text("#runtab"),
           page.inner_text("#runtab")[:100])
-    check("编辑按钮的内联参数未被截断",
+    check("编辑按钮的 data-file 参数完整且无内联事件",
           page.evaluate("()=>[...document.querySelectorAll('#acctBox button')].every("
-                        "b=>{try{new Function(b.getAttribute('onclick'));return true}"
-                        "catch(e){return false}})"))
-    page.evaluate("()=>{STATE=window.__origState;render();}")
+                        "b=>b.dataset.file && b.dataset.file.includes('xss-probe'))"
+                        " && document.querySelectorAll('[onclick]').length === 0"))
+    page.evaluate("()=>{__cmcc.state=window.__origState;__cmcc.render();}")
 
     # 手机端
     m = ctx.new_page()

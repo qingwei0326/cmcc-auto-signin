@@ -144,7 +144,7 @@ dist\签到领福利.exe → 复制到项目根目录
 
 - `.bat` 换行必须是 CRLF（若被保存为 LF 会解析错乱）。
 - 依赖源建议使用默认 PyPI（部分镜像源曾缺 `pywebview`）。
-- `static/` 目录必须完整在位：前端采用纯原生无构建分层架构（`index.html`、`app.css`、`app.js` 及 `js/core.js`、`js/dash.js`、`js/activities.js`、`js/ops.js`），由 `签到领福利.spec` 的 `datas` 统一打包进 exe。
+- `static/` 目录必须完整在位：前端采用零构建原生 ES Modules + 事件委托 + 默认转义模板架构（`index.html`、`app.css`、`app.js` 及 `js/core.js`、`js/dash.js`、`js/activities.js`、`js/ops.js`、`js/runner.js`、`js/logs.js`、`js/update.js`），由 `签到领福利.spec` 的 `datas` 统一打包进 exe。
 - 打包配置以 **spec 为唯一来源**：`build_exe.bat` 直接构建 spec；若改回命令行参数构建，PyInstaller 会重新生成 spec 并覆盖手工维护的 `datas`/图标配置。
 - 成功标志为日志末尾出现 `Build complete!`，生成约 24MB 的 `dist\签到领福利.exe`。
 
@@ -505,19 +505,24 @@ python pull_token_phone.py --save     # Android Termux
 ├── static/                 控制台前端静态资源（打包时由 spec 的 datas 整体带上）
 │   ├── index.html          主页面（深色/浅色、外观设置弹层、子标签页、表单脏状态提示）
 │   ├── app.css             样式与主题变量（rem 缩放、骨架屏、状态徽章、响应式输入网格）
-│   ├── app.js              全局路由、分片脏渲染、结构化命令输出、日志流式监听
-│   └── js/                 模块化业务脚本
-│       ├── core.js         基础工具、DOM 辅助、弹层/气泡、缩放与深浅色主题
+│   ├── app.js              入口与路由、分片脏渲染、统一轮询与集中式事件委托
+│   └── js/                 原生 ES Modules 业务模块
+│       ├── core.js         共享状态、SafeHtml 默认转义模板、弹层/气泡、缩放与深浅色主题
 │       ├── dash.js         总览面板、双平台数据独立卡片、到账台账与效率看板
-│       ├── activities.js   活动子标签页切换、账号弹窗、大转盘/寻宝/流量银行面板
-│       └── ops.js          计划任务列表与弹窗日志、配置脏状态追踪、HAR 导入
+│       ├── activities.js   活动子标签页切换、账号弹窗、大转盘/寻宝/流量银行/秒杀面板
+│       ├── ops.js          计划任务列表与弹窗日志、配置脏状态追踪、HAR 导入
+│       ├── runner.js       各活动手动执行入口与结构化输出捕获（CAP）
+│       ├── logs.js         实时日志过滤、复制与迷你抽屉
+│       └── update.js       版本显示与 GitHub Releases 更新检测
 ├── app_desktop.py          桌面版入口（pywebview 原生窗口 + --run-script 调度）
 ├── pull_token_phone.py     手机一键登录换 BASS token（免抓包）
 ├── pull_token_iphone.js    同上，iPhone Scriptable 版
 ├── probe_fj.py             只读探测 BASS 接口
 ├── config.example.json     qwhdhub 配置模板
 ├── config_fj.example.json  BASS 配置模板
-├── tests/                  单元与回归测试（全部用假响应，不发真实请求）
+├── eslint.config.mjs       前端 ESLint 9 规则（ESM、安全模板与样式约束）
+├── package.json            前端 lint:js / test:js 脚本与开发依赖
+├── tests/                  单元、回归与前端行为测试（含 tests/frontend/，全部用假响应）
 ├── docs/                   接口文档（qwhdhub / 秒杀 / 周三充值日 / BASS）
 ├── configs/                真实 qwhdhub 配置（不入库）
 ├── configs_fj/             真实 BASS 配置（不入库）
@@ -568,6 +573,7 @@ python probe_token_life.py --once                               # 手动探测�
 | `gui_data/flowbank_state.json` | 流量银行任务周期与上次完成时间（显示时优先用只读接口实时回查，查不到会标注记录日期） |
 | `gui_data/feed_state.json` | 各账号当天是否已自动喂养 |
 | `gui_data/xxl_daily_state.json` | 当天真正玩成过消消乐的账号（寻宝按号上报「参与消消乐」用） |
+| `gui_data/xxl_state.json` | 各账号消消乐剩余体力、今日通关、当前关卡与近期明细 |
 | `gui_data/luck_state.json` | 抽奖次数与中奖记录 |
 | `gui_data/runs.json` | 运行次数、成功率、机器工时 |
 | `gui_data/token_life/<尾号>.json` | `app_token` 寿命探测样本与结论 |
@@ -588,15 +594,17 @@ python probe_token_life.py --once                               # 手动探测�
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests -v      # 约 480 个用例，覆盖全部业务、安全与界面
-pip install ruff && ruff check .             # 代码检查（规则见 pyproject.toml）
+python -m unittest discover -s tests -v      # 约 500 个用例，覆盖全部业务、安全与界面
+pip install ruff && ruff check .             # Python 代码检查（规则见 pyproject.toml）
+npm ci && npm run lint:js && npm run test:js # 前端 ESLint 规则检查 + jsdom 行为测试
 python tests/browser_smoke.py                # 可选：真实浏览器冒烟（需 playwright）
 ```
 
-所有单元测试均使用临时目录与假响应，**不读取 `configs/`、不发起任何真实网络请求**。`tests/_guard.py` 通过审计钩子硬性禁止测试写入真实的 `gui_data/`、`configs/`、`configs_fj/` 与凭证缓存，任何遗漏都会直接报错。仓库配置了仅用于跑测试的 GitHub Actions（`.github/workflows/tests.yml`：单元测试覆盖 Windows + Linux × Python 3.9/3.12，另有一个 `ruff` 代码检查 job）。
+所有单元测试均使用临时目录与假响应，**不读取 `configs/`、不发起任何真实网络请求**。`tests/_guard.py` 通过审计钩子硬性禁止测试写入真实的 `gui_data/`、`configs/`、`configs_fj/` 与凭证缓存，任何遗漏都会直接报错。仓库配置了仅用于跑测试的 GitHub Actions（`.github/workflows/tests.yml`：单元测试覆盖 Windows + Linux × Python 3.9/3.12，另设 `ruff` 代码检查与 `js-lint` 前端 ESLint + 行为测试 job）。
 
 - `tests/test_regressions.py`：覆盖真实修复过的回归缺陷（保活参数丢失、消消乐退出码、HAR 签发时刻跨号污染、并发写状态冲突、路径穿越与跨站请求、冻结态计划任务解释器、停止按钮终止孙子进程、首屏阻塞、全新安装建号等）。
-- `tests/test_ui.py`：守卫前端界面契约（中文标题、待办条、真实任务状态、不暴露命令行参数、消消乐默认不勾、忙时按钮置灰、静态分层模块完整性、`rem` 缩放与外观弹层契约等）。
+- `tests/test_ui.py`：守卫前端界面契约（中文标题、待办条、真实任务状态、不暴露命令行参数、消消乐默认不勾、忙时按钮置灰、ES 模块分层与 `data-act` 委托完整性、无内联事件与裸 HTML 拼接、`rem` 缩放与外观弹层契约等）。
+- `tests/frontend/ui.test.mjs`：基于 `node:test` + `jsdom` 的前端行为测试（首屏渲染、台账折叠与筛选、子标签切换、确认弹窗与接口请求载荷校验、表单校验与脏状态、日志过滤、忙态置灰、主题缩放与 XSS 转义）。
 
 三个测试文件均支持直接独立运行（如 `python tests/test_smoke.py`）。
 

@@ -145,8 +145,17 @@ def api_call(s: requests.Session, referer: str, method: str, path: str, body=Non
         return {"code": "NETWORK_ERROR", "msg": str(e)}
 
 
-def run_diy_tasks(s: requests.Session, referer: str, component: str, dry_run: bool) -> str:
-    """代币任务：对每个 UNDO 任务 POST finish 即发币。"""
+def _bump(counter: dict | None, n: int = 1) -> None:
+    """把真实完成数记入调用方传入的计数器（可为 None）。"""
+    if counter is not None:
+        counter["done"] = counter.get("done", 0) + n
+
+
+def run_diy_tasks(s: requests.Session, referer: str, component: str, dry_run: bool,
+                  counter: dict | None = None) -> str:
+    """代币任务：对每个 UNDO 任务 POST finish 即发币。
+
+    counter 可选：真实完成数累加到 counter["done"]（dry-run/失败不计）。"""
     resp = api_call(s, referer, "GET", f"/qwhdhub/diyTask/list/{component}")
     tasks = resp.get("data") or []
     if not tasks and resp.get("code") != "SUCCESS":
@@ -166,6 +175,7 @@ def run_diy_tasks(s: requests.Session, referer: str, component: str, dry_run: bo
         cur = next((x for x in (chk.get("data") or []) if x.get("taskId") == tid), None)
         if cur is None or cur.get("taskStage") == "DONE":
             done += 1
+            _bump(counter)
         time.sleep(random.uniform(1, 2.5))
     return f"代币任务 {len(todo)} 个待办，完成 {done} 个"
 
@@ -251,8 +261,11 @@ def open_finish_task(cfg: ActConfig, task: dict) -> bool:
         return False
 
 
-def run_mark_tasks(s: requests.Session, referer: str, cfg, dry_run: bool) -> str:
-    """签到页 AI豆任务（mark/task 体系）。"""
+def run_mark_tasks(s: requests.Session, referer: str, cfg, dry_run: bool,
+                   counter: dict | None = None) -> str:
+    """签到页 AI豆任务（mark/task 体系）。
+
+    counter 可选：真实完成数累加到 counter["done"]（跳过/dry-run 不计）。"""
     tl = api_call(s, referer, "POST", "/qwhdhub/api/mark/task/taskList", {})
     tasks = (tl.get("data") or {}).get("tasks") or []
     todo = [t for t in tasks if t.get("status") == 0]
@@ -308,6 +321,7 @@ def run_mark_tasks(s: requests.Session, referer: str, cfg, dry_run: bool) -> str
             n = (aw.get("data") or {}).get("awardNum") if aw.get("code") == "SUCCESS" else "?"
             log.info("[AI豆] %s +%s", t.get("taskName", tid), n)
             got += 1
+            _bump(counter)
         else:
             skipped += 1
         time.sleep(random.uniform(0.8, 1.8))
@@ -451,11 +465,13 @@ def _complete_video_task(s: requests.Session, referer: str, task: dict,
     return True, f"{name} 完成"
 
 
-def run_video_day(s: requests.Session, referer: str, dry_run: bool) -> str:
+def run_video_day(s: requests.Session, referer: str, dry_run: bool,
+                  counter: dict | None = None) -> str:
     """视频日「看精彩视频」任务：每完成一个 +1 抽奖机会。
 
     queryDiyVideoTask → startBrowse → getFiveMinuteTaskInfo → fiveMinuteTaskFinish。
     每周最多 8 次；周日可做 2 次（两个独立任务），其他时间 1 次。
+    counter 可选：真实完成数累加到 counter["done"]（dry-run/失败不计）。
     """
     r = api_call(s, referer, "GET",
                  "/qwhdhub/api/diyVideoDayRedesign/task/queryDiyVideoTask")
@@ -491,6 +507,7 @@ def run_video_day(s: requests.Session, referer: str, dry_run: bool) -> str:
         if not ok:
             break
         ok_count += 1
+        _bump(counter)
         time.sleep(1)
 
     remain_after = video_remain(s, referer)
@@ -503,8 +520,10 @@ def run_video_day(s: requests.Session, referer: str, dry_run: bool) -> str:
     return f"视频任务 {detail}{add}"
 
 
-def run_games(cfg, dry_run: bool) -> list[str]:
-    """跑三个拓展活动：换票 → 打卡 → 代币任务 → 抽奖。返回结果行。"""
+def run_games(cfg, dry_run: bool, counter: dict | None = None) -> list[str]:
+    """跑三个拓展活动：换票 → 打卡 → 代币任务 → 抽奖。返回结果行。
+
+    counter 可选：代币任务 + 视频任务的真实完成数累加到 counter["done"]。"""
     lines = []
     for key, act in ACTS.items():
         s, referer = exchange_session(ActConfig(cfg, act["entry"]))
@@ -524,10 +543,10 @@ def run_games(cfg, dry_run: bool) -> list[str]:
                 lines.append(f"{act['name']}: 打卡{'成功' if ok else '失败 ' + str(r.get('msg'))}")
 
         if act.get("task_component"):
-            lines.append(f"{act['name']} {run_diy_tasks(s, referer, act['task_component'], dry_run)}")
+            lines.append(f"{act['name']} {run_diy_tasks(s, referer, act['task_component'], dry_run, counter)}")
         if act.get("video_day"):
             # 放在抽奖之前：视频任务 +1 次，周日抽奖能立刻用上
-            lines.append(f"{act['name']} {run_video_day(s, referer, dry_run)}")
+            lines.append(f"{act['name']} {run_video_day(s, referer, dry_run, counter)}")
         if act.get("lottery"):
             lot_txt, _won = run_lottery(s, referer, act["lottery"], dry_run,
                                         account=getattr(cfg, "phone", "") or "")

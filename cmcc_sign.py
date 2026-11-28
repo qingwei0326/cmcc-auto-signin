@@ -531,6 +531,7 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
         return 0
 
     lines = []
+    task_counter = {"done": 0}  # AI豆任务 + 拓展活动真实完成数
     if signed_today:
         lines.append(f"今日已签到（累计 {acc} 天），无需操作")
     elif dry_run:
@@ -591,19 +592,20 @@ def run(cfg: Config, dry_run: bool, claim: bool, tasks: bool = False, games: boo
         else:
             if tasks:
                 try:
-                    line = cmcc_extra.run_mark_tasks(s, referer, cfg, dry_run)
+                    line = cmcc_extra.run_mark_tasks(s, referer, cfg, dry_run, task_counter)
                     log.info("[AI豆任务] %s", line)
                     lines.append(f"[AI豆任务] {line}")
                 except Exception as e:
                     lines.append(f"[AI豆任务] 失败: {e}")
             if games:
                 try:
-                    for line in cmcc_extra.run_games(cfg, dry_run):
+                    for line in cmcc_extra.run_games(cfg, dry_run, task_counter):
                         log.info("[拓展活动] %s", line)
                         lines.append(f"[拓展] {line}")
                 except Exception as e:
                     lines.append(f"[拓展活动] 失败: {e}")
 
+    res["tasks"] = 0 if dry_run else int(task_counter["done"])
     summary = "\n".join(lines)
     log.info("\n%s", summary)
     if not dry_run:

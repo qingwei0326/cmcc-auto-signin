@@ -23,48 +23,47 @@
     </div>
     <nav aria-label="主导航">
       <div class="nav-group">概览</div>
-      <button data-p="dash" class="on" aria-current="page" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>总览<span class="nav-badge" id="nb-dash"></span></button>
-      <button data-p="token" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 19 4m-3.5 0H19v3.5"/></svg>凭证与账号<span class="nav-badge" id="nb-token"></span></button>
+      <button data-p="dash" class="on" aria-current="page" data-act="nav"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>总览<span class="nav-badge" id="nb-dash"></span></button>
+      <button data-p="token" data-act="nav"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 19 4m-3.5 0H19v3.5"/></svg>凭证与账号<span class="nav-badge" id="nb-token"></span></button>
       <div class="nav-group">活动与工具</div>
-      <button data-p="bass" onclick="nav(this)"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>福建活动<span class="nav-badge" id="nb-bass"></span></button>
-      <button data-p="xxl" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>消消乐<span class="nav-badge" id="nb-xxl"></span></button>
-      <button data-p="seckill" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M21 12h-3"/></svg>秒杀抢券<span class="nav-badge" id="nb-seckill"></span></button>
-      <button data-p="games" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m9 12 2 2 4-4"/></svg>拓展活动<span class="nav-badge" id="nb-games"></span></button>
+      <button data-p="bass" data-act="nav"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>福建活动<span class="nav-badge" id="nb-bass"></span></button>
+      <button data-p="seckill" data-act="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M21 12h-3"/></svg>秒杀抢券<span class="nav-badge" id="nb-seckill"></span></button>
+      <button data-p="games" data-act="nav"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m9 12 2 2 4-4"/></svg>拓展活动<span class="nav-badge" id="nb-games"></span></button>
       <div class="nav-group">运维与配置</div>
-      <button data-p="sched" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>定时任务<span class="nav-badge" id="nb-sched"></span></button>
-      <button data-p="logs" onclick="nav(this)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m5 0h5"/></svg>日志<span class="nav-badge" id="nb-logs"></span></button>
-      <button data-p="settings" onclick="nav(this)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置<span class="nav-badge" id="nb-settings"></span></button>
+      <button data-p="sched" data-act="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>定时任务<span class="nav-badge" id="nb-sched"></span></button>
+      <button data-p="logs" data-act="nav"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m5 0h5"/></svg>日志<span class="nav-badge" id="nb-logs"></span></button>
+      <button data-p="settings" data-act="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置<span class="nav-badge" id="nb-settings"></span></button>
     </nav>
     <div class="side-foot">
       <span id="hsub">加载中…</span>
       <span class="side-foot-sub">本地运行 · 数据仅存本机</span>
-      <button type="button" class="ver-badge" id="verBadge" hidden onclick="gotoAbout()" title="查看版本与更新"></button>
+      <button type="button" class="ver-badge" id="verBadge" hidden data-act="goto-about" title="查看版本与更新"></button>
     </div>
   </aside>
   <div class="main">
     <div class="topbar">
       <div class="title" id="pageTitle">签到控制台 / 总览</div>
       <div class="actions">
-        <button type="button" class="pill pill-btn" id="taskPillTop" data-nobusy onclick="toggleDrawer()" title="点击展开/收起迷你实时日志"><span class="pill-dot"></span><span id="taskPillTxt">空闲</span></button>
+        <button type="button" class="pill pill-btn" id="taskPillTop" data-nobusy data-act="toggle-drawer" title="点击展开/收起迷你实时日志"><span class="pill-dot"></span><span id="taskPillTxt">空闲</span></button>
         <div class="popwrap">
-          <button type="button" class="btn sm" id="btnAppear" data-nobusy onclick="toggleAppear(event)" aria-expanded="false" aria-controls="appearPop" title="切换主题与调整字号">外观 ▾</button>
+          <button type="button" class="btn sm" id="btnAppear" data-nobusy data-act="toggle-appear" aria-expanded="false" aria-controls="appearPop" title="切换主题与调整字号">外观 ▾</button>
           <div class="popover" id="appearPop" role="region" aria-label="外观设置">
             <div class="pop-sec">
               <div class="pop-lbl"><span>界面主题</span></div>
-              <button type="button" class="btn sm" id="btnTheme" data-nobusy onclick="toggleTheme()" aria-label="切换主题" style="width:100%">☀ 切换为浅色主题</button>
+              <button type="button" class="btn sm w-full" id="btnTheme" data-nobusy data-act="toggle-theme" aria-label="切换主题">☀ 切换为浅色主题</button>
             </div>
             <div class="pop-sec">
               <div class="pop-lbl"><span>字号缩放</span><span class="muted">等比重排</span></div>
               <div class="seg">
-                <button type="button" class="btn sm" data-nobusy onclick="zoomBy(-0.1)" aria-label="缩小字号" title="缩小字号">A−</button>
-                <button type="button" class="btn sm" id="zoomVal" data-nobusy onclick="zoomReset()" aria-label="重置字号" title="点击重置字号为 100%">100%</button>
-                <button type="button" class="btn sm" data-nobusy onclick="zoomBy(0.1)" aria-label="放大字号" title="放大字号">A＋</button>
+                <button type="button" class="btn sm" data-nobusy data-act="zoom" data-delta="-0.1" aria-label="缩小字号" title="缩小字号">A−</button>
+                <button type="button" class="btn sm" id="zoomVal" data-nobusy data-act="zoom-reset" aria-label="重置字号" title="点击重置字号为 100%">100%</button>
+                <button type="button" class="btn sm" data-nobusy data-act="zoom" data-delta="0.1" aria-label="放大字号" title="放大字号">A＋</button>
               </div>
             </div>
           </div>
         </div>
-        <button type="button" class="btn sm" onclick="refreshStatus()">刷新状态</button>
-        <button type="button" class="btn sm danger" data-nobusy id="btnStop" onclick="act({action:'stop'})">停止</button>
+        <button type="button" class="btn sm" data-act="refresh-status">刷新状态</button>
+        <button type="button" class="btn sm danger" data-nobusy id="btnStop" data-act="stop-task">停止</button>
       </div>
     </div>
     <div class="content">
@@ -76,10 +75,10 @@
         <div class="phead">
           <div><h2>总览</h2><div class="desc">每个号码的签到状态、本月收益与近 7 天记录</div></div>
           <div class="ops">
-            <button type="button" class="btn pri" onclick="runAll('all')" title="全国和福建签到、签到页AI豆任务、AI豆苗养成记、每日饲料、大转盘、寻宝、拓展活动与消消乐">签到领福利</button>
-            <button type="button" class="btn" onclick="runAll('qwhd')">只跑全国签到</button>
-            <button type="button" class="btn" onclick="runAll('bass')" title="福建签到 + 领每日奖励 + 环闽寻宝（顺带投骰子、报加骰子任务）">只跑福建活动</button>
-            <button type="button" class="btn" onclick="voucherRun()" title="按开放时间领领券中心未领的免费券；需先导入新鲜 HAR">领券中心</button>
+            <button type="button" class="btn pri" data-act="run-all" data-platform="all" title="全国和福建签到、签到页AI豆任务、AI豆苗养成记、每日饲料、大转盘、寻宝、拓展活动与消消乐">签到领福利</button>
+            <button type="button" class="btn" data-act="run-all" data-platform="qwhd">只跑全国签到</button>
+            <button type="button" class="btn" data-act="run-all" data-platform="bass" title="福建签到 + 领每日奖励 + 环闽寻宝（顺带投骰子、报加骰子任务）">只跑福建活动</button>
+            <button type="button" class="btn" data-act="voucher-run" title="按开放时间领领券中心未领的免费券；需先导入新鲜 HAR">领券中心</button>
             <label class="chk" title="只查询状态，不签到、不领取、不消耗"><input type="checkbox" id="dashDry">只读检查</label>
           </div>
         </div>
@@ -93,9 +92,9 @@
           <h3>到账台账 <span class="hint">真到手的流量和能直接用的话费券，领到就记</span><span class="hint ml-auto" id="awHint"></span></h3>
           <div class="strip aw-strip" id="awSum"></div>
           <div class="frow mt-12">
-            <label for="awAcct">号码</label><select class="inp inp-md" id="awAcct" onchange="onAwFilter()"></select>
-            <label for="awSource" class="auto">来源</label><select class="inp inp-md" id="awSource" onchange="onAwFilter()"></select>
-            <button type="button" class="btn sm ml-auto" id="awMoreBtn" data-nobusy onclick="toggleAwAll()">展开全部</button>
+            <label for="awAcct">号码</label><select class="inp inp-md" id="awAcct" data-change="aw-filter"></select>
+            <label for="awSource" class="auto">来源</label><select class="inp inp-md" id="awSource" data-change="aw-filter"></select>
+            <button type="button" class="btn sm ml-auto" id="awMoreBtn" data-nobusy data-act="toggle-aw-all">展开全部</button>
           </div>
           <div class="tablewrap"><table class="runtab" id="awTab"></table></div>
           <details class="guide mt-10">
@@ -120,7 +119,7 @@
           <h3>账号 <span class="hint">一个号码两张卡：全国签到 + 福建活动</span></h3>
           <div id="acctBox"></div>
           <div class="frow mt-12">
-            <button type="button" class="btn pri sm" data-nobusy onclick="openNewAccount()">新建账号</button>
+            <button type="button" class="btn pri sm" data-nobusy data-act="open-new-account">新建账号</button>
             <span class="muted">新建后导入一次抓包文件，凭证会自动填进去</span>
           </div>
         </div>
@@ -147,35 +146,36 @@
           <div class="frow">
             <label for="harKey">归属核对</label>
             <select class="inp inp-md" id="harKey" title="选择供核对的账号，服务器回显的号码必须匹配"></select>
-            <button type="button" class="btn pri sm" id="btnHarImport" data-nobusy onclick="importHar()">导入所选文件</button>
+            <button type="button" class="btn pri sm" id="btnHarImport" data-nobusy data-act="import-har">导入所选文件</button>
           </div>
           <div class="frow">
             <label>自动查找</label>
-            <button type="button" class="btn sm" data-nobusy onclick="act({action:'har_import'},afterHar)">扫描并导入（项目 / 下载 / 微信）</button>
-            <button type="button" class="btn sm" data-nobusy onclick="act({action:'har_import',latest:1},afterHar)">只导入最新一份</button>
+            <button type="button" class="btn sm" data-nobusy data-act="har-scan">扫描并导入（项目 / 下载 / 微信）</button>
+            <button type="button" class="btn sm" data-nobusy data-act="har-scan" data-latest="1">只导入最新一份</button>
           </div>
-          <div class="infobox" id="harOut" style="display:none"></div>
+          <div class="infobox is-hidden" id="harOut"></div>
         </div>
       </div>
 
       <!-- 福建活动 -->
       <div class="page" id="p-bass">
-        <div class="phead"><div><h2 title="cmcc_fj.py">福建活动</h2><div class="desc">养成游戏：签到、领阶段奖励、喂养、天天大抽奖、环闽寻宝</div></div>
-          <div class="ops"><button type="button" class="btn sm" data-nobusy onclick="gotoSettings()" title="喂养时段、抽奖开关、推送等长期策略都在设置页">自动设置</button></div>
+        <div class="phead"><div><h2 title="cmcc_fj.py">福建活动</h2><div class="desc">养成游戏：签到、领阶段奖励、喂养、天天大抽奖、环闽寻宝、消消乐</div></div>
+          <div class="ops"><button type="button" class="btn sm" data-nobusy data-act="goto-settings" title="喂养时段、抽奖开关、推送等长期策略都在设置页">自动设置</button></div>
         </div>
         <div class="subtabs" id="bassTabs" role="tablist" aria-label="福建活动分组">
-          <button type="button" class="subtab on" role="tab" aria-selected="true" data-bt="all" onclick="setBassTab('all')">全部</button>
-          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="daily" onclick="setBassTab('daily')">每日与奖励<span class="tab-dot" id="bt-dot-daily"></span></button>
-          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="manual" onclick="setBassTab('manual')">手动执行</button>
-          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="play" onclick="setBassTab('play')">抽奖与寻宝<span class="tab-dot" id="bt-dot-play"></span></button>
-          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="flowbank" onclick="setBassTab('flowbank')">流量银行</button>
+          <button type="button" class="subtab on" role="tab" aria-selected="true" data-bt="all" data-act="bass-tab">全部</button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="daily" data-act="bass-tab">每日与奖励<span class="tab-dot" id="bt-dot-daily"></span></button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="manual" data-act="bass-tab">手动执行</button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="play" data-act="bass-tab">抽奖与寻宝<span class="tab-dot" id="bt-dot-play"></span></button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="flowbank" data-act="bass-tab">流量银行</button>
+          <button type="button" class="subtab" role="tab" aria-selected="false" data-bt="xxl" data-act="bass-tab">消消乐<span class="tab-dot" id="bt-dot-xxl"></span></button>
         </div>
         <div class="panel" data-bass-group="play">
           <h3>优惠专区抽奖 <span class="hint">共用福建活动凭证，刷任务 + 抽奖</span></h3>
           <div class="frow">
-            <button type="button" class="btn pri" onclick="runLuck('all')">刷任务并抽奖</button>
-            <button type="button" class="btn" onclick="runLuck('dry')">只查状态</button>
-            <button type="button" class="btn" onclick="runLuck('no_tasks')">只抽不刷任务</button>
+            <button type="button" class="btn pri" data-act="run-luck" data-mode="all">刷任务并抽奖</button>
+            <button type="button" class="btn" data-act="run-luck" data-mode="dry">只查状态</button>
+            <button type="button" class="btn" data-act="run-luck" data-mode="no_tasks">只抽不刷任务</button>
           </div>
           <div id="luckOutBox"></div>
           <div id="luckBox"></div>
@@ -186,7 +186,7 @@
         </div>
         <div class="panel" data-bass-group="manual">
           <h3>手动执行一次 <span class="hint">仅影响本次，日常请到「设置」调整自动策略</span></h3>
-          <div class="frow"><label for="bassRunKey">账号</label><select class="inp inp-md" id="bassRunKey" onchange="updateBassFodder()"></select></div>
+          <div class="frow"><label for="bassRunKey">账号</label><select class="inp inp-md" id="bassRunKey" data-change="bass-fodder"></select></div>
           <div class="frow"><label>选项</label>
             <label class="chk"><input type="checkbox" id="bClaim" autocomplete="off">领阶段奖励</label>
             <label class="chk"><input type="checkbox" id="bRoll" autocomplete="off">掷骰子 + 开箱</label>
@@ -194,16 +194,16 @@
           </div>
           <div class="frow"><label for="bFeed">喂养次数</label><input class="inp inp-xs" id="bFeed" type="number" min="0" max="50" value="0" autocomplete="off">
             <span class="muted">每轮耗 250 饲料</span>
-            <label class="chk" title="不用填轮数：按当前饲料算，喂到不足 250 为止"><input type="checkbox" id="bFeedAll" autocomplete="off" onchange="feedAllToggle('b')">喂到用完</label>
-            <span id="bFodder" class="muted" style="color:var(--warn)"></span></div>
+            <label class="chk" title="不用填轮数：按当前饲料算，喂到不足 250 为止"><input type="checkbox" id="bFeedAll" autocomplete="off" data-change="feed-all" data-prefix="b">喂到用完</label>
+            <span id="bFodder" class="muted tone-warn"></span></div>
           <div class="frow"><label>阶段喂满时</label>
-            <label class="chk"><input type="checkbox" id="bAuto" autocomplete="off" onchange="pickStage('auto')">领本阶奖品后继续喂</label>
-            <select class="inp inp-sm" id="bPrize" autocomplete="off" style="display:none" title="每阶领奖都是随机开奖（含一阶）；六阶抽中后可换其他档位，换奖接口尚未抓到">
+            <label class="chk"><input type="checkbox" id="bAuto" autocomplete="off" data-change="pick-stage" data-which="auto">领本阶奖品后继续喂</label>
+            <select class="inp inp-sm is-hidden" id="bPrize" autocomplete="off" title="每阶领奖都是随机开奖（含一阶）；六阶抽中后可换其他档位，换奖接口尚未抓到">
               <option value="fee">领话费券</option>
               <option value="flow">领流量包</option>
               <option value="discount">领折扣券</option>
             </select>
-            <label class="chk"><input type="checkbox" id="bCont" autocomplete="off" onchange="pickStage('cont')">放弃奖品直接升阶</label>
+            <label class="chk"><input type="checkbox" id="bCont" autocomplete="off" data-change="pick-stage" data-which="cont">放弃奖品直接升阶</label>
             <span id="bStageHint" class="muted">都不勾：快喂满时会停手等你决定</span>
           </div>
           <div class="frow"><label class="lbl-warn">伪造类</label>
@@ -212,8 +212,8 @@
           </div>
           <div class="warnbox">「空报」= 跳过真实浏览直接上报完成，属伪造行为记录。勾选后点执行会再弹一次确认。</div>
           <div class="frow">
-            <button type="button" class="btn pri" onclick="runBass()">执行</button>
-            <button type="button" class="btn" onclick="runBassProbe()">只读探测全部接口</button>
+            <button type="button" class="btn pri" data-act="run-bass">执行</button>
+            <button type="button" class="btn" data-act="run-bass-probe">只读探测全部接口</button>
           </div>
           <div id="bassBox"></div>
           <details class="guide">
@@ -240,8 +240,8 @@
         <div class="panel" data-bass-group="play">
           <h3>环闽寻宝记 <span class="hint">投骰子走棋盘，到终点开藏宝阁</span></h3>
           <div class="frow">
-            <button type="button" class="btn pri" onclick="runXunbao('all')">投掉现有骰子</button>
-            <button type="button" class="btn" onclick="runXunbao('dry')">只查进度</button>
+            <button type="button" class="btn pri" data-act="run-xunbao" data-mode="all">投掉现有骰子</button>
+            <button type="button" class="btn" data-act="run-xunbao" data-mode="dry">只查进度</button>
           </div>
           <div id="xunbaoOutBox"></div>
           <div id="xunbaoBox"></div>
@@ -250,24 +250,20 @@
             骰子当天不用就作废，到达第 29 格会自动开宝箱。「参与天天大转盘 / 一起消消乐」任务会在真跑过对应活动后上报；好友助力不会代报。中奖记进「总览 → 到账台账」。
           </details>
         </div>
-      </div>
-
-      <!-- 消消乐 -->
-      <div class="page" id="p-xxl">
-        <div class="phead"><div><h2 title="cmcc_xiaoxiaole.py">消消乐</h2><div class="desc">伪造通关成绩换抽奖机会，中奖靠服务端概率</div></div></div>
-        <div class="panel">
-          <h3>消消乐执行</h3>
+        <div class="panel" data-bass-group="xxl">
+          <h3 title="cmcc_xiaoxiaole.py">消消乐 <span class="hint">伪造通关成绩换抽奖机会，中奖靠服务端概率 · 共用福建活动凭证</span></h3>
           <div class="frow"><label for="xxlFile">账号</label><select class="inp inp-md" id="xxlFile"></select></div>
           <div class="frow"><label>参数</label><span id="xxlParams">加载中…</span>
-            <button type="button" class="btn sm" data-nobusy onclick="gotoSettings()">去设置里改</button></div>
+            <button type="button" class="btn sm" data-nobusy data-act="goto-settings">去设置里改</button></div>
           <div class="warnbox">关卡号每次自动读取真实进度（乱填会被判异常）；每天约 5 次可用，有全局频控，性质较重请自行决定使用。</div>
           <div class="frow">
-            <button type="button" class="btn pri" onclick="runXxl()">开始执行</button>
-            <button type="button" class="btn" onclick="runXxlAll()" title="所有福建号并行跑，跑完顺手把寻宝骰子投掉（含「参与消消乐」换的骰子）">全部账号（并行）</button>
-            <button type="button" class="btn" onclick="xxlQuery()">只读查剩余次数</button>
-            <button type="button" class="btn" onclick="detectLevel()">探测当前关卡</button>
+            <button type="button" class="btn pri" data-act="run-xxl">开始执行</button>
+            <button type="button" class="btn" data-act="run-xxl-all" title="所有福建号并行跑，跑完顺手把寻宝骰子投掉（含「参与消消乐」换的骰子）">全部账号（并行）</button>
+            <button type="button" class="btn" data-act="xxl-query">只读查剩余次数</button>
+            <button type="button" class="btn" data-act="detect-level">探测当前关卡</button>
           </div>
           <div id="xxlBox"></div>
+          <div id="xxlCards" class="mt-14"></div>
         </div>
       </div>
 
@@ -282,12 +278,12 @@
           </div>
           <div class="frow"><label for="skFile">账号</label><select class="inp inp-md" id="skFile"></select></div>
           <div class="frow"><label>开抢时刻</label><span id="skAtShow">加载中…</span>
-            <button type="button" class="btn sm" data-nobusy onclick="gotoSettings()">去设置里改</button></div>
-          <div class="warnbox" id="skWindow" style="display:none"></div>
+            <button type="button" class="btn sm" data-nobusy data-act="goto-settings">去设置里改</button></div>
+          <div class="warnbox is-hidden" id="skWindow"></div>
           <div class="frow">
-            <button type="button" class="btn pri" onclick="runSeckill()">等到点自动抢</button>
-            <button type="button" class="btn" onclick="seckillQuery()">只读查场次</button>
-            <button type="button" class="btn" onclick="seckillOnce()">立即试一次（验证）</button>
+            <button type="button" class="btn pri" data-act="run-seckill">等到点自动抢</button>
+            <button type="button" class="btn" data-act="seckill-query">只读查场次</button>
+            <button type="button" class="btn" data-act="seckill-once">立即试一次（验证）</button>
           </div>
           <div id="skBox"></div>
           <details class="guide">
@@ -309,9 +305,9 @@
           <h3>执行拓展活动</h3>
           <div class="frow"><label for="gmFile">账号</label><select class="inp inp-md" id="gmFile"></select></div>
           <div class="frow">
-            <button type="button" class="btn pri" onclick="runGames('all')">打卡+任务+抽奖</button>
-            <button type="button" class="btn" onclick="runGames('dry')">只查状态</button>
-            <button type="button" class="btn" onclick="runGames('tasks')">顺带做 AI豆任务</button>
+            <button type="button" class="btn pri" data-act="run-games" data-mode="all">打卡+任务+抽奖</button>
+            <button type="button" class="btn" data-act="run-games" data-mode="dry">只查状态</button>
+            <button type="button" class="btn" data-act="run-games" data-mode="tasks">顺带做 AI豆任务</button>
           </div>
           <div class="warnbox">拓展活动依赖全国签到<b>有效票据</b>（通常存活 30~46 分钟），票据过期前会三个都跑不通。</div>
           <div id="gmBox"></div>
@@ -333,9 +329,9 @@
         <div class="panel">
           <h3>Windows 计划任务</h3>
           <div class="frow"><label>整套配置</label>
-            <button type="button" class="btn pri" onclick="applyAllSched()">一键配置全部（推荐方案）</button>
-            <button type="button" class="btn sm danger" onclick="cf('注销全部 8 个计划任务？注销后电脑不再自动签到。',unregAllSched)">全部注销</button>
-            <button type="button" class="btn sm" data-nobusy onclick="refreshSched()">刷新状态</button>
+            <button type="button" class="btn pri" data-act="apply-all-sched">一键配置全部（推荐方案）</button>
+            <button type="button" class="btn sm danger" data-act="unreg-all-sched">全部注销</button>
+            <button type="button" class="btn sm" data-nobusy data-act="refresh-sched">刷新状态</button>
           </div>
           <div class="scrollhint">← 表格可左右滑动，查看状态、下次运行与操作 →</div>
           <div id="schedBox"></div>
@@ -363,9 +359,9 @@
           <div class="frow"><label for="sPushplus">PushPlus</label>
             <input type="password" class="inp inp-lg" id="sPushplus" placeholder="32 位十六进制令牌">
             <span class="muted">微信 / 邮箱推送</span></div>
-          <div class="frow"><button type="button" class="btn pri" data-nobusy onclick="saveSettings()">保存</button>
-            <button type="button" class="btn" data-nobusy onclick="act({action:'notify_test'})">发一条测试</button>
-            <button type="button" class="btn" data-nobusy onclick="act({action:'notify_report'})">推送今日战报</button>
+          <div class="frow"><button type="button" class="btn pri" data-nobusy data-act="save-settings">保存</button>
+            <button type="button" class="btn" data-nobusy data-act="act-simple" data-action="notify_test">发一条测试</button>
+            <button type="button" class="btn" data-nobusy data-act="act-simple" data-action="notify_report">推送今日战报</button>
             <span class="muted" id="sMeta">加载中…</span></div>
           <details class="guide">
             <summary>推送规则与战报说明</summary>
@@ -378,7 +374,7 @@
             <label for="mUser" class="auto">邮箱</label><input class="inp inp-md" id="mUser" placeholder="you@qq.com">
             <label for="mPass" class="auto">应用专用密码</label><input class="inp inp-md" id="mPass" type="password" placeholder="16 位授权码"></div>
           <div class="frow"><label for="mProvider">邮箱类型</label>
-            <select class="inp inp-md" id="mProvider" onchange="mailProvider()">
+            <select class="inp inp-md" id="mProvider" data-change="mail-provider">
               <option value="qq">QQ邮箱（推荐）</option><option value="139">139邮箱</option><option value="163">163邮箱</option><option value="gmail">Gmail（不推荐，需 OAuth2）</option>
             </select>
             <label for="mHost" class="auto">IMAP</label>
@@ -388,8 +384,8 @@
           <div class="frow"><label for="mSender">允许的发件人</label>
             <input class="inp inp-lg" id="mSender" placeholder="你的手机号邮箱，留空=不限制">
             <span class="muted">只认这个地址发来的 HAR</span></div>
-          <div class="frow"><button type="button" class="btn pri" data-nobusy onclick="saveMail()">保存邮箱设置</button>
-            <button type="button" class="btn" data-nobusy onclick="act({action:'mail_test'})">测试连接</button>
+          <div class="frow"><button type="button" class="btn pri" data-nobusy data-act="save-mail">保存邮箱设置</button>
+            <button type="button" class="btn" data-nobusy data-act="act-simple" data-action="mail_test">测试连接</button>
             <span class="muted" id="mMeta">加载中…</span></div>
           <details class="guide">
             <summary>触发条件与安全白名单说明</summary>
@@ -401,7 +397,7 @@
           <div class="frow"><label for="pFeed">每天自动喂养</label>
             <input class="inp inp-xs" id="pFeed" type="number" min="0" max="50" value="0">
             <span class="muted">轮（每轮 250 饲料，0 = 不喂）</span>
-            <label class="chk" title="轮数按当天饲料自动算，喂到不足 250 为止，不用填数字"><input type="checkbox" id="pFeedAll" onchange="feedAllToggle('p')">喂到饲料用完</label>
+            <label class="chk" title="轮数按当天饲料自动算，喂到不足 250 为止，不用填数字"><input type="checkbox" id="pFeedAll" data-change="feed-all" data-prefix="p">喂到饲料用完</label>
             <label for="pFeedHour" class="auto">在</label>
             <input class="inp inp-xs" id="pFeedHour" type="number" min="0" max="23" value="12">
             <span class="muted">点之后（三档领齐即喂）</span></div>
@@ -436,7 +432,7 @@
           <div class="frow"><label for="sAt">秒杀抢券</label>
             <label for="sAt" class="auto">开抢时刻</label><input class="inp inp-sm" id="sAt" value="11:59:50">
             <span class="muted">留空则按服务端场次自动选；填的时刻是「今天」的</span></div>
-          <div class="frow"><button type="button" class="btn pri" data-nobusy onclick="savePolicy()">保存策略</button>
+          <div class="frow"><button type="button" class="btn pri" data-nobusy data-act="save-policy">保存策略</button>
             <span class="muted" id="pMeta">加载中…</span></div>
           <details class="guide">
             <summary>自动喂养等待规则说明</summary>
@@ -446,11 +442,11 @@
         <div class="panel" id="panelSetAbout">
           <h3>关于 <span class="hint">版本与更新</span></h3>
           <div class="frow"><label>当前版本</label>
-            <span class="inp inp-sm" style="display:inline-flex;align-items:center" id="aboutVer">—</span>
-            <button type="button" class="btn" data-nobusy onclick="checkUpdate(true)">检查更新</button>
+            <span class="inp inp-sm ver-pill" id="aboutVer">—</span>
+            <button type="button" class="btn" data-nobusy data-act="check-update">检查更新</button>
             <span class="muted" id="aboutUpdate">点「检查更新」查询 GitHub 最新版本</span></div>
-          <div class="frow"><label class="chk"><input type="checkbox" id="aboutAuto" checked onchange="toggleAutoUpdate(this.checked)">启动时自动检查更新</label>
-            <button type="button" class="btn" data-nobusy id="btnSkipUpdate" onclick="skipUpdate()" style="display:none">以后不再提醒此版本</button></div>
+          <div class="frow"><label class="chk"><input type="checkbox" id="aboutAuto" checked data-change="auto-update">启动时自动检查更新</label>
+            <button type="button" class="btn is-hidden" data-nobusy id="btnSkipUpdate" data-act="skip-update">以后不再提醒此版本</button></div>
           <details class="guide">
             <summary>更新检测说明</summary>
             程序启动 5 秒后会静默读取 GitHub Releases 的最新版本与当前版本对比，发现新版本才在左侧栏点亮「↑」提示；无更新或检测失败都不会打扰你。国内网络访问 GitHub 可能超时，检测失败不影响正常使用；也可直接前往项目 Releases 页面手动下载新版。
@@ -462,25 +458,25 @@
       <div class="page" id="p-logs">
         <div class="phead"><div><h2>日志</h2><div class="desc">本控制台发起的运行，实时输出；重启后保留最近 4000 行（计划任务日志在「定时任务」页查看）</div></div>
           <div class="ops">
-            <button type="button" class="btn sm" data-nobusy onclick="copyLogs()">复制日志</button>
-            <button type="button" class="btn sm" data-nobusy onclick="clearConsole()">清屏</button>
+            <button type="button" class="btn sm" data-nobusy data-act="copy-logs">复制日志</button>
+            <button type="button" class="btn sm" data-nobusy data-act="clear-console">清屏</button>
           </div>
         </div>
         <div class="panel panel-tight">
           <div class="logbar">
-            <input class="inp" id="logFilter" placeholder="关键字过滤（如 失败 / 号码尾号 / 秒杀）" oninput="renderLogList()">
-            <button type="button" class="btn sm flt on" data-nobusy data-lvl="all" onclick="setLogLevel('all',this)">全部</button>
-            <button type="button" class="btn sm flt" data-nobusy data-lvl="err" onclick="setLogLevel('err',this)">只看错误</button>
-            <button type="button" class="btn sm flt" data-nobusy data-lvl="ok" onclick="setLogLevel('ok',this)">只看成功</button>
+            <input class="inp" id="logFilter" placeholder="关键字过滤（如 失败 / 号码尾号 / 秒杀）" data-input="log-filter">
+            <button type="button" class="btn sm flt on" data-nobusy data-lvl="all" data-act="log-level">全部</button>
+            <button type="button" class="btn sm flt" data-nobusy data-lvl="err" data-act="log-level">只看错误</button>
+            <button type="button" class="btn sm flt" data-nobusy data-lvl="ok" data-act="log-level">只看成功</button>
             <span class="muted ml-auto" id="logCount"></span>
           </div>
           <div class="consolewrap">
             <div class="console" id="console" role="log" aria-label="运行日志"></div>
-            <button type="button" class="btn sm pri log-jump" id="logJump" data-nobusy onclick="scrollLogsBottom()">↓ 回到底部</button>
+            <button type="button" class="btn sm pri log-jump" id="logJump" data-nobusy data-act="scroll-logs-bottom">↓ 回到底部</button>
           </div>
           <div id="consoleEmpty" class="muted mt-10">还没有本控制台发起的运行记录。
             在任一页点执行后，输出会实时出现在这里；定时任务自己跑的输出在
-            <a href="#sched" onclick="nav(document.querySelector('nav button[data-p=sched]'));return false">定时任务</a> 页每行的「日志」按钮里。</div>
+            <a href="#sched" data-act="nav-to" data-p="sched">定时任务</a> 页每行的「日志」按钮里。</div>
         </div>
       </div>
 
@@ -493,8 +489,8 @@
   <div class="ld-head">
     <b id="ldTitle">实时日志（最近 10 行）</b>
     <div class="ld-ops">
-      <button type="button" class="btn sm" data-nobusy onclick="navTo('logs');toggleDrawer(false)">完整日志</button>
-      <button type="button" class="btn sm" data-nobusy onclick="toggleDrawer(false)">收起</button>
+      <button type="button" class="btn sm" data-nobusy data-act="nav-drawer-logs">完整日志</button>
+      <button type="button" class="btn sm" data-nobusy data-act="toggle-drawer" data-force="0">收起</button>
     </div>
   </div>
   <div class="ld-body" id="ldBody"><div>（暂无输出）</div></div>
@@ -505,7 +501,7 @@
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
   <div class="box">
     <div class="bh"><span id="mTitle">详情</span>
-      <button type="button" class="btn sm x" data-nobusy onclick="closeModal()">关闭</button></div>
+      <button type="button" class="btn sm x" data-nobusy data-act="close-modal">关闭</button></div>
     <div class="bb" id="mBody"></div>
   </div>
 </div>
@@ -523,10 +519,6 @@
   </div>
 </div>
 
-<script src="/static/js/core.js"></script>
-<script src="/static/js/dash.js"></script>
-<script src="/static/js/activities.js"></script>
-<script src="/static/js/ops.js"></script>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

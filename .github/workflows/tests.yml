@@ -46,3 +46,22 @@ jobs:
 
       - name: Run ruff
         run: ruff check .
+
+  js-lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install ESLint
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint:js
+
+      - name: Run Frontend Behavior Tests
+        run: npm run test:js

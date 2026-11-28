@@ -313,13 +313,15 @@ class TestXxlExitCode(unittest.TestCase):
 
         def fake_get_json(s, path, params=None):
             if path == "indexInfo":
-                return {"code": "0000", "data": {"gameLevel": state["level"]}}
+                return {"code": "0000", "data": {"gameLevel": state["level"],
+                                                "physicalPower": 4, "gold": 0}}
             return {"code": "0000", "data": {}}
 
         fake_time = types.SimpleNamespace(sleep=lambda *_: None,
                                           strftime=time.strftime, time=time.time)
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / "fj.json"
+            base = Path(tmp)
+            cfg = base / "fj.json"
             cfg.write_text(json.dumps({"bearer_token": "x" * 36}), encoding="utf-8")
             argv = ["cmcc_xiaoxiaole.py", "--config", str(cfg),
                     "--times", str(times), "--gap", "0"]
@@ -327,7 +329,8 @@ class TestXxlExitCode(unittest.TestCase):
             # 不拦的话每跑一次测试就往真实台账（gui_data/awards.json）里
             # 塞一条假到账，今天「已得流量」会凭空虚高 500MB。
             self.awards = []
-            with mock.patch.object(XXL, "post", fake_post), \
+            with mock.patch.object(XXL, "BASE", base), \
+                 mock.patch.object(XXL, "post", fake_post), \
                  mock.patch.object(XXL, "get_json", fake_get_json), \
                  mock.patch.object(XXL, "make_session", lambda token: object()), \
                  mock.patch.object(XXL, "time", fake_time), \
@@ -336,7 +339,10 @@ class TestXxlExitCode(unittest.TestCase):
                  mock.patch.object(sys, "argv", argv), \
                  redirect_stdout(io.StringIO()) as out:
                 self.output = out
-                return XXL.main()
+                rc = XXL.main()
+            sp = base / "gui_data" / "xxl_state.json"
+            self.xxl_state = json.loads(sp.read_text(encoding="utf-8")) if sp.is_file() else {}
+            return rc
 
     def test_success_is_zero(self):
         limit = {"code": "0000", "data": {"playToken": "t", "reachedLimit": False}}
@@ -367,6 +373,16 @@ class TestXxlExitCode(unittest.TestCase):
     def test_single_rejected_round_is_failure(self):
         limit = {"code": "0000", "data": {"playToken": "t"}}
         self.assertEqual(self._run(limit, [{"code": "-100", "msg": "网关繁忙"}], times=1), 1)
+
+    def test_xxl_state_persisted(self):
+        limit = {"code": "0000", "data": {"playToken": "t", "todayPlayCount": 1, "reachedLimit": False}}
+        ends = [{"code": "0000", "data": {"prizeName": "500MB月包券"}}]
+        self.assertEqual(self._run(limit, ends, times=2), 0)
+        st = self.xxl_state.get("fj") or {}
+        self.assertEqual(st.get("level"), 12)
+        self.assertEqual(st.get("stamina"), 4)
+        self.assertEqual(st.get("today_play"), 2)
+        self.assertEqual(len(st.get("last_rounds") or []), 2)
 
     def test_coin_tasks_reports_completed_and_empty_lists(self):
         completed = {"id": 1, "taskName": "分享活动", "hasComplete": True}

@@ -520,11 +520,12 @@ class TestHumanFacing(unittest.TestCase):
 
     def test_har_import_usable_while_task_running(self):
         """秒杀等待期间要能导入新 HAR（脚本每轮重读配置），导入按钮不能被忙态置灰。"""
-        i = self.html.find('onclick="importHar()"')
+        i = self.html.find('data-act="import-har"')
+        self.assertNotEqual(i, -1)
         self.assertIn("data-nobusy", self.html[max(0, i - 120):i])
-        for marker in ("act({action:'har_import'},afterHar)",
-                       "act({action:'har_import',latest:1},afterHar)"):
+        for marker in ('data-act="har-scan"', 'data-act="har-scan" data-latest="1"'):
             j = self.html.find(marker)
+            self.assertNotEqual(j, -1, marker)
             self.assertIn("data-nobusy", self.html[max(0, j - 120):j])
 
     def test_feed_reward_visible(self):
@@ -546,11 +547,33 @@ class TestHumanFacing(unittest.TestCase):
         self.assertIn('aria-label="放大字号"', self.html)
 
     def test_dynamic_text_is_escaped_before_html_render(self):
-        """奖品名、运行记录等接口文本必须按文本渲染，不能拼成 HTML。"""
-        for marker in ("function jsArg(", "esc(r.label)", "esc(s.last_reward||'—')",
-                       "esc(p.name||'—')", "esc(t.title||('#'+id))", "esc(l.t)"):
-            with self.subTest(marker=marker):
-                self.assertIn(marker, self.html)
+        """全部 DOM HTML 渲染必须收口到默认转义模板（setHtml + html``），且无内联事件与直接样式显隐。"""
+        core = (ROOT / "static" / "js" / "core.js").read_text(encoding="utf-8")
+        for fn in ("function html(", "function raw(", "function joinHtml(",
+                   "function setHtml("):
+            with self.subTest(core_fn=fn):
+                self.assertIn(fn, core)
+
+        html_src = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIsNone(
+            re.search(r'\bon(?:click|change|input|submit)=["\']', html_src),
+            "index.html 不应存在内联事件属性",
+        )
+
+        js_files = [ROOT / "static" / name for name in dashboard.STATIC_JS_FILES]
+        for p in js_files:
+            src = p.read_text(encoding="utf-8")
+            # 除 core.js 里 setHtml 的唯一实现外，不允许任何裸 innerHTML / outerHTML / insertAdjacentHTML
+            stripped = (src.replace("node.innerHTML=_renderHtmlVal(content);", "")
+                        if p.name == "core.js" else src)
+            for bad in (".innerHTML", ".outerHTML", "insertAdjacentHTML",
+                        ".style.display", ".style.color"):
+                with self.subTest(file=p.name, bad=bad):
+                    self.assertNotIn(bad, stripped, f"{p.name} 存在未收口的 {bad}")
+            self.assertIsNone(
+                re.search(r'\bon(?:click|change|input|submit)=["\']', src),
+                f"{p.name} 不应存在内联事件属性",
+            )
 
     def test_dash_hierarchy_puts_accounts_before_long_ledger(self):
         """总览首屏顺序：待办 → 指标 → 账号状态 → 到账台账 → 运行记录。"""
@@ -839,12 +862,12 @@ class TestFrontendOptimization(unittest.TestCase):
         self.assertNotIn("连 Gmail", bundle)
         self.assertIsNone(re.search(r"(^|[^.\w])confirm\(", js, re.M), "不应再调用原生 confirm()")
 
-        for marker in ('onchange="updateBassFodder()"', 'id="bPrize"', 'id="harDrop"',
+        for marker in ('data-change="bass-fodder"', 'id="bPrize"', 'id="harDrop"',
                        'id="logFilter"', 'id="logDrawer"', 'id="cfmModal"',
-                       'data-nobusy onclick="gotoSettings()"',
-                       'data-nobusy onclick="saveSettings()"',
-                       'data-nobusy onclick="saveMail()"',
-                       'data-nobusy onclick="savePolicy()"'):
+                       'data-nobusy data-act="goto-settings"',
+                       'data-nobusy data-act="save-settings"',
+                       'data-nobusy data-act="save-mail"',
+                       'data-nobusy data-act="save-policy"'):
             with self.subTest(html_marker=marker):
                 self.assertIn(marker, html)
 
@@ -860,9 +883,9 @@ class TestFrontendOptimization(unittest.TestCase):
         css = (ROOT / "static" / "app.css").read_text(encoding="utf-8")
         js = dashboard.load_frontend_js()
 
-        for mod in ("js/core.js", "js/dash.js", "js/activities.js", "js/ops.js", "app.js"):
+        for mod in dashboard.STATIC_JS_FILES:
             self.assertIsNotNone(dashboard._static_path(mod), f"缺少前端模块 {mod}")
-            self.assertIn(f"/static/{mod}", html)
+        self.assertIn('<script type="module" src="/static/app.js"></script>', html)
         self.assertIsNone(dashboard._static_path("js/../dashboard.py"))
 
         self.assertRegex(css, r"(?m)^\.empty\{")
@@ -876,16 +899,22 @@ class TestFrontendOptimization(unittest.TestCase):
                    "function markFormDirty(", "function copyCapBox("):
             self.assertIn(fn, js)
 
+        self.assertTrue((ROOT / "eslint.config.mjs").is_file(), "缺少 eslint.config.mjs")
+        self.assertTrue((ROOT / "package.json").is_file(), "缺少 package.json")
+        self.assertTrue((ROOT / "tests" / "frontend" / "ui.test.mjs").is_file(), "缺少前端行为测试")
+        wf = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertIn("lint:js", wf)
+        self.assertIn("test:js", wf)
+
         ids = re.findall(r'\bid="([^"]+)"', html)
         dups = [i for i in set(ids) if ids.count(i) > 1]
         self.assertEqual(dups, [], f"index.html 存在重复 id：{dups}")
 
-        handlers = re.findall(r'\bon(?:click|change|input)="([^"]+)"', html)
-        called = set()
-        for expr in handlers:
-            called.update(re.findall(r'(?:^|;)\s*([A-Za-z_$][\w$]*)\s*\(', expr))
-        for fn in sorted(called):
-            self.assertIn(f"function {fn}(", js, f"HTML 内联事件调用了未定义函数 {fn}")
+        app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        bundle = html + "\n" + js
+        for attr in ("data-act", "data-change", "data-input"):
+            for name in sorted(set(re.findall(rf'\b{attr}="([^"]+)"', bundle))):
+                self.assertIn(f"'{name}':", app_js, f"app.js 未注册 {attr}=\"{name}\"")
 
 
 class TestCheckUpdate(unittest.TestCase):

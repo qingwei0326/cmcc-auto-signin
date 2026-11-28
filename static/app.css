@@ -146,6 +146,17 @@ nav button.on svg{color:var(--acc);opacity:1}
 }
 .topbar .title{font-size:.9375rem;font-weight:600;letter-spacing:.01em}
 .topbar .actions{margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.ver-badge{
+  display:inline-flex;align-items:center;gap:.25rem;margin-top:.4rem;
+  padding:.12rem .5rem;border-radius:99px;font-size:.6875rem;font-weight:600;
+  font-family:inherit;line-height:1.5;white-space:nowrap;cursor:pointer;
+  border:1px solid var(--line-strong);color:var(--sub);background:transparent;
+  transition:border-color .15s,color .15s;
+}
+.ver-badge[hidden]{display:none}
+.ver-badge:hover{border-color:var(--sub);color:var(--text)}
+.ver-badge.up{color:var(--warn);border-color:var(--warn-bd);background:var(--warn-soft);font-weight:700}
+.ver-badge.up:hover{filter:brightness(1.12)}
 .content{padding:1.375rem 1.75rem 4.25rem;max-width:78rem;width:100%;margin:0 auto}
 .page{display:none}.page.on{display:block;animation:fadeIn .14s ease-out}
 @keyframes fadeIn{from{opacity:.5;transform:translateY(3px)}to{opacity:1;transform:none}}

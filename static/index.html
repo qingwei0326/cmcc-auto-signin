@@ -38,6 +38,7 @@
     <div class="side-foot">
       <span id="hsub">加载中…</span>
       <span class="side-foot-sub">本地运行 · 数据仅存本机</span>
+      <button type="button" class="ver-badge" id="verBadge" hidden onclick="gotoAbout()" title="查看版本与更新"></button>
     </div>
   </aside>
   <div class="main">
@@ -75,9 +76,10 @@
         <div class="phead">
           <div><h2>总览</h2><div class="desc">每个号码的签到状态、本月收益与近 7 天记录</div></div>
           <div class="ops">
-            <button type="button" class="btn pri" onclick="runAll('all')" title="全国和福建签到、每日饲料、大转盘、寻宝、拓展活动与消消乐">签到领福利</button>
+            <button type="button" class="btn pri" onclick="runAll('all')" title="全国和福建签到、签到页AI豆任务、AI豆苗养成记、每日饲料、大转盘、寻宝、拓展活动与消消乐">签到领福利</button>
             <button type="button" class="btn" onclick="runAll('qwhd')">只跑全国签到</button>
             <button type="button" class="btn" onclick="runAll('bass')" title="福建签到 + 领每日奖励 + 环闽寻宝（顺带投骰子、报加骰子任务）">只跑福建活动</button>
+            <button type="button" class="btn" onclick="voucherRun()" title="按开放时间领领券中心未领的免费券；需先导入新鲜 HAR">领券中心</button>
             <label class="chk" title="只查询状态，不签到、不领取、不消耗"><input type="checkbox" id="dashDry">只读检查</label>
           </div>
         </div>
@@ -439,6 +441,19 @@
           <details class="guide">
             <summary>自动喂养等待规则说明</summary>
             每天自动喂养会等三档饲料（150/250/350）<b>全部领齐后</b>，在设定小时之后那一轮一次性喂完，一天最多喂一次；伪造类默认关闭，改完即时生效无需重启服务。
+          </details>
+        </div>
+        <div class="panel" id="panelSetAbout">
+          <h3>关于 <span class="hint">版本与更新</span></h3>
+          <div class="frow"><label>当前版本</label>
+            <span class="inp inp-sm" style="display:inline-flex;align-items:center" id="aboutVer">—</span>
+            <button type="button" class="btn" data-nobusy onclick="checkUpdate(true)">检查更新</button>
+            <span class="muted" id="aboutUpdate">点「检查更新」查询 GitHub 最新版本</span></div>
+          <div class="frow"><label class="chk"><input type="checkbox" id="aboutAuto" checked onchange="toggleAutoUpdate(this.checked)">启动时自动检查更新</label>
+            <button type="button" class="btn" data-nobusy id="btnSkipUpdate" onclick="skipUpdate()" style="display:none">以后不再提醒此版本</button></div>
+          <details class="guide">
+            <summary>更新检测说明</summary>
+            程序启动 5 秒后会静默读取 GitHub Releases 的最新版本与当前版本对比，发现新版本才在左侧栏点亮「↑」提示；无更新或检测失败都不会打扰你。国内网络访问 GitHub 可能超时，检测失败不影响正常使用；也可直接前往项目 Releases 页面手动下载新版。
           </details>
         </div>
       </div>

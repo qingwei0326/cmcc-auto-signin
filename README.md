@@ -39,6 +39,8 @@
 | 环闽寻宝记 | 投骰子走棋盘 + 藏宝阁开箱 + 多号互助力换骰子 | 流量包 / 话费券 |
 | 拓展活动三合一 | 周六游戏中心 / 追剧领福利 / 全民掼蛋挑战赛 | 游戏币抽奖 / 流量券 |
 | 手气红包拆包 | `cmcc_redpacket.py`：查分享码 + 小程序渠道多号互拆 | 流量日包（需微信抓一次小程序包） |
+| **AI豆苗养成记** | `cmcc_doumi.py`：移动爱购签到 + 浏览/分享任务 + 逐条领取阳光值；付费/真实操作类自动跳过 | 阳光值（攒满兑视频会员/话费券/流量券） |
+| 领券中心 | `cmcc_voucher.py`：按券的开放时间领未领的免费券（话费券、流量券、活动券），重复领自动跳过 | 话费券 / 流量券（需先导入新鲜 HAR） |
 
 > 日常只需双击 `签到领福利.exe`，其余章节用于排障与进阶配置。
 
@@ -55,7 +57,7 @@
 1. **新建账号**：进入「凭证与账号」→ **新建账号**，选择平台并填写手机号（文件名会自动使用尾号）。
 2. **手机抓包**：用手机抓包导出 HAR 并微信发送到电脑——页面内「第一次用？」提供了**分步抓包引导**。
 3. **扫描并导入**：进入「凭证与账号」→ **扫描并导入**，工具会同时扫描项目目录 / 下载目录 / 微信接收目录，报告中会写明「✓ 实测登录成功」；福建活动配置不存在时会**自动新建**。
-4. **注册计划任务**：进入「定时任务」→ **一键配置全部（推荐方案）**，一次性注册 8 个计划任务。
+4. **注册计划任务**：进入「定时任务」→ **一键配置全部（推荐方案）**，一次性注册 3 个计划任务。
 5. **查看待办**：回到「总览」页查看**「现在需要你做什么」**，票据快到期、当天未签到、下一次自动任务都会在这里提示。
 
 ### 从源码运行或使用计划任务
@@ -71,7 +73,13 @@
 
 ```bash
 python run_all.py --luck       # 签到领福利：优惠专区刷任务 + 把转盘次数抽完
+python run_all.py --platform doumi   # AI豆苗养成记：单独跑（或加 --doumi 跟签到一起跑）
+python cmcc_doumi.py --config configs\3239.json --dry-run   # 只查阳光值和待做任务
 ```
+
+> **AI豆苗养成记**与全国签到共用 `configs/*.json` 的 `app_token`（当 ticket 用），无需单独配置。
+> 任务上报有频率限制，脚本逐条间隔 1~2 秒；付费订购/关注/助力/消费类任务自动跳过。
+> 任务完成后阳光值先进「待领列表」，脚本会逐条领取（实测 40 → 90）。
 
 ### 手动配置凭证（命令行方式）
 
@@ -99,7 +107,7 @@ python run_all.py --dry-run
 | 控制台总览（双平台隔离卡片 / 待办条 / 到账台账） | 福建活动（分类子标签页 / 每日三档 / 转盘与寻宝） |
 |:---:|:---:|
 | ![控制台总览](docs/images/dash_overview.png) | ![福建活动](docs/images/bass_activities.png) |
-| **定时任务运维（真实状态 / 8 个计划任务）** | **全局运维配置（自动策略 / 推送通道 / 邮箱 HAR）** |
+| **定时任务运维（真实状态 / 3 个计划任务）** | **全局运维配置（自动策略 / 推送通道 / 邮箱 HAR）** |
 | ![定时任务](docs/images/scheduled_tasks.png) | ![设置与策略](docs/images/settings_policy.png) |
 
 ### 页面与功能
@@ -148,20 +156,17 @@ dist\签到领福利.exe → 复制到项目根目录
 
 ## 定时任务
 
-推荐注册以下八个 Windows 计划任务：
+推荐注册以下三个 Windows 计划任务（已精简，原来的 8 个合并/删除）：
 
 | 任务 | 时间 | 脚本 | 作用 |
 |---|---|---|---|
-| `MobileSignIn` | 每天 **11:45** | `run_scheduled.bat` | `run_all.py --xxl --xxl-times 5`，一次跑完 qwhdhub + BASS + 消消乐；放在秒杀前 10 分钟，让同一张票覆盖签到 → 会话刷新 → 秒杀 → 拓展 |
-| `MobileDailyReward` | 每天 **06:00 起每小时**（长期重复） | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 + 触发自动策略（喂养/转盘/寻宝/券来世界） |
-| `MobileJwtKeepAlive` | 每天 **00:00 起每 90 分钟**（长期重复） | `run_jwt_keepalive.bat` | `run_all.py --keepalive`，仅探测/续期 qwhdhub 登录态，不执行签到 |
-| `MobileSessionRefresh` | 每天 **11:54** | `run_session_refresh.bat` | 仅跑 qwhdhub 签到，建立新会话供 12:00 秒杀使用 |
-| `MobileSeckill` | 每天 **11:55** | `run_seckill.bat` | `run_all.py --seckill-only --seckill-at 11:59:50`，等到 12:00 抢 1 元话费券；会话未就绪时每 15 秒重试 |
-| `MobileGames` | 每天 **12:05** | `run_games.bat` | 拓展活动三合一：周六游戏中心 / 追剧领福利 / 玩游戏抽话费 |
-| `MobileTokenLifeProbe` | 每天 **00:00 起每 2 分钟**（长期重复） | `run_token_life.bat` | 探测 `app_token` 精确寿命（分钟级），确认失效后自动停止 |
+| `MobileMorning` | 每天 **11:40** | `run_morning.bat` | `run_all.py --xxl --games --doumi --voucher --seckill --seckill-at 11:59:50`，一次跑完 qwhdhub + BASS + 签到 + 消消乐 + 拓展活动 + AI豆苗 + 领券 + 秒杀。秒杀脚本内部等到 11:59:50 抢 1 元话费券，全部共用一张新鲜票 |
+| `MobileDailyReward` | 每天 **00:00 起每小时**（长期重复） | `run_daily_reward.bat` | `run_all.py --daily-only`，补签到 + 领每日奖励三档 + 触发自动策略（喂养/转盘/寻宝/券来世界） |
 | `MobileMailWatch` | 每天 **00:00 起每 10 分钟**（长期重复） | `run_mail_watch.bat` | 凭证失效且当日未完成时查收 HAR 邮件并自动导入与补跑 |
 
-> **每天只需抓一次包**：qwhdhub 的 `app_token` 寿命为服务端单次签发的随机属性（实测 10 分钟 ~ 11 小时不等）。因此将签到移至 11:45，与 11:54 会话刷新、11:55 秒杀、12:05 拓展活动共用同一张票。**11:30~11:40 抓包 → 立即发到监控邮箱**，`MobileMailWatch` 每 10 分钟扫描并自动导入、补跑签到。票据寿命从在 App 内抓包那一刻起算，久放不发等于白抓。BASS（福建）使用 Bearer token，按天有效，无需每天抓包。
+> **为什么精简**：`MobileTokenLifeProbe`（每 2 分钟）和 `MobileJwtKeepAlive`（每 90 分钟）只是探测票据状态——app_token 实测无法续命，探出来过期也没有动作，纯属调试残留；`MobileSessionRefresh`/`MobileSignIn`/`MobileSeckill`/`MobileGames`/`MobileVoucher` 原本拆成 5 个任务，但一张票能覆盖 11:40→12:00 的全部流程，秒杀脚本自身会等到点，合并成一个 `MobileMorning` 即可。**DailyReward 必须保留**：BASS 三档奖励间隔 60 分钟，单次只能领一档，且 BASS 票据按天有效不存在过期问题。
+
+> **每天只需抓一次包**：qwhdhub 的 `app_token` 寿命为服务端单次签发的随机属性（实测 10 分钟 ~ 11 小时不等）。**11:30~11:40 抓包 → 立即发到监控邮箱**，`MobileMailWatch` 每 10 分钟扫描并自动导入；`MobileMorning` 11:40 启动，用同一张票跑完签到 → 消消乐 → 拓展 → 豆苗 → 领券 → 秒杀。票据寿命从在 App 内抓包那一刻起算，久放不发等于白抓。若中途过期导致部分失败，你补一张新 HAR 后 MailWatch 会自动补跑一次。BASS（福建）使用 Bearer token，按天有效，无需每天抓包。
 
 > **无黑窗口运行**：所有计划任务均通过 `pythonw.exe` + `run_hidden.py` 启动 bat，子进程带 `CREATE_NO_WINDOW`，桌面不会弹出控制台窗口。
 
@@ -170,7 +175,7 @@ dist\签到领福利.exe → 复制到项目根目录
 1. 每日奖励三档（150 / 250 / 350 饲料）之间必须间隔 60 分钟，单次运行只能领一档，每小时轮询才能领齐全天 750 饲料（本地记录已领满时 1 秒退出）。
 2. BASS 签到 **06:00 才开放**（`signBeginHour=6`），奖励按连续签到累进（第 1 天 600g → 第 2 天 900g → 第 3 天 1200g），**断签一天即重置回 600g**。起始时间定在 `06:03` 而非 `06:00`，是为了避开整点数据刷新边界。
 
-### 为什么需要 `MobileJwtKeepAlive`（会话保活）
+### 为什么没有会话保活任务
 
 `appTokenLogin` 请求体中同时包含 `jwtToken` 与 `token`。**2026-11-20 对照实验**已证伪「`jwtToken` 可免票据长期续期」的假设：
 
@@ -180,7 +185,7 @@ dist\签到领福利.exe → 复制到项目根目录
 | `jwtToken` + 伪造的 token | FAILED　APP登录状态已过期 |
 | `jwtToken` + 真实 `app_token` | **SUCCESS** |
 
-服务端真正校验的是 **`token`（App 票据）**，`jwtToken` 单独使用无法通过校验。因此保活任务的作用是在票据有效期内持续探测状态，并将结果写入 `logs/keepalive.log`，一旦失败即提示重新抓包。
+服务端真正校验的是 **`token`（App 票据）**，`jwtToken` 单独使用无法通过校验——票据无法续命，探测状态也没有意义（探到过期也没动作）。所以不再注册 `MobileJwtKeepAlive` 这类保活任务；过期检测交给 `MobileMailWatch` + 失败推送，补票由收到新 HAR 后自动补跑完成。下表记录当年的对照实验结论：
 
 ### 命令行管理与注册
 
@@ -193,10 +198,10 @@ python run_all.py --keepalive                                  # 只试登录，
 建议直接在控制台「定时任务」页点击「一键配置全部」，等价 PowerShell 注册命令如下：
 
 ```powershell
-# 1. 每天定时任务（例：签到 11:45；其余 sess=11:54、seckill=11:55、games=12:05 同理）
-$a = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument '"<项目目录>\run_hidden.py" "<项目目录>\run_scheduled.bat"' -WorkingDirectory "<项目目录>"
-$t = New-ScheduledTaskTrigger -Daily -At 11:45
-Register-ScheduledTask -TaskName "MobileSignIn" -Action $a -Trigger $t -Force
+# 1. 晨间一站式（签到+消消乐+拓展+豆苗+领券+秒杀，一张票跑完）
+$a = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument '"<项目目录>\run_hidden.py" "<项目目录>\run_morning.bat"' -WorkingDirectory "<项目目录>"
+$t = New-ScheduledTaskTrigger -Daily -At 11:40
+Register-ScheduledTask -TaskName "MobileMorning" -Action $a -Trigger $t -Force
 
 # 2. 长期重复任务（PowerShell 5.1 需在 New-ScheduledTaskTrigger 直接传 Repetition 参数）
 $start = (Get-Date).AddMinutes(2).ToString("HH:mm")
@@ -205,13 +210,13 @@ $t2 = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-TimeSpa
 Register-ScheduledTask -TaskName "MobileDailyReward" -Action $a2 -Trigger $t2 -Force
 ```
 
-> 重复型任务（`MobileDailyReward`、`MobileJwtKeepAlive`、`MobileMailWatch`、`MobileTokenLifeProbe`）均使用未来起点 + `-RepetitionDuration (New-TimeSpan -Days 3650)`，避免过去时刻被推迟到次日或隔天停摆。
+> 重复型任务（`MobileDailyReward`、`MobileMailWatch`）均使用未来起点 + `-RepetitionDuration (New-TimeSpan -Days 3650)`，避免过去时刻被推迟到次日或隔天停摆。
 
 ---
 
 ## 停止与卸载
 
-本项目没有后台常驻守护进程（daemon），实时任务由图形控制台或命令行触发，后台自动化全部依赖上面 8 个 Windows 计划任务。
+本项目没有后台常驻守护进程（daemon），实时任务由图形控制台或命令行触发，后台自动化全部依赖上面 3 个 Windows 计划任务。
 
 ### 1. 停止正在运行的任务
 
@@ -226,13 +231,8 @@ Register-ScheduledTask -TaskName "MobileDailyReward" -Action $a2 -Trigger $t2 -F
 
 ```powershell
 $tasks = @(
-  "MobileSignIn",
+  "MobileMorning",
   "MobileDailyReward",
-  "MobileJwtKeepAlive",
-  "MobileSessionRefresh",
-  "MobileSeckill",
-  "MobileGames",
-  "MobileTokenLifeProbe",
   "MobileMailWatch"
 )
 $tasks | ForEach-Object { Disable-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
@@ -242,13 +242,8 @@ $tasks | ForEach-Object { Disable-ScheduledTask -TaskName $_ -ErrorAction Silent
 
 ```powershell
 $tasks = @(
-  "MobileSignIn",
+  "MobileMorning",
   "MobileDailyReward",
-  "MobileJwtKeepAlive",
-  "MobileSessionRefresh",
-  "MobileSeckill",
-  "MobileGames",
-  "MobileTokenLifeProbe",
   "MobileMailWatch"
 )
 $tasks | ForEach-Object { Unregister-ScheduledTask -TaskName $_ -Confirm:$false -ErrorAction SilentlyContinue }
@@ -280,9 +275,9 @@ python cmcc_seckill.py --config configs/3239.json             # 等下一场自�
 | 签到时刻 | 会话失效 | 覆盖 12:00？ |
 |---|---|---|
 | 08:30 | 10:30 | ❌ |
-| **11:54** | **13:54** | ✅ |
+| **11:40** | **13:40** | ✅ |
 
-因此必须由 `MobileSessionRefresh` 在 **11:54** 重新签到建会话；该步骤仍需有效 `app_token`。
+因此 `MobileMorning` 定在 **11:40** 签到建会话，2 小时内足以覆盖 12:00 秒杀；该步骤仍需有效 `app_token`。
 
 **并发与重试细节**
 
@@ -475,7 +470,7 @@ python pull_token_phone.py --save     # Android Termux
 - 打包成 onefile exe 后，所有数据路径统一通过 `common.app_base()` 指向 exe 所在目录（避免写入 `_MEIxxxx` 临时目录导致重启丢失）。
 - BASS 签到在凌晨返回 `1502 未到可签到时间` 属正常；每日奖励三档间隔 60 分钟，未启用 `MobileDailyReward` 只能领到第一档；自动喂养需等三档领齐（约 3 小时）后统一执行。
 - 消消乐每天约 5 点基础体力，中奖概率低。
-- 拓展活动由 `MobileGames`（12:05）每日运行：周六游戏中心全周可抽（10 币/次，31 天周期清零），追剧领福利仅周日开放抽奖（其余日子攒次数），全民掼蛋挑战赛任务与抽奖均自动完成；遇到「未中奖」会继续抽完剩余次数，同次中多张相同奖品逐张记账。
+- 拓展活动由 `MobileMorning`（11:40）每日运行：周六游戏中心全周可抽（10 币/次，31 天周期清零），追剧领福利仅周日开放抽奖（其余日子攒次数），全民掼蛋挑战赛任务与抽奖均自动完成；遇到「未中奖」会继续抽完剩余次数，同次中多张相同奖品逐张记账。
 - 周三充值日（`cmcc_wed.py`）端点来自公开实现，尚未用有效票据实测；邀请助力与真实充值一律不代做。
 - 秒杀 12:00 场次限流严重且库存通常只有 1 份，依赖 11:54 建立的新会话与有效 `app_token`。
 
@@ -487,13 +482,8 @@ python pull_token_phone.py --save     # Android Termux
 .
 ├── 签到领福利.exe          桌面版入口（用 build_exe.bat 构建，不入库）
 ├── run_gui.bat             无 exe 时用浏览器打开控制台（跑 python dashboard.py）
-├── run_scheduled.bat       定时签到用
-├── run_daily_reward.bat    定时领每日奖励用
-├── run_jwt_keepalive.bat   定时续期 qwhdhub 的 jwt（会话保活）
-├── run_session_refresh.bat 定时刷新活动会话（11:54，供 12:00 秒杀复用）
-├── run_seckill.bat         定时秒杀抢券（11:55 启动，等到 12:00）
-├── run_games.bat           定时拓展活动（12:05）
-├── run_token_life.bat      定时探测 app_token 寿命（每 2 分钟）
+├── run_morning.bat         晨间一站式（11:40：签到+消消乐+拓展+豆苗+领券+秒杀）
+├── run_daily_reward.bat    定时领每日奖励（每小时，BASS 三档间隔 60 分钟）
 ├── run_mail_watch.bat      定时查收邮箱 HAR 附件并自动导入（每 10 分钟）
 ├── run_hidden.py           无窗口启动器（计划任务用它跑 bat，不再闪黑窗口）
 ├── common.py               共用基础设施：原子写、文件锁、通知、会话、接口调用、日志轮转
@@ -558,7 +548,7 @@ python probe_token_life.py --once                               # 手动探测�
 
 ### `app_token` 寿命探测示例
 
-`MobileTokenLifeProbe` 每 2 分钟探测一次登录状态，签发时刻取自 HAR 中 `appTokenLogin` 时间戳，确认失效后自动停止探测：
+手动执行 `python probe_token_life.py --once` 可探测登录状态（探测任务已从定时任务中移除，命令仍可用），签发时刻取自 HAR 中 `appTokenLogin` 时间戳，确认失效后自动停止探测：
 
 ```text
 --- ...3239（184****3239）

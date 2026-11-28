@@ -86,8 +86,8 @@ python cmcc_sign.py --config configs/3239.json --games --dry-run # 只查余额
 python run_all.py --games-only                                   # 全部账号
 ```
 
-计划任务 `MobileGames` → `run_games.bat`：每天 **12:05** 跑一次。
-选这个点是因为**周六 12:00** 正是游戏币抽奖窗口开启的时刻；其它日子只报余额、不消耗。
+拓展活动已并入 `MobileMorning` → `run_morning.bat`：每天 **11:40** 随签到一起跑（`--games`）。
+**周六 12:00** 正是游戏币抽奖窗口开启的时刻；其它日子只报余额、不消耗。
 控制台「拓展活动」页也有单号手动执行入口。
 
 ## 获取凭证

@@ -1,16 +1,10 @@
 // ---------------- 定时任务：真实状态表 & 日志弹层 ----------------
 const SCHED=[
-  {kind:'sign',      cn:'每天签到',    name:'MobileSignIn',         bat:'run_scheduled.bat',      desc:'全国签到 + 福建活动 + 消消乐'},
-  {kind:'daily',     cn:'每日奖励',    name:'MobileDailyReward',    bat:'run_daily_reward.bat',   desc:'每小时补签到 + 领三档奖励', interval:'每小时'},
-  {kind:'keepalive', cn:'会话保活',    name:'MobileJwtKeepAlive',   bat:'run_jwt_keepalive.bat',  desc:'每 90 分钟只登录，不签到', interval:'每90分'},
-  {kind:'sess',      cn:'会话刷新',    name:'MobileSessionRefresh', bat:'run_session_refresh.bat',desc:'刷新活动会话，供秒杀复用'},
-  {kind:'seckill',   cn:'秒杀抢券',    name:'MobileSeckill',        bat:'run_seckill.bat',        desc:'启动后内部等到 12:00 开抢'},
-  {kind:'games',     cn:'拓展活动',    name:'MobileGames',          bat:'run_games.bat',          desc:'拓展活动三合一'},
-  {kind:'probe',     cn:'票据寿命探测',name:'MobileTokenLifeProbe', bat:'run_token_life.bat',     desc:'每 2 分钟探测票据寿命', interval:'每2分'},
+  {kind:'morning',   cn:'晨间一站式',  name:'MobileMorning',        bat:'run_morning.bat',        desc:'签到 + 消消乐 + 拓展 + 豆苗 + 领券 + 秒杀（一张票跑完）'},
+  {kind:'daily',     cn:'每日奖励',    name:'MobileDailyReward',    bat:'run_daily_reward.bat',   desc:'每小时补签到 + 领三档奖励（间隔 60 分钟）', interval:'每小时'},
   {kind:'mail',      cn:'邮箱收 HAR',  name:'MobileMailWatch',      bat:'run_mail_watch.bat',     desc:'每 10 分钟查收 HAR 邮件并自动导入', interval:'每10分'}
 ];
-const SCHED_PLAN=[["sign","11:45"],["daily","06:00"],["keepalive","00:00"],
-                  ["sess","11:54"],["seckill","11:55"],["games","12:05"],["probe","00:00"],["mail","00:00"]];
+const SCHED_PLAN=[["morning","11:40"],["daily","06:00"],["mail","00:00"]];
 let _pendingSchedRefresh=false;
 
 function codeText(c,kind){

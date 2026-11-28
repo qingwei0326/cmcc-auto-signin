@@ -289,6 +289,14 @@ PLATFORMS = {
         "script": BASE / "cmcc_fj.py",
         "id_field": "phone",
     },
+    "doumi": {
+        # 移动爱购 AI豆苗养成记：与 qwhd 共用 configs/（同一张 app_token 当 ticket），
+        # 默认不进 all，避免每次签到都重复请求；用 --doumi 或 --platform doumi 单独跑。
+        "name": "AI豆苗养成记 (dev.coc.10086.cn)",
+        "dir": BASE / "configs",
+        "script": BASE / "cmcc_doumi.py",
+        "id_field": "phone",
+    },
 }
 
 MAX_WORKERS = 4
@@ -556,6 +564,31 @@ def run_seckill(dry_run: bool, at: str = "") -> list:
     return results
 
 
+def run_voucher(dry_run: bool) -> list:
+    """领券中心：按券的开放时间领未领过的免费券。"""
+    script = BASE / "cmcc_voucher.py"
+    confs = sorted((BASE / "configs").glob("*.json"))
+    results = []
+    if not script.exists() or not confs:
+        print("缺少 cmcc_voucher.py 或 configs 下没有配置，跳过领券中心")
+        return results
+    print("\n" + "=" * 66)
+    print(f" 领券中心   {len(confs)} 个账号")
+    print("=" * 66)
+
+    def one(conf):
+        return run_script(script, conf, [] if dry_run else ["--go"], 900)
+
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(confs))) as ex:
+        futs = [ex.submit(one, c) for c in confs]
+        for fut in futs:
+            name, ok, sec, text = fut.result()
+            if text:
+                print(text)
+            results.append(("voucher", name, ok, sec))
+    return results
+
+
 def run_wed(dry_run: bool) -> list:
     """周三充值日：查询/完成拼图任务、抽奖并领取已集齐奖励。"""
     script = BASE / "cmcc_wed.py"
@@ -672,7 +705,9 @@ def run_luck(dry_run: bool, tasks: bool = True) -> list:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--platform", choices=["qwhd", "bass", "all", "none"], default="all")
+    ap.add_argument("--platform", choices=["qwhd", "bass", "doumi", "all", "none"], default="all")
+    ap.add_argument("--doumi", action="store_true",
+                    help="顺带跑移动爱购 AI豆苗养成记（与 qwhd 共用 configs/，默认不进 all）")
     ap.add_argument("--delay", type=int, default=0)
     ap.add_argument("--extra", default="",
                     help='传给 BASS 脚本的额外参数，写成 --extra="--roll"')
@@ -700,6 +735,10 @@ def main():
                     help="额外跑周三充值日拼图任务、抽奖与领券")
     ap.add_argument("--wed-only", action="store_true",
                     help="只跑周三充值日，不跑其它平台")
+    ap.add_argument("--voucher", action="store_true",
+                    help="额外跑领券中心（按开放时间领免费券）")
+    ap.add_argument("--voucher-only", action="store_true",
+                    help="只跑领券中心，不跑其它平台")
     ap.add_argument("--games", action="store_true",
                     help="顺带跑拓展活动：周六游戏中心 / 追剧领福利 / 玩游戏抽话费")
     ap.add_argument("--tasks", action="store_true",
@@ -716,7 +755,7 @@ def main():
     # 额外参数按平台分发：--extra 是给 BASS 的，qwhd 的由模式开关自己决定。
     # 早先两个平台共用一个 extra 字符串、却只透传给 bass，导致 --keepalive
     # 的 --login-only 被丢掉，保活任务变成了每 90 分钟真签到一次。
-    extra_map = {"qwhd": [], "bass": args.extra.split() if args.extra else []}
+    extra_map = {"qwhd": [], "bass": args.extra.split() if args.extra else [], "doumi": []}
     feed_args = []
     # 策略读一次就够：bass 段落是喂养/任务这类子项，luck / xunbao 这些是顶层开关。
     # 早先全从 policy["bass"] 里取，顶层开关永远是 None → 一律走默认 True，
@@ -773,6 +812,15 @@ def main():
         args.seckill = False
         args.platform = "none"
 
+    # 只跑领券中心：与签到/秒杀/周三活动独立，凭证来自 HAR 导入的 voucher_uid
+    if args.voucher_only:
+        args.voucher = True
+        args.xxl = False
+        args.seckill = False
+        args.wed = False
+        args.games = False
+        args.platform = "none"
+
     # 保活 / 只读检查：不签到或只读探测，都不推送手机通知
     if args.keepalive:
         args.platform = "qwhd"
@@ -809,6 +857,10 @@ def main():
         sys.stdout = Tee(log)
     keys = ["qwhd", "bass"] if args.platform == "all" else (
         [] if args.platform == "none" else [args.platform])
+    # 豆苗默认不进 all：它和 qwhd 共用 configs/，每次签到都跑会重复请求。
+    # 用 --doumi 显式带上，或 --platform doumi 单独跑。
+    if args.doumi and "doumi" not in keys:
+        keys.append("doumi")
     results = []
 
     for key in keys:
@@ -850,6 +902,9 @@ def main():
 
     if args.wed:
         results.extend(run_wed(args.dry_run))
+
+    if args.voucher:
+        results.extend(run_voucher(args.dry_run))
 
     if not results:
         print("\n没有任何账号被执行。")

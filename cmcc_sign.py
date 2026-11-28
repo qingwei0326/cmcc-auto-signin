@@ -95,6 +95,8 @@ class Config:
         self.city_code = env.get("CMCC_CITY_CODE", file_cfg.get("city_code", "0731"))
         self.carrier_operator = file_cfg.get("carrier_operator", "002")
         self.app_version_code = file_cfg.get("app_version_code", "12.5.2")
+        # 领券中心的 UID（HAR 导入写入），优先于 app_token 里的 UID
+        self.voucher_uid = env.get("CMCC_VOUCHER_UID", file_cfg.get("voucher_uid", ""))
         self.activity_id = env.get("CMCC_ACTIVITY_ID", file_cfg.get("activity_id", "1021122301"))
         self.channel_id = env.get("CMCC_CHANNEL_ID", file_cfg.get("channel_id", "P00000109876"))
         # 推送通道：账号里没配就取设置页的全局配置（设置一次，所有账号通用）

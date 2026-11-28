@@ -554,7 +554,7 @@ class TestSchedTrigger(unittest.TestCase):
                                    r"D:\proj\run_hidden.py")
 
     def test_repeat_tasks_use_long_duration(self):
-        for kind in ("daily", "keepalive", "probe", "mail"):
+        for kind in ("daily", "mail"):
             name, ps = self._ps(kind)
             self.assertIn("-Days 3650", ps, f"{kind} 的重复窗口不该再是短窗口")
             self.assertNotIn("-Hours 17", ps, f"{kind} 还是当年的 17 小时窗口")
@@ -587,8 +587,8 @@ class TestSchedTrigger(unittest.TestCase):
 
     def test_daily_trigger_stays_fixed_time(self):
         """每天定时的那几个任务不能被改成「从现在开始」。"""
-        _, ps = self._ps("sign", "11:45")
-        self.assertIn("-Daily -At '11:45'", ps)
+        _, ps = self._ps("morning", "11:40")
+        self.assertIn("-Daily -At '11:40'", ps)
         self.assertNotIn("RepetitionInterval", ps)
 
 
@@ -883,7 +883,7 @@ class TestDashboardGuards(unittest.TestCase):
 
     def test_sched_reg_rejects_injected_time(self):
         """time 会插进单引号 PowerShell 串，不校验就能闭合引号执行任意命令。"""
-        r = dashboard.do_action({"action": "sched_reg", "kind": "sign",
+        r = dashboard.do_action({"action": "sched_reg", "kind": "morning",
                                  "time": "08:30'; Start-Process calc; '"})
         self.assertFalse(r["ok"])
 
@@ -1988,14 +1988,14 @@ class TestExtendedActivitiesWiring(unittest.TestCase):
         self.assertIn('id="p-games"', html)
         self.assertIn("games_run", html)
         self.assertIn('id="gmFile"', html)
-        self.assertIn("MobileGames", html)
+        self.assertIn("MobileMorning", html)  # 拓展活动已并进晨间一站式任务
         src = (ROOT / "dashboard.py").read_text(encoding="utf-8")
         self.assertIn('act == "games_run"', src)
-        self.assertIn("MobileGames", src)
+        self.assertIn("MobileMorning", src)
 
-    def test_games_bat_is_crlf_and_ascii_comments(self):
-        p = ROOT / "run_games.bat"
-        self.assertTrue(p.exists(), "缺少 run_games.bat")
+    def test_morning_bat_is_crlf_and_ascii_comments(self):
+        p = ROOT / "run_morning.bat"
+        self.assertTrue(p.exists(), "缺少 run_morning.bat")
         data = p.read_bytes()
         self.assertIn(b"\r\n", data)
         self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
@@ -2150,7 +2150,7 @@ class TestHiddenTaskLauncher(unittest.TestCase):
         real = dashboard.RUNNER
         dashboard.RUNNER = FakeRunner()
         try:
-            dashboard.do_action({"action": "sched_reg", "kind": "seckill", "time": "11:55"})
+            dashboard.do_action({"action": "sched_reg", "kind": "morning", "time": "11:40"})
         finally:
             dashboard.RUNNER = real
         self.assertTrue(captured)
@@ -2159,8 +2159,8 @@ class TestHiddenTaskLauncher(unittest.TestCase):
         self.assertIn("run_hidden.py", ps)
         self.assertNotIn("cmd.exe", ps)
 
-    def test_sched_kind_games_is_allowed(self):
-        """games 分支加过但曾漏进白名单，界面注册会直接报「未知任务类型」。"""
+    def test_sched_kind_morning_is_allowed(self):
+        """morning 分支（拓展活动已并入）必须在白名单里，界面注册才能成功。"""
         captured = []
 
         class FakeRunner:
@@ -2174,7 +2174,7 @@ class TestHiddenTaskLauncher(unittest.TestCase):
         real = dashboard.RUNNER
         dashboard.RUNNER = FakeRunner()
         try:
-            r = dashboard.do_action({"action": "sched_reg", "kind": "games", "time": "12:05"})
+            r = dashboard.do_action({"action": "sched_reg", "kind": "morning", "time": "11:40"})
         finally:
             dashboard.RUNNER = real
         self.assertTrue(r.get("ok"), r)
@@ -2195,7 +2195,7 @@ class TestHiddenTaskLauncher(unittest.TestCase):
         real = dashboard.RUNNER
         dashboard.RUNNER = FakeRunner()
         try:
-            dashboard.do_action({"action": "sched_reg", "kind": "probe", "time": "00:00"})
+            dashboard.do_action({"action": "sched_reg", "kind": "mail", "time": "00:00"})
         finally:
             dashboard.RUNNER = real
         ps = captured[-1]
@@ -2397,7 +2397,7 @@ class TestUsabilityFixes(unittest.TestCase):
                 mock.patch("shutil.which", lambda n: None):
             self.assertEqual(dashboard._pythonw(), "")
         with mock.patch.object(dashboard, "_pythonw", lambda: ""):
-            r = dashboard.do_action({"action": "sched_reg", "kind": "sign", "time": "08:30"})
+            r = dashboard.do_action({"action": "sched_reg", "kind": "morning", "time": "11:40"})
         self.assertFalse(r["ok"])
         self.assertIn("pythonw", r["err"])
 
@@ -2516,12 +2516,12 @@ class TestUsabilityFixes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             logs = Path(tmp) / "logs"
             logs.mkdir()
-            (logs / "daily.log").write_text("\n".join("行%d" % i for i in range(50)), encoding="utf-8")
+            (logs / "daily_reward.log").write_text("\n".join("行%d" % i for i in range(50)), encoding="utf-8")
             with mock.patch.object(dashboard, "BASE", Path(tmp)):
                 self.assertIsNone(dashboard.read_task_log("../config.json"))
                 self.assertIsNone(dashboard.read_task_log("not-a-task.log"))
-                self.assertTrue(dashboard.read_task_log("keepalive.log")["missing"])
-                r = dashboard.read_task_log("daily.log", tail=5)
+                self.assertIsNone(dashboard.read_task_log("keepalive.log"))  # 已精简，不再白名单内
+                r = dashboard.read_task_log("daily_reward.log", tail=5)
         self.assertEqual(len(r["lines"]), 5)
         self.assertEqual(r["lines"][-1], "行49")
 

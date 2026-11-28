@@ -10,6 +10,7 @@ har_import.py —— 从 HAR 里同时提取 qwhdhub app_token 与 BASS Bearer t
   · 只写 token 相关字段，其余配置原样保留。
 """
 
+import base64
 import json
 import os
 import re
@@ -19,6 +20,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+
 from common import (atomic_write_json, app_base, find_har_files, notify,
                     seed_platform_stats, stats_key, update_json)
 
@@ -30,6 +35,9 @@ BASE = app_base()
 
 QWH_MARK = "appTokenLogin"
 BASS_HOSTS = ("wap.fj.10086.cn", "app.fmcc.com.cn")
+# 领券中心（touch.10086.cn）封包密钥，固定写在 App 的 appsso2 JS 里
+VOUCHER_KEY = b"043AOQGK6ykklyZA"
+VOUCHER_HOST = "touch.10086.cn"
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 PHONE_RE = re.compile(r"1[3-9]\d{9}")
 # 脱敏号码，如 173****4167
@@ -45,6 +53,36 @@ def _headers(req):
         if name:
             out[name] = str(h.get("value") or "")
     return out
+
+
+def _voucher_decode(value, *, double=True):
+    """解领券中心封包：base64（可双层）→ AES-CBC(key=iv) → Pkcs7。"""
+    raw = base64.b64decode("".join(str(value).split()))
+    if double:
+        raw = base64.b64decode(b"".join(raw.split()))
+    cipher = AES.new(VOUCHER_KEY, AES.MODE_CBC, VOUCHER_KEY)
+    return unpad(cipher.decrypt(raw), 16).decode("utf-8")
+
+
+def _voucher_sample(req, path):
+    """从一次 touch.10086.cn 请求里取 (UID, 手机号)；取不到返回 (None, None)。"""
+    raw = (req.get("postData") or {}).get("text") or ""
+    try:
+        body = json.loads(raw)
+    except (ValueError, TypeError):
+        return None, None
+    uid, phone = None, None
+    try:
+        if path.endswith("/cust/initMessage"):
+            # data 是单层 base64 封包
+            payload = json.loads(_voucher_decode(body["data"], double=False))
+            uid = payload.get("UID") or None
+        elif "/cust/couponQry/" in path:
+            payload = json.loads(_voucher_decode(body["inParam"]))
+            phone = payload.get("loginNo") or None
+    except (KeyError, ValueError, TypeError, IndexError):
+        pass
+    return uid, phone
 
 
 def _match_existing_phone(placeholder):
@@ -107,6 +145,10 @@ def parse_har_text(text):
 
     qwhd = {}
     bass_candidates = {}
+    voucher = {}
+    voucher_uid = ""
+    voucher_uid_ts = ""
+    voucher_phones = {}
     mobiles = set()
     # x-token 兜底：APP 已登录时不再发 appTokenLogin，但每个 wx.10086.cn 请求
     # 都带 x-token 头，里面就是同一张 App 票据（JSESSIONID=..; UID=..; ticketID=..）
@@ -121,6 +163,14 @@ def parse_har_text(text):
         hdr = _headers(req)
         origin = urlsplit(url)
         national = origin.scheme == "https" and origin.hostname == "wx.10086.cn"
+
+        # ---- 领券中心：initMessage 给 UID，couponQry 给手机号 ----
+        if origin.scheme == "https" and origin.hostname == VOUCHER_HOST:
+            uid, phone = _voucher_sample(req, origin.path)
+            if uid and ts >= voucher_uid_ts:
+                voucher_uid, voucher_uid_ts = uid, ts
+            if phone and PHONE_RE.fullmatch(phone) and ts >= voucher_phones.get(phone, ""):
+                voucher_phones[phone] = ts
 
         for m in PHONE_RE.finditer(url):
             mobiles.add(m.group(0))
@@ -182,10 +232,16 @@ def parse_har_text(text):
         if phone:
             mobiles.add(phone)
 
+    # 一次抓包里 UID 与手机号通常分别出现在 initMessage / couponQry，
+    # 用最新 UID 跟所有出现的手机号配对，交给 _import_voucher 按配置归属落盘。
+    if voucher_uid:
+        for phone in voucher_phones:
+            voucher[phone] = {"uid": voucher_uid, "ts": voucher_phones[phone]}
+
     candidates = sorted(reversed(list(bass_candidates.values())), key=lambda row: row["ts"], reverse=True)
     return {"qwhd": qwhd, "bass": next(iter(candidates), None),
             "bass_candidates": candidates, "mobiles": sorted(mobiles),
-            "masked": masked_hint}
+            "voucher": voucher, "masked": masked_hint}
 
 
 def _read_json(path):
@@ -347,6 +403,29 @@ def _import_national(parsed, report):
         _mark_verified(path.stem, "token_qwhd", report)
 
 
+def _import_voucher(parsed, report):
+    """把领券中心 UID 写进对应手机号配置，供 cmcc_voucher.py 使用。
+
+    这类 HAR 常常没有 appTokenLogin，无法更新 app_token；但 initMessage 里的
+    UID 就是领券中心换会话要用的凭据，单独记一个字段即可。
+    """
+    for phone, entry in sorted(parsed.get("voucher", {}).items()):
+        path = BASE / "configs" / f"{phone[-4:]}.json"
+        old = _read_json(path)
+        if old.get("phone") and old["phone"] != phone:
+            report.append(f"✗ 领券中心 {path.stem}：尾号对应多份配置，未更新")
+            continue
+        if old.get("voucher_uid") == entry["uid"]:
+            continue
+        patch = {"voucher_uid": entry["uid"], "phone": phone}
+        try:
+            update_json(path, lambda current: current.update(patch), indent=2)
+        except (OSError, ValueError, TypeError):
+            report.append(f"✗ 领券中心 {path.stem}：保存失败")
+            continue
+        report.append(f"✓ 领券中心 {path.stem}：已记录 UID，可运行 cmcc_voucher.py")
+
+
 def _known_phones():
     """所有已知完整号码：福建配置 + 全国配置 + HAR 里的全国票据。
 
@@ -484,12 +563,15 @@ def apply(text, key=None, source_path=None):
     report = []
     _import_national(p, report)
     _import_bass(p, key, report)
+    _import_voucher(p, report)
     if not p["qwhd"]:
         report.append("qwhdhub 无可用 token（未抓到 App 登录票据）")
     if not p["bass_candidates"]:
         report.append("BASS 无可用 token（未抓到福建 Bearer）")
+    if not p.get("voucher"):
+        report.append("领券中心无可用 UID（未抓到 initMessage/couponQry）")
     # 一个凭证都没有的 HAR 留着也没用，还带着手机号等隐私，直接删
-    no_creds = not p["qwhd"] and not p["bass_candidates"]
+    no_creds = not p["qwhd"] and not p["bass_candidates"] and not p.get("voucher")
     return _finish_with_source(report, source_path,
                                report_outcome(report)[0] or no_creds)
 
@@ -531,7 +613,7 @@ def scan_files(files):
             lines.append("✗ HAR 解析失败，请重新导出")
             lines.append(KEPT_HINT)
             continue
-        if not p["qwhd"] and not p["bass"]:
+        if not p["qwhd"] and not p["bass"] and not p.get("voucher"):
             lines.append(f"{f.name}：未含目标请求，跳过")
             _finish_with_source(lines, f, True)
             continue

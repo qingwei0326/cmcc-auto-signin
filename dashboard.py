@@ -32,10 +32,11 @@ from collections import deque
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import urllib.request
 from urllib.parse import urlparse, parse_qs
 
-from common import (PLAT_STATS_FIELDS, assert_safe_url, atomic_write_json, child_cmd,
-                    load_global_settings, load_policy, parse_result,
+from common import (PLAT_STATS_FIELDS, VERSION, assert_safe_url, atomic_write_json,
+                    child_cmd, load_global_settings, load_policy, parse_result,
                     pushplus_token_ok, save_global_settings, save_policy,
                     seed_platform_stats, stats_key, update_json)
 
@@ -764,50 +765,32 @@ def act_refresh_status() -> dict:
 # 8 个计划任务的唯一定义处：名字、脚本、触发器类型、注册后的提示语。
 # 单个注册与「一键配置全部」都从这里取，两处不会跑偏。
 SCHED_DEF = {
-    "sign":      ("MobileSignIn", "run_scheduled.bat", "daily",
-                  "每天 {t} 运行"),
+    # 已精简为 3 个：原来的 8 个里，TokenLifeProbe/JwtKeepAlive 只是探测票据
+    # （app_token 无法续命，探到过期也没动作），其余拆开的任务全部并进 Morning。
+    "morning":   ("MobileMorning", "run_morning.bat", "daily",
+                  "每天 {t} 运行（签到+消消乐+拓展+豆苗+领券+秒杀，一张票跑完）"),
     "daily":     ("MobileDailyReward", "run_daily_reward.bat", "hourly",
-                  "每小时一次（长期运行，领完自动空转）"),
-    "keepalive": ("MobileJwtKeepAlive", "run_jwt_keepalive.bat", "90m",
-                  "每 90 分钟一次（长期运行）"),
-    "sess":      ("MobileSessionRefresh", "run_session_refresh.bat", "daily",
-                  "每天 {t} 运行（刷新活动会话，覆盖 12 点开抢）"),
-    "seckill":   ("MobileSeckill", "run_seckill.bat", "daily",
-                  "每天 {t} 运行（脚本内部等到 12:00 开抢）"),
-    "games":     ("MobileGames", "run_games.bat", "daily",
-                  "每天 {t} 运行（游戏中心 / 追剧 / 抽话费）"),
-    "probe":     ("MobileTokenLifeProbe", "run_token_life.bat", "2m",
-                  "每 2 分钟一次（长期运行）"),
+                  "每小时一次（长期运行，BASS 三档间隔 60 分钟，必须分开领）"),
     "mail":      ("MobileMailWatch", "run_mail_watch.bat", "10m",
                   "每 10 分钟一次（长期运行，凭证过期时自动收 HAR）"),
 }
 SCHED_TASKS = tuple(v[0] for v in SCHED_DEF.values())
 
 # 推荐方案：一键配置全部时用的时刻。和 README / 文档里的说明保持一致。
-# 「签到」放在 11:45：qwhd 票据寿命只有 1~2 小时，原来 08:30 跑完 10:30 就失效，
-# 中午的秒杀 / 拓展还得再抓一次包。把它挪到秒杀前 10 分钟，一张票就能
-# 覆盖 签到 → 会话刷新(11:54) → 秒杀(11:55) → 拓展(12:05)，一天只抓一次包。
+# Morning 放在 11:40：11:30~11:40 抓包发邮箱，MailWatch 自动导入，
+# 一张票覆盖 签到 → 消消乐 → 拓展 → 豆苗 → 领券 → 秒杀（脚本内部等到 11:59:50）。
+# DailyReward 按小时跑（BASS 票据按天有效，三档间隔 60 分钟是服务端硬约束）。
 SCHED_PLAN = [
-    ("sign", "11:45"),
+    ("morning", "11:40"),
     ("daily", "06:00"),
-    ("keepalive", "00:00"),
-    ("sess", "11:54"),
-    ("seckill", "11:55"),
-    ("games", "12:05"),
-    ("probe", "00:00"),
     ("mail", "00:00"),
 ]
 
 # 每个计划任务的日志文件名（与各 bat 里写的一致）。
 # 界面上「失败（见日志）」要能直接点开，不能让用户自己去文件夹翻。
 SCHED_LOG = {
-    "sign": "daily.log",
+    "morning": "morning.log",
     "daily": "daily_reward.log",
-    "keepalive": "keepalive.log",
-    "sess": "session_refresh.log",
-    "seckill": "seckill.log",
-    "games": "games.log",
-    "probe": "token_life.log",
     "mail": "mail_watch.log",
 }
 
@@ -818,8 +801,52 @@ _NO_PYW_ERR = ("找不到系统 Python（pythonw.exe），无法注册计划任�
 SCHED_CN = {
     "sign": "每天签到", "daily": "每日奖励", "keepalive": "会话保活",
     "sess": "会话刷新", "seckill": "秒杀抢券", "games": "拓展活动",
-    "probe": "票据寿命探测", "mail": "邮箱收 HAR",
+    "voucher": "领券中心", "probe": "票据寿命探测", "mail": "邮箱收 HAR",
 }
+
+
+# ---------------------------------------------------------------- 版本与更新
+#
+# 查 GitHub 最新 Release 对比版本。国内访问 api.github.com 常超时/被阻断，
+# 所以超时设短、失败一律静默返回 error，前端据此决定是否展示，绝不影响控制台本身。
+GITHUB_REPO = "yuriyoung997/cmcc-auto-signin"
+
+
+def _ver_tuple(s: str) -> tuple:
+    """'v1.3' / '1.3.0' → (1, 3, 0)，用于比较。"""
+    return tuple(int(x) for x in re.findall(r"\d+", s or "")[:3]) or (0,)
+
+
+def check_update(timeout: float = 4.0) -> dict:
+    """对比当前版本与 GitHub 最新 Release。
+
+    返回 {current, has_update, latest?, url?, name?, published_at?, error?}。
+    任何网络/解析异常都收敛成 error 字段，调用方不会拿到异常。
+    """
+    info = {"current": VERSION, "has_update": False}
+    api = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    try:
+        req = urllib.request.Request(api, headers={
+            "User-Agent": f"cmcc-auto-signin/{VERSION}",
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        info["error"] = (str(e) or e.__class__.__name__)[:140]
+        return info
+    latest = str(data.get("tag_name") or "").lstrip("vV")
+    if not latest:
+        info["error"] = "Release 缺少 tag_name"
+        return info
+    info.update({
+        "latest": latest,
+        "has_update": _ver_tuple(latest) > _ver_tuple(VERSION),
+        "url": data.get("html_url") or "",
+        "name": data.get("name") or "",
+        "published_at": (data.get("published_at") or "")[:10],
+    })
+    return info
 
 
 def read_task_log(name: str, tail: int = 200):
@@ -994,6 +1021,14 @@ def do_action(body: dict):
         games = plat == "all" and bool(body.get("games"))
         if games:
             cmd.append("--games")
+        # 签到页 AI豆任务跟着一键跑：否则要单独点「签到」才能做
+        tasks = plat == "all" and bool(body.get("tasks"))
+        if tasks:
+            cmd.append("--tasks")
+        # AI豆苗养成记默认不进 all，一键按钮显式带上（与 qwhd 共用 app_token）
+        doumi = plat == "all" and bool(body.get("doumi"))
+        if doumi:
+            cmd.append("--doumi")
         if body.get("seckill"):
             cmd.append("--seckill")
             if body.get("seckill_at"):
@@ -1010,11 +1045,34 @@ def do_action(body: dict):
         pname = {"all": "全部平台", "qwhd": "全国签到", "bass": "福建活动",
                  "none": "不跑签到"}.get(plat, plat)
         title = "签到领福利" if luck else "一键签到"
-        label = "%s（%s%s%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
+        label = "%s（%s%s%s%s%s%s%s%s）" % (title, pname, "，只读检查" if body.get("dry") else "",
                                   "，含消消乐" if xxl else "",
                                   "，含寻宝" if xunbao else "",
                                   "，含游戏中心" if games else "",
+                                  "，含AI豆任务" if tasks else "",
+                                  "，含AI豆苗" if doumi else "",
                                   "，含秒杀" if body.get("seckill") else "")
+        return _start(label, cmd)
+
+    if act == "voucher_run":
+        dry = bool(body.get("dry"))
+        key = body.get("key")
+        if key:
+            a = _find_account(accts, "qwhdhub", key)
+            if not a:
+                return {"ok": False, "err": "账号不存在"}
+            cmd = py("cmcc_voucher.py", "--config", a["file"])
+            if dry:
+                cmd.append("--dry-run")
+            else:
+                cmd.append("--go")
+            label = f"领券中心 · {a['key']}"
+        else:
+            # 全部账号交给 run_all 的 --voucher-only，并行跑、汇总一条
+            cmd = py("run_all.py", "--voucher-only")
+            if dry:
+                cmd.append("--dry-run")
+            label = "领券中心（全部账号）"
         return _start(label, cmd)
 
     if act == "qwhd_run":
@@ -1507,6 +1565,7 @@ def build_state():
         enriched.append(item)
         g["plats"][a["plat"]] = item
     return {
+        "version": VERSION,
         "accounts": list(phones.values()),
         "raw_accounts": enriched,
         "stats": st,
@@ -1940,6 +1999,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(204, "image/x-icon", b"")
         elif u.path == "/api/state":
             self._json(build_state())
+        elif u.path == "/api/check_update":
+            self._json(check_update())
         elif u.path == "/api/logs":
             try:
                 since = int((q.get("since") or ["0"])[0])

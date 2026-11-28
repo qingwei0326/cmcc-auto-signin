@@ -186,7 +186,8 @@ function renderKpiAndCards(){
         <div class="acts">
           ${isQ?`<button type="button" class="btn sm pri" onclick="act({action:'qwhd_run',key:${jsArg(a.key)}})">签到</button>
             <button type="button" class="btn sm" onclick="act({action:'qwhd_run',key:${jsArg(a.key)},dry:1})">只读检查</button>
-            <button type="button" class="btn sm" onclick="act({action:'qwhd_run',key:${jsArg(a.key)},claim:1})">签到+领奖</button>`
+            <button type="button" class="btn sm" onclick="act({action:'qwhd_run',key:${jsArg(a.key)},claim:1})">签到+领奖</button>
+            <button type="button" class="btn sm" onclick="act({action:'voucher_run',key:${jsArg(a.key)}})" title="领券中心：按开放时间领未领的免费券">领券</button>`
            :`<button type="button" class="btn sm pri" onclick="act({action:'bass_run',key:${jsArg(a.key)}})">签到</button>
             <button type="button" class="btn sm" onclick="act({action:'bass_run',key:${jsArg(a.key)},dry:1})">只读检查</button>
             <button type="button" class="btn sm" onclick="act({action:'bass_run',key:${jsArg(a.key)},claim:1,roll:1})">领奖+骰子</button>`}

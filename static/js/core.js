@@ -239,7 +239,7 @@ applyZoom();
 // ---------------- 忙态管理 & 统一 API Action ----------------
 const TASK_ACTIONS=new Set([
   'refresh_status','run_all','qwhd_run','bass_run','bass_probe',
-  'luck_run','xunbao_run','seckill_run','games_run','xxl_run','xxl_all',
+  'luck_run','xunbao_run','seckill_run','games_run','voucher_run','xxl_run','xxl_all',
   'sched_query','sched_reg','sched_apply_all','sched_unreg_all','sched_unreg'
 ]);
 

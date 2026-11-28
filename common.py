@@ -43,6 +43,9 @@ def app_base() -> Path:
 
 BASE = app_base()
 
+# 程序版本号。发版时与 git tag（v1.x）保持一致；控制台据此对比 GitHub 最新 Release。
+VERSION = "1.3.1"
+
 # 移动端 UA，部分接口会对桌面 UA 直接返回异常
 UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
              "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/wkwebview")

@@ -146,14 +146,13 @@ r = s.post(f"{API_MARK}/markSeckill/secConfig", json={}, headers=api_headers(ref
 既然如此，就**没必要提前一两个小时启动**：把刷新和开抢都挪到临近 12 点即可，
 凭证窗口最短、失败也最容易当场补救。
 
-所以计划任务分两个：
+所以并进晨间一站式任务一起跑：
 
 ```
-MobileSessionRefresh   11:54   run_session_refresh.bat  → 签到并建立新会话
-MobileSeckill          11:55   run_seckill.bat          → 脚本内部等到 11:59:50 出手
+MobileMorning   11:40   run_morning.bat  → 签到建会话 + 各活动 + 秒杀（脚本内部等到 11:59:50 出手）
 ```
 
-11:54 那次签到**仍然需要有效的 app_token**（票据实测约 30~46 分钟寿命）。
+11:40 那次签到**仍然需要有效的 app_token**（票据实测约 30~46 分钟寿命）。
 若那时票据已过期，就必须你抓一次包导入 —— 这是目前无法自动化的唯一环节。
 
 ### 启动时没有会话不再直接退出（2026-11-20 12:5x 修复）
@@ -231,8 +230,8 @@ python run_all.py --seckill                    # 一键里带秒杀
 python run_all.py --seckill --seckill-at 11:59:50
 ```
 
-计划任务 `MobileSeckill` → `run_seckill.bat`：**11:55 启动**，脚本内部等到 12:00 出手。
-（只提前 5 分钟，因为会话刷新任务 11:54 刚跑过；会话未就绪时会每 15 秒重试到临近开抢。）
+秒杀现在由 `MobileMorning` → `run_morning.bat` 在 **11:40** 随签到一起启动，脚本内部等到 12:00 出手。
+（会话在 11:40 签到那步建立，2 小时内有效；会话未就绪时会每 15 秒重试到临近开抢。）
 
 ## 现状与限制
 
@@ -269,7 +268,7 @@ python run_all.py --seckill --seckill-at 11:59:50
 7 个 `Mobile*` 计划任务已注册的 Action 是：
 
 ```
-签到控制台.exe "D:\...\run_hidden.py" "D:\...\run_seckill.bat"
+签到控制台.exe "D:\...\run_hidden.py" "D:\...\run_morning.bat"
 ```
 
 但 **`签到控制台.exe` 是 GUI 外壳（`app_desktop.py`），不解析 argv**——

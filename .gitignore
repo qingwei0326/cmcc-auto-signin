@@ -52,3 +52,4 @@ desktop.ini
 probe_*.py
 !probe_token_life.py
 !probe_fj.py
+!probe_coupon_life.py

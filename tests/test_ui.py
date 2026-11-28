@@ -210,21 +210,18 @@ class TestSchedPlan(unittest.TestCase):
 
     def test_repeating_kinds_keep_interval(self):
         pyw, launcher = "p", "l"
-        _, probe = dashboard._sched_ps("probe", "00:00", pyw, launcher)
-        self.assertIn("Minutes 2", probe)
+        _, mail = dashboard._sched_ps("mail", "00:00", pyw, launcher)
+        self.assertIn("Minutes 10", mail)
         _, daily = dashboard._sched_ps("daily", "06:00", pyw, launcher)
         self.assertIn("Hours 1", daily)
         # 17 小时窗口的旧写法 = 只跑注册当天，第二天静默停摆（11-22 就这样丢了一天）
         self.assertNotIn("Hours 17", daily)
         self.assertIn("Days 3650", daily)
-        _, keep = dashboard._sched_ps("keepalive", "00:00", pyw, launcher)
-        self.assertIn("Minutes 90", keep)
-        self.assertIn("Days 3650", keep)
 
     def test_apply_all_rejects_bad_input(self):
         r = dashboard.do_action({"action": "sched_apply_all", "plan": [["nope", "08:30"]]})
         self.assertFalse(r["ok"])
-        r = dashboard.do_action({"action": "sched_apply_all", "plan": [["sign", "8点半"]]})
+        r = dashboard.do_action({"action": "sched_apply_all", "plan": [["morning", "8点半"]]})
         self.assertFalse(r["ok"])
 
     def test_apply_all_registers_everything_in_one_call(self):
@@ -889,6 +886,56 @@ class TestFrontendOptimization(unittest.TestCase):
             called.update(re.findall(r'(?:^|;)\s*([A-Za-z_$][\w$]*)\s*\(', expr))
         for fn in sorted(called):
             self.assertIn(f"function {fn}(", js, f"HTML 内联事件调用了未定义函数 {fn}")
+
+
+class TestCheckUpdate(unittest.TestCase):
+    """更新检测：版本比较正确，网络失败静默，Release 解析到位。"""
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def test_ver_tuple_compare(self):
+        self.assertGreater(dashboard._ver_tuple("v1.4"), dashboard._ver_tuple("1.3"))
+        self.assertFalse(dashboard._ver_tuple("1.3") > dashboard._ver_tuple("v1.3"))
+        self.assertEqual(dashboard._ver_tuple("1.10") > dashboard._ver_tuple("1.9"), True)
+
+    def test_check_update_swallows_network_error(self):
+        with mock.patch.object(dashboard.urllib.request, "urlopen", side_effect=OSError("boom")):
+            r = dashboard.check_update(timeout=0.1)
+        self.assertFalse(r["has_update"])
+        self.assertIn("error", r)
+        self.assertEqual(r["current"], dashboard.VERSION)
+
+    def test_check_update_parses_release(self):
+        payload = json.dumps({
+            "tag_name": "v1.9", "html_url": "https://example.com/rel",
+            "name": "v1.9", "published_at": "2026-12-01T10:00:00Z",
+        }).encode()
+        with mock.patch.object(dashboard.urllib.request, "urlopen",
+                               return_value=self._Resp(payload)):
+            r = dashboard.check_update()
+        self.assertEqual(r["latest"], "1.9")
+        self.assertTrue(r["has_update"])
+        self.assertEqual(r["published_at"], "2026-12-01")
+        self.assertEqual(r["url"], "https://example.com/rel")
+
+    def test_check_update_same_version_no_update(self):
+        payload = json.dumps({"tag_name": "v" + dashboard.VERSION,
+                              "html_url": "", "name": ""}).encode()
+        with mock.patch.object(dashboard.urllib.request, "urlopen",
+                               return_value=self._Resp(payload)):
+            r = dashboard.check_update()
+        self.assertFalse(r["has_update"])
 
 
 if __name__ == "__main__":

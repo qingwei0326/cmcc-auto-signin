@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -186,6 +187,62 @@ class TestRunAllDetectsTokenDead(unittest.TestCase):
             conf.write_text('{"phone": "13800001234"}', encoding="utf-8")
             self.R.run_script(fake, conf, [], 60)
         self.assertEqual(self.R.TOKEN_DEAD_ACCOUNTS, [])
+
+
+class TestDeadTokenSkip(unittest.TestCase):
+    """过期的号：同一天、配置没变就不再请求；重新导入后自动恢复。"""
+
+    def setUp(self):
+        import run_all
+        self.R = run_all
+        self.R.TOKEN_DEAD_ACCOUNTS.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        (self.base / "gui_data").mkdir()
+        self.patch = mock.patch.object(self.R, "BASE", self.base)
+        self.patch.start()
+        self.counter = self.base / "count.txt"
+        self.fake = self.base / "fake.py"
+        self.fake.write_text(
+            "import pathlib\n"
+            f"p = pathlib.Path({str(self.counter)!r})\n"
+            "p.write_text(str(int(p.read_text() if p.exists() else 0) + 1))\n"
+            "print('token 失效（401），跳过。')\n", encoding="utf-8")
+        (self.base / "configs_fj").mkdir()
+        self.conf = self.base / "configs_fj" / "fj9.json"
+        self.conf.write_text('{"phone": "13800001234"}', encoding="utf-8")
+
+    def tearDown(self):
+        self.patch.stop()
+        self.R.TOKEN_DEAD_ACCOUNTS.clear()
+        self.tmp.cleanup()
+
+    def _runs(self):
+        return int(self.counter.read_text()) if self.counter.exists() else 0
+
+    def test_second_call_is_skipped(self):
+        self.R.run_script(self.fake, self.conf, [], 60)
+        name, ok, _, text = self.R.run_script(self.fake, self.conf, [], 60)
+        self.assertEqual(self._runs(), 1, "过期号不该再起子进程")
+        self.assertFalse(ok)
+        self.assertIn("今天不再重试", text)
+        self.assertTrue(self.R.TOKEN_DEAD_ACCOUNTS)
+
+    def test_reimport_restores(self):
+        self.R.run_script(self.fake, self.conf, [], 60)
+        os.utime(self.conf, (time.time() + 5, time.time() + 5))   # 模拟重新导入
+        self.R.run_script(self.fake, self.conf, [], 60)
+        self.assertEqual(self._runs(), 2)
+
+    def test_next_day_reprobes(self):
+        self.R.run_script(self.fake, self.conf, [], 60)
+        path = self.R._dead_path()
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        for v in rec.values():
+            v["date"] = "2000-01-01"
+        path.write_text(json.dumps(rec), encoding="utf-8")
+        self.R.run_script(self.fake, self.conf, [], 60)
+        self.assertEqual(self._runs(), 2)
 
 
 class TestTodayFinished(unittest.TestCase):

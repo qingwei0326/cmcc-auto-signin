@@ -51,6 +51,51 @@ def note_token_dead(name: str):
             TOKEN_DEAD_ACCOUNTS.append(name)
 
 
+# ---- 凭证过期的号：今天不再反复请求 ----
+# 记 {配置文件: 配置修改时间 + 日期}。配置文件没变（还没重新导入 HAR）且仍是同一天，
+# 后续环节、整点任务、状态刷新都直接跳过；导入新凭证后修改时间变了自动恢复，
+# 隔天第一次运行也会重新探测一次，防止服务端偶发 401 把号永久跳过。
+
+def _dead_path() -> Path:
+    return _gui_path("dead_tokens.json")
+
+
+def _dead_key(conf: Path) -> str:
+    return f"{conf.parent.name}/{conf.name}"
+
+
+def _conf_mtime(conf: Path):
+    try:
+        return conf.stat().st_mtime
+    except OSError:
+        return None
+
+
+def known_dead(conf: Path) -> bool:
+    rec = (load_json(_dead_path(), {}) or {}).get(_dead_key(conf))
+    if not isinstance(rec, dict):
+        return False
+    mtime = _conf_mtime(conf)
+    return (mtime is not None and rec.get("mtime") == mtime
+            and rec.get("date") == datetime.date.today().isoformat())
+
+
+def _set_dead(conf: Path, mtime, dead: bool):
+    key = _dead_key(conf)
+    if not dead and key not in (load_json(_dead_path(), {}) or {}):
+        return          # 绝大多数情况：没过期也没记录，不碰磁盘
+
+    def upd(d):
+        if dead and mtime is not None:
+            d[key] = {"mtime": mtime, "date": datetime.date.today().isoformat()}
+        else:
+            d.pop(key, None)
+    try:
+        update_json(_dead_path(), upd, {})
+    except Exception:
+        pass
+
+
 def token_dead_notice(accounts) -> tuple:
     """凭证过期的通知文案。一条说清「哪些号 + 怎么做」，不逐号发。"""
     who = "、".join(accounts)
@@ -291,6 +336,11 @@ def run_script(script: Path, conf: Path, args: list, timeout: int,
     cmd = child_cmd(script, *config_args, *args)
     name = name or label_of(conf, "phone")
     head = f"--- [{idx}/{total}] {name}  ({conf.name}) ---" if idx else ""
+    if known_dead(conf):
+        note_token_dead(name)
+        text = f"{name}：凭证已过期，今天不再重试（重新导入抓包后自动恢复）"
+        return name, False, 0.0, (head + "\n" + text) if head else text
+    mtime0 = _conf_mtime(conf)
     buf = []
     t0 = time.time()
     ok = False
@@ -302,8 +352,10 @@ def run_script(script: Path, conf: Path, args: list, timeout: int,
         ok = res.returncode == 0
         # 只要输出里明说「凭证过期」就记下来，不看退出码：
         # 有的脚本打印完照样返回 0，只按退出码判会漏。
-        if is_token_dead(out) or is_token_dead(err):
+        dead = is_token_dead(out) or is_token_dead(err)
+        if dead:
             note_token_dead(name)
+        _set_dead(conf, mtime0, dead)
         if head:
             buf.append(head)
         weekly_limit = "本周已领，达到每周限领一次"
